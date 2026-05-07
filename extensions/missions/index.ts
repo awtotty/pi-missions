@@ -1188,7 +1188,7 @@ function missionControlMoveRecentMission(cwd: string, selectedId: string | undef
 	return missions[nextIndex]?.id;
 }
 
-async function openMissionControl(ctx: ExtensionCommandContext, state?: MissionOrchestratorSessionState): Promise<MissionCommandResult> {
+async function openMissionControl(ctx: ExtensionContext, state?: MissionOrchestratorSessionState): Promise<MissionCommandResult> {
 	if (!ctx.hasUI) {
 		const text = "Mission Control requires an interactive UI.";
 		ctx.ui.notify(text, "warning");
@@ -1477,13 +1477,24 @@ async function approveMission(options: {
 	return true;
 }
 
-// Mission Control concurrency decision (F1): ctx.ui.custom() returns a Promise
+// Mission Control concurrency decision (F1/F7): ctx.ui.custom() returns a Promise
 // that settles only when the custom component calls done()/closes, so awaiting it
 // before or during runMission would make mission execution wait for the user to
-// close the UI. F7 should auto-open Mission Control fire-and-forget (for example
-// `void openMissionControl(...).catch(...)`) and keep runMission as the durable
-// execution owner. Closing Mission Control must only dispose the read-only UI; it
-// must not abort ctx.signal or any child worker/validator process.
+// close the UI. Auto-open Mission Control fire-and-forget and keep runMission as
+// the durable execution owner. Closing Mission Control only disposes the read-only
+// UI; it does not abort ctx.signal or any child worker/validator process.
+function autoOpenMissionControl(ctx: ExtensionContext, mission: MissionState): void {
+	if (!ctx.hasUI) return;
+	const state = buildOrchestratorState(ctx.cwd, mission, {
+		activeMissionId: mission.id,
+		activePlanningMissionId: undefined,
+		activeRunningMissionId: mission.id,
+	});
+	void openMissionControl(ctx, state).catch((error) => {
+		ctx.ui.notify(`Mission Control failed to open: ${error instanceof Error ? error.message : String(error)}`, "warning");
+	});
+}
+
 async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI): Promise<void> {
 	const id = args.trim() || latestMission(ctx.cwd)?.id;
 	if (!id) {
@@ -1504,6 +1515,7 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI)
 		const ok = await ctx.ui.confirm("Dirty git status", "Repository has uncommitted changes. Continue anyway? Workers must leave it clean after each feature.");
 		if (!ok) return;
 	}
+	autoOpenMissionControl(ctx, mission);
 	ctx.ui.notify(`Running mission ${mission.title}`, "info");
 	while (true) {
 		mission = loadMission(ctx.cwd, id);
