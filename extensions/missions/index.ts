@@ -922,6 +922,7 @@ interface MissionControlEvent {
 
 type MissionControlSelection =
 	| { kind: "mission"; mission: MissionState }
+	| { kind: "block"; mission: MissionState; block: MissionBlockMetadata }
 	| { kind: "milestone"; mission: MissionState; milestone: MissionMilestone }
 	| { kind: "feature"; mission: MissionState; milestone: MissionMilestone; feature: MissionFeature };
 
@@ -984,8 +985,13 @@ function currentSelection(mission: MissionState): MissionControlSelection {
 	return { kind: "milestone", mission, milestone: currentMilestone };
 }
 
-function missionControlSelectableItems(mission: MissionState): MissionControlSelection[] {
+function blockSelectionId(block: MissionBlockMetadata): string {
+	return `block:${block.runId}:${block.failedItemId}`;
+}
+
+function missionControlSelectableItems(mission: MissionState, block = latestBlockFromArtifacts(mission)): MissionControlSelection[] {
 	const items: MissionControlSelection[] = [{ kind: "mission", mission }];
+	if (block) items.push({ kind: "block", mission, block });
 	for (const milestone of mission.milestones) {
 		items.push({ kind: "milestone", mission, milestone });
 		for (const feature of milestone.features) items.push({ kind: "feature", mission, milestone, feature });
@@ -994,14 +1000,15 @@ function missionControlSelectableItems(mission: MissionState): MissionControlSel
 }
 
 function selectionId(selection: MissionControlSelection): string {
+	if (selection.kind === "block") return blockSelectionId(selection.block);
 	if (selection.kind === "feature") return selection.feature.id;
 	if (selection.kind === "milestone") return selection.milestone.id;
 	return selection.mission.id;
 }
 
-function missionControlSelectionById(mission: MissionState, selectedId?: string): MissionControlSelection {
+function missionControlSelectionById(mission: MissionState, selectedId?: string, block = latestBlockFromArtifacts(mission)): MissionControlSelection {
 	if (selectedId) {
-		const match = missionControlSelectableItems(mission).find((item) => selectionId(item) === selectedId);
+		const match = missionControlSelectableItems(mission, block).find((item) => selectionId(item) === selectedId);
 		if (match) return match;
 	}
 	return currentSelection(mission);
@@ -1026,9 +1033,10 @@ function missionControlHeader(mission: MissionState, width: number): string[] {
 	].map((line) => clipLine(line, width));
 }
 
-function missionTreeLines(mission: MissionState, selection: MissionControlSelection): string[] {
+function missionTreeLines(mission: MissionState, selection: MissionControlSelection, block?: MissionBlockMetadata): string[] {
 	const selectedId = selectionId(selection);
 	const lines = ["Mission tree", `${selectedId === mission.id ? ">" : " "} ${mark(mission.status)} ${mission.id}`];
+	if (block) lines.push(`${selectedId === blockSelectionId(block) ? ">" : " "} ! Block ${block.reasonCategory} on ${block.failedItemId}`);
 	for (const milestone of mission.milestones) {
 		lines.push(`${selectedId === milestone.id ? ">" : " "} ${mark(milestone.status)} ${milestone.id} ${milestone.title}`);
 		for (const feature of milestone.features) lines.push(`${selectedId === feature.id ? ">" : " "}   ${mark(feature.status)} ${feature.id} ${feature.title}`);
@@ -1036,11 +1044,33 @@ function missionTreeLines(mission: MissionState, selection: MissionControlSelect
 	return lines;
 }
 
+function blockInspectionLines(block: MissionBlockMetadata): string[] {
+	const artifactLines = block.artifactPaths.length > 0
+		? block.artifactPaths.map((artifact) => `Artifact: ${artifact}`)
+		: ["Artifact: none recorded; inspect the run directory directly."];
+	return [
+		"Block details",
+		`Reason category: ${block.reasonCategory}`,
+		`Failed item: ${block.kind} ${block.failedItemId} — ${block.failedItemTitle}`,
+		`Run id: ${block.runId}`,
+		`Run dir: ${block.runDir}`,
+		`Exit code: ${block.exitCode}`,
+		...(block.status ? [`Reported status: ${block.status}`] : []),
+		...artifactLines,
+		"Suggested inspection steps:",
+		block.kind === "worker" ? "1. Read handoff.json and handoff.md if present." : "1. Read validation-report.json and validation-report.md if present.",
+		"2. Inspect transcript.jsonl and stderr.txt in the run directory if artifacts are missing or incomplete.",
+		"3. Decide whether to revise the mission plan, fix the implementation, or resume execution.",
+	];
+}
+
 function missionDetailsLines(selection: MissionControlSelection, run?: MissionRunContext, block?: MissionBlockMetadata): string[] {
 	const mission = selection.mission;
 	const lines = ["Details"];
 	if (selection.kind === "mission") {
 		lines.push(`Mission: ${mission.title}`, `ID: ${mission.id}`, `Status: ${mission.status}`, `Created: ${mission.createdAt}`, `Updated: ${mission.updatedAt}`);
+	} else if (selection.kind === "block") {
+		lines.push(...blockInspectionLines(selection.block));
 	} else if (selection.kind === "milestone") {
 		lines.push(`Milestone: ${selection.milestone.id} — ${selection.milestone.title}`, `Status: ${selection.milestone.status}`);
 		if (selection.milestone.objective) lines.push(`Objective: ${selection.milestone.objective}`);
@@ -1054,7 +1084,7 @@ function missionDetailsLines(selection: MissionControlSelection, run?: MissionRu
 		lines.push(`Description: ${selection.feature.description}`);
 	}
 	if (run) lines.push("", "Run context", `${run.label}: ${run.runId}`, `Item: ${run.kind} ${run.itemId} — ${run.itemTitle}`, `Artifacts: ${run.runDir}`, ...runArtifactSummaryLines(run));
-	if (block) lines.push("", "Block context", describeBlock(block), `Run dir: ${block.runDir}`, ...block.artifactPaths.map((artifact) => `Artifact: ${artifact}`));
+	if (block && selection.kind !== "block") lines.push("", "Block context", ...blockInspectionLines(block));
 	return lines;
 }
 
@@ -1086,6 +1116,7 @@ function columnLines(left: string[], right: string[], width: number): string[] {
 interface MissionControlViewState {
 	selectedId?: string;
 	selectedRecentMissionId?: string;
+	lastAutoFocusedBlockId?: string;
 	showHelp: boolean;
 	focus: "tree" | "timeline";
 }
@@ -1110,16 +1141,25 @@ function missionControlLines(cwd: string, state: MissionOrchestratorSessionState
 	const missions = active ? [active] : visibleMissions(cwd).slice(0, 10);
 	const safeWidth = Math.max(20, width);
 	if (active) {
-		const selection = missionControlSelectionById(active, view.selectedId);
+		const block = latestBlockFromArtifacts(active);
+		if (block) {
+			const id = blockSelectionId(block);
+			if (view.lastAutoFocusedBlockId !== id) {
+				view.selectedId = id;
+				view.lastAutoFocusedBlockId = id;
+			}
+		} else {
+			view.lastAutoFocusedBlockId = undefined;
+		}
+		const selection = missionControlSelectionById(active, view.selectedId, block);
 		view.selectedId = selectionId(selection);
 		const run = currentOrLastRunContext(active);
-		const block = latestBlockFromArtifacts(active);
 		const focusText = view.focus === "tree" ? "Focus: mission tree" : "Focus: event timeline";
 		return [
 			...missionControlHeader(active, safeWidth),
 			focusText,
 			"",
-			...columnLines(missionTreeLines(active, selection), missionDetailsLines(selection, run, block), safeWidth),
+			...columnLines(missionTreeLines(active, selection, block), missionDetailsLines(selection, run, block), safeWidth),
 			"",
 			...eventTimelineLines(active).map((line) => clipLine(line, safeWidth)),
 			...(view.showHelp ? ["", ...missionControlHelpLines().map((line) => clipLine(line, safeWidth))] : []),
