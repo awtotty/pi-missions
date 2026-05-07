@@ -161,6 +161,14 @@ interface MissionRunContext {
 	status?: string;
 }
 
+interface ValidationContractAssertion {
+	id?: string;
+	category?: string;
+	severity?: string;
+	assertion?: string;
+	verification?: string;
+}
+
 const MISSION_ROLES: MissionRole[] = ["orchestrator", "worker", "validator"];
 const DEFAULT_ROLE_MODELS: MissionRoleModels = { orchestrator: "default", worker: "default", validator: "default" };
 
@@ -1152,6 +1160,76 @@ function runArtifactSummaryLines(run: MissionRunContext): string[] {
 	return lines;
 }
 
+function missionSkillPath(mission: MissionState, role: "worker" | "validator"): string {
+	return path.join(missionDir(mission.cwd, mission.id), "skills", role === "worker" ? "worker" : "validator-scrutiny", "SKILL.md");
+}
+
+function validationContractAssertions(mission: MissionState): ValidationContractAssertion[] {
+	const file = path.join(missionDir(mission.cwd, mission.id), "plan", "validation-contract.json");
+	if (!fs.existsSync(file)) return [];
+	try {
+		const parsed = readJson<{ assertions?: unknown }>(file);
+		if (!Array.isArray(parsed.assertions)) return [];
+		return parsed.assertions.filter((value): value is ValidationContractAssertion => Boolean(value) && typeof value === "object");
+	} catch {
+		return [];
+	}
+}
+
+function featureDependencyLines(mission: MissionState, feature: MissionFeature): string[] {
+	if (!feature.dependencies?.length) return ["Preconditions: no feature dependencies recorded"];
+	const features = new Map(mission.milestones.flatMap((milestone) => milestone.features.map((item) => [item.id, item] as const)));
+	return [`Dependencies: ${feature.dependencies.map((id) => {
+		const dependency = features.get(id);
+		return dependency ? `${id} ${mark(dependency.status)} ${dependency.status}` : `${id} ? unknown`;
+	}).join(", ")}`];
+}
+
+function validatorPreconditionLines(milestone: MissionMilestone): string[] {
+	const incomplete = milestone.features.filter((feature) => feature.status !== "complete" && feature.status !== "skipped");
+	if (incomplete.length === 0) return ["Preconditions: all milestone features complete/skipped"];
+	return [`Preconditions: waiting on ${incomplete.map((feature) => `${feature.id} ${feature.status}`).join(", ")}`];
+}
+
+function verificationHintLines(mission: MissionState, categories: string[]): string[] {
+	const hints = validationContractAssertions(mission)
+		.filter((assertion) => assertion.category && categories.includes(assertion.category))
+		.slice(0, 3)
+		.map((assertion) => `Verify ${assertion.id ?? assertion.category}: ${assertion.verification ?? assertion.assertion ?? "see validation contract"}`);
+	return hints.length ? hints : ["Verify: see plan/validation-contract.json"];
+}
+
+function currentWorkArtifactLines(run?: MissionRunContext): string[] {
+	if (!run) return ["Artifacts: no run directory yet"];
+	return [`Run id: ${run.runId}`, `Run dir: ${run.runDir}`, ...runArtifactSummaryLines(run)];
+}
+
+function featureRunContext(mission: MissionState, feature: MissionFeature): MissionRunContext | undefined {
+	if (!feature.runId) return undefined;
+	return {
+		label: `${feature.status === "running" ? "Current" : "Feature"} worker run`,
+		runId: feature.runId,
+		runDir: path.join(missionDir(mission.cwd, mission.id), "runs", feature.runId),
+		kind: "worker",
+		itemId: feature.id,
+		itemTitle: feature.title,
+		status: feature.status,
+	};
+}
+
+function milestoneValidationRunContext(mission: MissionState, milestone: MissionMilestone): MissionRunContext | undefined {
+	if (!milestone.validationRunId) return undefined;
+	return {
+		label: `${milestone.status === "running" ? "Current" : "Milestone"} validator run`,
+		runId: milestone.validationRunId,
+		runDir: path.join(missionDir(mission.cwd, mission.id), "runs", milestone.validationRunId),
+		kind: "validator",
+		itemId: milestone.id,
+		itemTitle: milestone.title,
+		status: milestone.status,
+	};
+}
+
 function currentSelection(mission: MissionState): MissionControlSelection {
 	const currentMilestone = mission.milestones.find((m) => m.id === mission.currentMilestoneId) ?? mission.milestones.find((m) => m.status === "running") ?? mission.milestones[0];
 	if (!currentMilestone) return { kind: "mission", mission };
@@ -1281,27 +1359,48 @@ function progressLogLines(mission: MissionState): string[] {
 }
 
 function currentItemLines(selection: MissionControlSelection, run?: MissionRunContext, block?: MissionBlockMetadata): string[] {
-	if (selection.kind === "mission") return [`${mark(selection.mission.status)} Mission: ${selection.mission.title}`, `Status: ${selection.mission.status}`, `Created: ${selection.mission.createdAt}`];
-	if (selection.kind === "block") return blockInspectionLines(selection.block).slice(1, 8);
-	if (selection.kind === "milestone") {
-		const done = selection.milestone.features.filter((f) => f.status === "complete" || f.status === "skipped").length;
+	if (selection.kind === "mission") {
 		return [
-			`${mark(selection.milestone.status)} Milestone ${selection.milestone.id}: ${selection.milestone.title}`,
-			`Status: ${selection.milestone.status} · Features ${done}/${selection.milestone.features.length}`,
-			...(selection.milestone.objective ? [`Objective: ${selection.milestone.objective}`] : []),
-			...(selection.milestone.validation ? [`Validation: ${selection.milestone.validation}`] : []),
+			`${mark(selection.mission.status)} Mission: ${selection.mission.title}`,
+			`Status: ${selection.mission.status}`,
+			`Current milestone: ${selection.mission.currentMilestoneId ?? "not set"}`,
+			`Current feature: ${selection.mission.currentFeatureId ?? "not set"}`,
+			`Created: ${selection.mission.createdAt}`,
+			`Expected: ${selection.mission.status === "complete" ? "all milestones complete" : "execute milestones sequentially"}`,
+			...verificationHintLines(selection.mission, ["current-work", "compatibility"]),
+			...currentWorkArtifactLines(run),
 		];
 	}
+	if (selection.kind === "block") return blockInspectionLines(selection.block).slice(1, 10);
+	if (selection.kind === "milestone") {
+		const done = selection.milestone.features.filter((f) => f.status === "complete" || f.status === "skipped").length;
+		const validatorRun = run?.kind === "validator" && run.itemId === selection.milestone.id ? run : milestoneValidationRunContext(selection.mission, selection.milestone);
+		return [
+			`${mark(selection.milestone.status)} ${validatorRun ? "Validator" : "Milestone"} ${selection.milestone.id}: ${selection.milestone.title}`,
+			`Role/skill: validator · ${missionSkillPath(selection.mission, "validator")}`,
+			`Milestone: ${selection.milestone.id} — ${selection.milestone.title}`,
+			`Status: ${selection.milestone.status} · Features ${done}/${selection.milestone.features.length}`,
+			...validatorPreconditionLines(selection.milestone),
+			...(selection.milestone.objective ? [`Description: ${selection.milestone.objective}`] : []),
+			...(selection.milestone.validation ? [`Expected: ${selection.milestone.validation}`] : []),
+			...verificationHintLines(selection.mission, ["current-work", "observability", "type-safety"]),
+			...currentWorkArtifactLines(validatorRun),
+		];
+	}
+	const featureRun = run?.kind === "worker" && run.itemId === selection.feature.id ? run : featureRunContext(selection.mission, selection.feature);
 	const lines = [
 		`${mark(selection.feature.status)} Feature ${selection.feature.id}: ${selection.feature.title}`,
+		`Role/skill: worker · ${missionSkillPath(selection.mission, "worker")}`,
 		`Milestone: ${selection.milestone.id} — ${selection.milestone.title}`,
 		`Status: ${selection.feature.status}`,
-		...(selection.feature.dependencies?.length ? [`Dependencies: ${selection.feature.dependencies.join(", ")}`] : []),
-		...(selection.feature.runId ? [`Run: ${selection.feature.runId}`] : []),
-		...(selection.feature.commit ? [`Commit: ${selection.feature.commit}`] : []),
+		...featureDependencyLines(selection.mission, selection.feature),
 		`Description: ${selection.feature.description}`,
+		...(selection.milestone.validation ? [`Expected: ${selection.milestone.validation}`] : []),
+		...verificationHintLines(selection.mission, ["current-work", "observability", "ui"]),
+		...currentWorkArtifactLines(featureRun),
+		...(selection.feature.commit ? [`Commit: ${selection.feature.commit}`] : []),
 	];
-	if (run) lines.push(`Run context: ${run.label} ${run.runId} · ${run.kind} ${run.itemId}`);
+	if (run && !featureRun) lines.push(`Related run context: ${run.label} ${run.runId} · ${run.kind} ${run.itemId}`);
 	if (block) lines.push(`Block: ${block.reasonCategory} on ${block.failedItemId}`);
 	return lines;
 }
