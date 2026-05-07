@@ -1355,6 +1355,12 @@ function findNextFeature(mission: MissionState): { milestone: MissionMilestone; 
 	return undefined;
 }
 
+function shouldAutoResumeAfterPlanRevision(cwd: string, existingMission: MissionState | undefined, revisedMission: MissionState): boolean {
+	if (!existingMission || existingMission.status !== "blocked") return false;
+	if (!hasMissionExecutionStarted(cwd, existingMission)) return false;
+	return Boolean(findNextFeature(revisedMission));
+}
+
 async function runWorker(ctx: ExtensionContext, mission: MissionState, milestone: MissionMilestone, feature: MissionFeature): Promise<MissionBlockSummary | undefined> {
 	const dir = missionDir(mission.cwd, mission.id);
 	const runId = `${String(Date.now())}-worker-${feature.id}`;
@@ -1648,7 +1654,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "mission_write_plan",
 		label: "Write or Revise Mission Plan",
-		description: "Persist the current interactive mission planning draft or revise the active mission plan. Omit missionId to use the current session's active planning/running mission; this does not start or resume execution.",
+		description: "Persist the current interactive mission planning draft or revise the active mission plan. Omit missionId to use the current session's active planning/running mission; never-started missions are not run, but previously-started blocked missions auto-resume when a revision leaves pending runnable work.",
 		parameters: Type.Object({
 			missionId: Type.Optional(Type.String()),
 			mission: Type.Any({ description: "Complete mission.json object matching the mission-orchestrator schema." }),
@@ -1692,15 +1698,25 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			fs.writeFileSync(path.join(dir, "skills/worker/SKILL.md"), params.workerSkillMd);
 			fs.writeFileSync(path.join(dir, "skills/validator-scrutiny/SKILL.md"), params.validatorScrutinySkillMd);
 			if (params.validatorUserTestingSkillMd) fs.writeFileSync(path.join(dir, "skills/validator-user-testing/SKILL.md"), params.validatorUserTestingSkillMd);
-			appendEvent(dir, existingMission ? "interactive_plan_revised" : "interactive_plan_written", { title: mission.title, milestones: mission.milestones?.length ?? 0, status: mission.status });
+			const autoResume = shouldAutoResumeAfterPlanRevision(ctx.cwd, existingMission, mission);
+			appendEvent(dir, existingMission ? "interactive_plan_revised" : "interactive_plan_written", { title: mission.title, milestones: mission.milestones?.length ?? 0, status: mission.status, autoResume });
 			updateWidget(ctx, mission);
 			persistOrchestratorState(ctx.cwd, mission, {
 				activeMissionId: missionId,
 				activePlanningMissionId: mission.status === "planning" ? missionId : undefined,
-				activeRunningMissionId: mission.status === "running" || mission.status === "paused" ? missionId : undefined,
+				activeRunningMissionId: autoResume || mission.status === "running" || mission.status === "paused" ? missionId : undefined,
 			});
-			const text = persistedPlanSummary(mission, dir, params.objectiveMd, params.validationContractJson, Boolean(existingMission));
-			return { content: [{ type: "text", text }], details: { missionId, dir } };
+			let text = persistedPlanSummary(mission, dir, params.objectiveMd, params.validationContractJson, Boolean(existingMission));
+			if (autoResume) {
+				ctx.ui.notify(`Recovery plan saved; auto-resuming mission ${missionId}.`, "info");
+				appendEvent(dir, "mission_auto_resume_after_plan_revision", { missionId });
+				activeRunningId = missionId;
+				await runMission(missionId, ctx, pi);
+				const resumedMission = loadMission(ctx.cwd, missionId);
+				persistOrchestratorState(ctx.cwd, resumedMission, { activeMissionId: missionId, activePlanningMissionId: undefined, activeRunningMissionId: undefined });
+				text = `${text}\n\nAuto-resumed mission execution because this revision unblocked a previously started mission with pending work.`;
+			}
+			return { content: [{ type: "text", text }], details: { missionId, dir, autoResumed: autoResume } };
 		},
 	});
 
