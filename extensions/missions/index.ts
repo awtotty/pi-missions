@@ -458,8 +458,8 @@ function missionListText(cwd: string): string {
 	return missions.length ? missions.map((m) => `${m.id}  ${m.status}${isMissionCleared(cwd, m.id) ? " (cleared)" : ""}  ${m.title}`).join("\n") : "No missions found.";
 }
 
-function resolveMission(cwd: string, id?: string): MissionState | undefined {
-	return id ? loadMission(cwd, id) : latestMission(cwd);
+function resolveMission(cwd: string, id?: string, state?: MissionOrchestratorSessionState): MissionState | undefined {
+	return id ? loadMission(cwd, id) : activeMissionFromState(cwd, state) ?? latestMission(cwd);
 }
 
 async function createMission(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI, setActivePlanning: (cwd: string, id: string) => void): Promise<void> {
@@ -720,12 +720,12 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "mission_approve_plan",
 		label: "Approve Mission Plan",
-		description: "Ask the user for explicit approval, then approve the mission plan on their behalf. Use only after the user has reviewed the plan.",
+		description: "Ask the user for explicit approval, then approve the active mission plan on their behalf. Omit missionId to use the current session's active mission. Use only after the user has reviewed the plan.",
 		parameters: Type.Object({
 			missionId: Type.Optional(Type.String()),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const missionId = params.missionId || activePlanningId || latestMission(ctx.cwd)?.id;
+			const missionId = params.missionId || activePlanningId || activeMissionId || activeMissionFromState(ctx.cwd, orchestratorState)?.id || latestMission(ctx.cwd)?.id;
 			if (!missionId) {
 				return { content: [{ type: "text", text: "No mission found to approve." }], details: {}, isError: true };
 			}
@@ -748,12 +748,12 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "mission_start_execution",
 		label: "Start Mission Execution",
-		description: "Ask the user for explicit approval, then start or resume sequential mission execution on their behalf.",
+		description: "Ask the user for explicit approval, then start or resume sequential mission execution on their behalf. Omit missionId to use the current session's active mission.",
 		parameters: Type.Object({
 			missionId: Type.Optional(Type.String()),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const missionId = params.missionId || activePlanningId || latestMission(ctx.cwd)?.id;
+			const missionId = params.missionId || activeMissionId || activePlanningId || activeMissionFromState(ctx.cwd, orchestratorState)?.id || latestMission(ctx.cwd)?.id;
 			if (!missionId) {
 				return { content: [{ type: "text", text: "No mission found to run." }], details: {}, isError: true };
 			}
@@ -773,8 +773,8 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "mission_write_plan",
-		label: "Write Mission Plan",
-		description: "Persist the current interactive mission planning draft. Use during /missions planning after collaborating with the user; this does not approve or run the mission.",
+		label: "Write or Revise Mission Plan",
+		description: "Persist the current interactive mission planning draft or revise the active mission plan. Omit missionId to use the current session's active planning/running mission; this does not approve or run the mission.",
 		parameters: Type.Object({
 			missionId: Type.Optional(Type.String()),
 			mission: Type.Any({ description: "Complete mission.json object matching the mission-orchestrator schema." }),
@@ -787,11 +787,13 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			validatorUserTestingSkillMd: Type.Optional(Type.String({ description: "Mission-specific QA/user-testing validator SKILL.md content, if applicable." })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const missionId = params.missionId || activePlanningId;
+			const active = activeMissionFromState(ctx.cwd, orchestratorState);
+			const missionId = params.missionId || activePlanningId || activeMissionId || active?.id;
 			if (!missionId) {
-				return { content: [{ type: "text", text: "No active planning mission. Run /missions new first or provide missionId." }], details: {}, isError: true };
+				return { content: [{ type: "text", text: "No active mission. Run /missions new first or provide missionId." }], details: {}, isError: true };
 			}
 			const dir = missionDir(ctx.cwd, missionId);
+			const existingMission = fs.existsSync(path.join(dir, "mission.json")) ? loadMission(ctx.cwd, missionId) : undefined;
 			ensureDir(path.join(dir, "plan"));
 			ensureDir(path.join(dir, "skills/worker"));
 			ensureDir(path.join(dir, "skills/validator-scrutiny"));
@@ -799,9 +801,9 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			const mission = params.mission as MissionState;
 			mission.id = missionId;
 			mission.cwd = ctx.cwd;
-			mission.status = "planning";
+			mission.status = existingMission && existingMission.status !== "planning" && mission.status === "planning" ? existingMission.status : mission.status || existingMission?.status || "planning";
 			mission.updatedAt = nowIso();
-			if (!mission.createdAt) mission.createdAt = nowIso();
+			if (!mission.createdAt) mission.createdAt = existingMission?.createdAt || nowIso();
 			if (!mission.models) mission.models = { orchestrator: "default", worker: "default", validator: "default" };
 			writeJson(path.join(dir, "mission.json"), mission);
 			fs.writeFileSync(path.join(dir, "plan/objective.md"), params.objectiveMd);
@@ -811,10 +813,15 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			fs.writeFileSync(path.join(dir, "skills/worker/SKILL.md"), params.workerSkillMd);
 			fs.writeFileSync(path.join(dir, "skills/validator-scrutiny/SKILL.md"), params.validatorScrutinySkillMd);
 			if (params.validatorUserTestingSkillMd) fs.writeFileSync(path.join(dir, "skills/validator-user-testing/SKILL.md"), params.validatorUserTestingSkillMd);
-			appendEvent(dir, "interactive_plan_written", { title: mission.title, milestones: mission.milestones?.length ?? 0 });
+			appendEvent(dir, existingMission ? "interactive_plan_revised" : "interactive_plan_written", { title: mission.title, milestones: mission.milestones?.length ?? 0, status: mission.status });
 			updateWidget(ctx, mission);
-			persistOrchestratorState(ctx.cwd, mission, { activeMissionId: missionId, activePlanningMissionId: missionId });
-			return { content: [{ type: "text", text: `Mission plan draft written to ${dir}. User can continue refining or run /missions approve ${missionId}.` }], details: { missionId, dir } };
+			persistOrchestratorState(ctx.cwd, mission, {
+				activeMissionId: missionId,
+				activePlanningMissionId: mission.status === "planning" ? missionId : undefined,
+				activeRunningMissionId: mission.status === "running" || mission.status === "paused" ? missionId : undefined,
+			});
+			const nextAction = mission.status === "planning" ? ` User can continue refining or run /missions approve ${missionId}.` : "";
+			return { content: [{ type: "text", text: `Mission plan written to ${dir}.${nextAction}` }], details: { missionId, dir } };
 		},
 	});
 
@@ -835,7 +842,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 		const args = rest.join(" ");
 		try {
 			if (!subcommand || subcommand === "status") {
-				const mission = resolveMission(ctx.cwd, args || undefined);
+				const mission = resolveMission(ctx.cwd, args || undefined, orchestratorState);
 				if (!mission) {
 					ctx.ui.notify("No missions found.", "info");
 					return { ok: false, text: "No missions found." };
@@ -850,7 +857,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 				return { ok: true, text: "Mission creation started." };
 			}
 			if (subcommand === "approve") {
-				const id = args || activePlanningId || latestMission(ctx.cwd)?.id;
+				const id = args || activePlanningId || activeMissionId || activeMissionFromState(ctx.cwd, orchestratorState)?.id || latestMission(ctx.cwd)?.id;
 				if (!id) {
 					ctx.ui.notify("No mission to approve.", "warning");
 					return { ok: false, text: "No mission to approve." };
@@ -860,7 +867,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 				return { ok: approved, text: approved ? `Approved mission ${id}.` : `Mission ${id} was not approved.`, details: { missionId: id } };
 			}
 			if (subcommand === "run" || subcommand === "resume") {
-				const id = args || activeMissionId || latestMission(ctx.cwd)?.id;
+				const id = args || activeMissionId || activeMissionFromState(ctx.cwd, orchestratorState)?.id || latestMission(ctx.cwd)?.id;
 				if (id) {
 					activeRunningId = id;
 					persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, id), { activeMissionId: id, activePlanningMissionId: undefined, activeRunningMissionId: id });
@@ -901,12 +908,12 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "mission_status",
 		label: "Show Mission Status",
-		description: "Show mission status on the user's behalf. Read-only; no confirmation required. Uses the same summary semantics as /missions status.",
+		description: "Show mission status on the user's behalf. Read-only; no confirmation required. Omit missionId to use the current session's active mission, with the same summary semantics as /missions status.",
 		parameters: Type.Object({
 			missionId: Type.Optional(Type.String()),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const mission = resolveMission(ctx.cwd, params.missionId);
+			const mission = resolveMission(ctx.cwd, params.missionId, orchestratorState);
 			if (!mission) return { content: [{ type: "text", text: "No missions found." }], details: {}, isError: true };
 			updateWidget(ctx, mission);
 			const text = summarizeMission(mission);
