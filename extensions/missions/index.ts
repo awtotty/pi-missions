@@ -892,7 +892,10 @@ function resolveMission(cwd: string, id?: string, state?: MissionOrchestratorSes
 }
 
 function clipLine(line: string, width: number): string {
-	const limit = Math.max(1, width);
+	// Leave a one-column guard for terminal/wcwidth disagreements around emoji and
+	// ellipsis glyphs. Mission Control is embedded directly in the main TUI render;
+	// a single over-wide custom line crashes the whole pi process.
+	const limit = Math.max(1, width - 1);
 	return truncateToWidth(line, limit);
 }
 
