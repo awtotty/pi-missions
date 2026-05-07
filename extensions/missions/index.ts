@@ -607,11 +607,46 @@ function compareRunIds(a: string, b: string): number {
 	return a.localeCompare(b);
 }
 
+function unfinishedValidatorRunContextsFromEvents(mission: MissionState, recordedRunIds: Set<string>): MissionRunContext[] {
+	const logFile = path.join(missionDir(mission.cwd, mission.id), "event-log.jsonl");
+	if (!fs.existsSync(logFile)) return [];
+	const starts = new Map<string, { milestoneId: string }>();
+	for (const line of fs.readFileSync(logFile, "utf8").split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			const event = JSON.parse(line) as { type?: string; data?: { milestoneId?: unknown; runId?: unknown } };
+			const runId = typeof event.data?.runId === "string" ? event.data.runId : undefined;
+			const milestoneId = typeof event.data?.milestoneId === "string" ? event.data.milestoneId : undefined;
+			if (!runId || !milestoneId) continue;
+			if (event.type === "validator_started") starts.set(runId, { milestoneId });
+			if (event.type === "validator_finished") starts.delete(runId);
+		} catch {
+			// Ignore malformed historical log entries; status rendering should be best-effort.
+		}
+	}
+	return [...starts.entries()]
+		.filter(([runId]) => !recordedRunIds.has(runId))
+		.map(([runId, started]) => {
+			const milestone = mission.milestones.find((m) => m.id === started.milestoneId);
+			return {
+				label: "Current validator run",
+				runId,
+				runDir: path.join(missionDir(mission.cwd, mission.id), "runs", runId),
+				kind: "validator" as const,
+				itemId: started.milestoneId,
+				itemTitle: milestone?.title ?? started.milestoneId,
+				status: "running",
+			};
+		});
+}
+
 function missionRunContexts(mission: MissionState): MissionRunContext[] {
 	const contexts: MissionRunContext[] = [];
+	const recordedRunIds = new Set<string>();
 	for (const milestone of mission.milestones) {
 		for (const feature of milestone.features) {
 			if (!feature.runId) continue;
+			recordedRunIds.add(feature.runId);
 			contexts.push({
 				label: `${feature.status === "running" ? "Current" : "Last"} worker run`,
 				runId: feature.runId,
@@ -623,6 +658,7 @@ function missionRunContexts(mission: MissionState): MissionRunContext[] {
 			});
 		}
 		if (milestone.validationRunId) {
+			recordedRunIds.add(milestone.validationRunId);
 			contexts.push({
 				label: `${milestone.status === "running" ? "Current" : "Last"} validator run`,
 				runId: milestone.validationRunId,
@@ -634,12 +670,13 @@ function missionRunContexts(mission: MissionState): MissionRunContext[] {
 			});
 		}
 	}
+	contexts.push(...unfinishedValidatorRunContextsFromEvents(mission, recordedRunIds));
 	return contexts.sort((a, b) => compareRunIds(a.runId, b.runId));
 }
 
 function currentOrLastRunContext(mission: MissionState): MissionRunContext | undefined {
 	const contexts = missionRunContexts(mission);
-	return contexts.find((ctx) => ctx.status === "running") ?? contexts.at(-1);
+	return contexts.filter((ctx) => ctx.status === "running").at(-1) ?? contexts.at(-1);
 }
 
 function describeBlock(block: MissionBlockMetadata): string {
@@ -1008,6 +1045,12 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 	const runDir = path.join(dir, "runs", runId);
 	ensureDir(runDir);
 	milestone.validationRunId = runId;
+	milestone.status = "running";
+	mission.status = "running";
+	mission.currentMilestoneId = milestone.id;
+	mission.currentFeatureId = undefined;
+	saveMission(ctx.cwd, mission);
+	updateWidget(ctx, mission);
 	appendEvent(dir, "validator_started", { milestoneId: milestone.id, runId });
 	const featureReviewContext = completedFeatureReviewContext(dir, milestone);
 	const prompt = `Use the mission-validator skill and the mission-specific scrutiny validator skill if present. Validate this completed milestone adversarially.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\n\n${featureReviewContext}\n\nPerform a per-feature adversarial code review for each completed feature listed above, using the recorded commits and handoff paths where available. Inspect relevant diffs/handoffs, assess whether tests and procedure were adequate, and report code-review defects or procedure findings. Also check the milestone against the validation contract and mission plan. Run appropriate checks. Write validation-report.json and validation-report.md in the run directory.`;
