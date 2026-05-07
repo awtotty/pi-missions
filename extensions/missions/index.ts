@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { matchesKey } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 const EXTENSION_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -893,8 +894,75 @@ function missionListText(cwd: string): string {
 	return missions.length ? missions.map((m) => `${m.id}  ${m.status}${isMissionCleared(cwd, m.id) ? " (cleared)" : ""}  ${m.title}`).join("\n") : "No missions found.";
 }
 
+function visibleMissions(cwd: string): MissionState[] {
+	return listMissions(cwd).filter((mission) => !isMissionCleared(cwd, mission.id));
+}
+
 function resolveMission(cwd: string, id?: string, state?: MissionOrchestratorSessionState): MissionState | undefined {
 	return id ? loadMission(cwd, id) : activeMissionFromState(cwd, state) ?? latestMission(cwd);
+}
+
+function clipLine(line: string, width: number): string {
+	const limit = Math.max(1, width);
+	if (line.length <= limit) return line;
+	return limit === 1 ? "…" : `${line.slice(0, limit - 1)}…`;
+}
+
+function progressText(mission: MissionState): string {
+	const features = mission.milestones.flatMap((m) => m.features);
+	const done = features.filter((f) => f.status === "complete" || f.status === "skipped").length;
+	return `${done}/${features.length}`;
+}
+
+function missionControlLines(cwd: string, state: MissionOrchestratorSessionState | undefined, width: number): string[] {
+	const active = activeMissionFromState(cwd, state);
+	const missions = active ? [active] : visibleMissions(cwd).slice(0, 10);
+	const lines: string[] = [
+		"Mission Control (read-only)",
+		"q / esc: close",
+		"",
+	];
+	if (active) {
+		const run = currentOrLastRunContext(active);
+		const block = latestBlockFromArtifacts(active);
+		lines.push(`Active mission: ${active.title}`);
+		lines.push(`ID: ${active.id}`);
+		lines.push(`Status: ${active.status}  Progress: ${progressText(active)}`);
+		if (run) lines.push(`${run.label}: ${run.runId} (${run.kind} ${run.itemId})`);
+		if (run) lines.push(`Artifacts: ${run.runDir}`);
+		if (block) lines.push(`Block: ${describeBlock(block)}`);
+		lines.push("");
+		for (const milestone of active.milestones.slice(0, 6)) {
+			lines.push(`${mark(milestone.status)} ${milestone.id} ${milestone.title}`);
+			for (const feature of milestone.features.slice(0, 5)) lines.push(`  ${mark(feature.status)} ${feature.id} ${feature.title}`);
+			if (milestone.features.length > 5) lines.push(`  … ${milestone.features.length - 5} more features`);
+		}
+		if (active.milestones.length > 6) lines.push(`… ${active.milestones.length - 6} more milestones`);
+	} else if (missions.length > 0) {
+		lines.push("No active mission. Recent visible missions:");
+		lines.push("");
+		for (const mission of missions) lines.push(`${mission.id}  ${mission.status}  ${progressText(mission)}  ${mission.title}`);
+	} else {
+		lines.push("No active or visible missions found.");
+		lines.push("Start one with /missions [goal].");
+	}
+	return lines.map((line) => clipLine(line, width));
+}
+
+async function openMissionControl(ctx: ExtensionCommandContext, state?: MissionOrchestratorSessionState): Promise<MissionCommandResult> {
+	if (!ctx.hasUI) {
+		const text = "Mission Control requires an interactive UI.";
+		ctx.ui.notify(text, "warning");
+		return { ok: false, text };
+	}
+	await ctx.ui.custom((_tui, _theme, _keybindings, done) => ({
+		render: (width: number) => missionControlLines(ctx.cwd, state, width),
+		invalidate: () => undefined,
+		handleInput: (data: string) => {
+			if (data === "q" || matchesKey(data, "escape")) done(undefined);
+		},
+	}));
+	return { ok: true, text: "Mission Control closed." };
 }
 
 async function startMissionOrchestrator(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
@@ -1498,6 +1566,11 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("missions", {
 		description: "Plan and run long sequential missions (/missions [goal]|run|status|list|clear|models)",
 		handler: async (args, ctx) => { await handleMissions(args, ctx); },
+	});
+
+	pi.registerCommand("mission-control", {
+		description: "Open read-only interactive Mission Control",
+		handler: async (_args, ctx) => { await openMissionControl(ctx, orchestratorState); },
 	});
 
 	pi.registerCommand("mission", {
