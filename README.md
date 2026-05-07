@@ -153,3 +153,16 @@ When `/missions` or `/missions new` loads the current-session orchestrator, a no
 - The skills are the brains: planning, decomposition, validation contracts, worker procedures, and adversarial validation.
 - Workers get fresh context per feature and must produce structured handoffs.
 - Validators get fresh context and validate against the pre-written contract.
+
+### Mission Control UI concurrency
+
+`ctx.ui.custom()` is interactive-only: RPC/headless mode returns no custom UI, and interactive mode returns a Promise that resolves when the component calls `done()`/closes. Because that Promise represents the UI lifetime, mission execution must not await an auto-opened Mission Control view before starting or continuing worker/validator execution.
+
+The chosen architecture is therefore:
+
+1. Keep `runMission()` as the durable execution owner for sequential worker and validator child processes.
+2. Auto-open Mission Control from execution entrypoints in interactive mode with a fire-and-forget call.
+3. Make Mission Control read mission artifacts (`mission.json`, `event-log.jsonl`, run handoffs/reports) and poll/refresh independently.
+4. Treat `q`/`esc` as UI disposal only; closing Mission Control must not abort `ctx.signal`, kill child processes, or alter mission state.
+
+This preserves chat-first planning, keeps Mission Control read-only for v1, and ensures closing the dashboard does not stop execution.

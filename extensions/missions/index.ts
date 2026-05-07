@@ -1130,6 +1130,13 @@ async function approveMission(options: {
 	return true;
 }
 
+// Mission Control concurrency decision (F1): ctx.ui.custom() returns a Promise
+// that settles only when the custom component calls done()/closes, so awaiting it
+// before or during runMission would make mission execution wait for the user to
+// close the UI. F7 should auto-open Mission Control fire-and-forget (for example
+// `void openMissionControl(...).catch(...)`) and keep runMission as the durable
+// execution owner. Closing Mission Control must only dispose the read-only UI; it
+// must not abort ctx.signal or any child worker/validator process.
 async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI): Promise<void> {
 	const id = args.trim() || latestMission(ctx.cwd)?.id;
 	if (!id) {
