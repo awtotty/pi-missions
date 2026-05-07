@@ -144,6 +144,16 @@ interface MissionBlockMetadata {
 	artifactPaths: string[];
 }
 
+interface MissionRunContext {
+	label: string;
+	runId: string;
+	runDir: string;
+	kind: "worker" | "validator";
+	itemId: string;
+	itemTitle: string;
+	status?: string;
+}
+
 const MISSION_ROLES: MissionRole[] = ["orchestrator", "worker", "validator"];
 const DEFAULT_ROLE_MODELS: MissionRoleModels = { orchestrator: "default", worker: "default", validator: "default" };
 
@@ -573,21 +583,104 @@ async function gitHead(cwd: string): Promise<string | undefined> {
 	});
 }
 
+function latestBlockFromArtifacts(mission: MissionState): MissionBlockMetadata | undefined {
+	if (mission.latestBlock) return mission.latestBlock;
+	const logFile = path.join(missionDir(mission.cwd, mission.id), "event-log.jsonl");
+	if (!fs.existsSync(logFile)) return undefined;
+	let latest: MissionBlockMetadata | undefined;
+	for (const line of fs.readFileSync(logFile, "utf8").split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			const event = JSON.parse(line) as { type?: string; data?: MissionBlockMetadata };
+			if (event.type === "mission_block_recorded" && event.data?.schemaVersion === 1) latest = event.data;
+		} catch {
+			// Ignore malformed historical log entries; status rendering should be best-effort.
+		}
+	}
+	return latest;
+}
+
+function compareRunIds(a: string, b: string): number {
+	const aPrefix = Number.parseInt(a, 10);
+	const bPrefix = Number.parseInt(b, 10);
+	if (Number.isFinite(aPrefix) && Number.isFinite(bPrefix) && aPrefix !== bPrefix) return aPrefix - bPrefix;
+	return a.localeCompare(b);
+}
+
+function missionRunContexts(mission: MissionState): MissionRunContext[] {
+	const contexts: MissionRunContext[] = [];
+	for (const milestone of mission.milestones) {
+		for (const feature of milestone.features) {
+			if (!feature.runId) continue;
+			contexts.push({
+				label: `${feature.status === "running" ? "Current" : "Last"} worker run`,
+				runId: feature.runId,
+				runDir: path.join(missionDir(mission.cwd, mission.id), "runs", feature.runId),
+				kind: "worker",
+				itemId: feature.id,
+				itemTitle: feature.title,
+				status: feature.status,
+			});
+		}
+		if (milestone.validationRunId) {
+			contexts.push({
+				label: `${milestone.status === "running" ? "Current" : "Last"} validator run`,
+				runId: milestone.validationRunId,
+				runDir: path.join(missionDir(mission.cwd, mission.id), "runs", milestone.validationRunId),
+				kind: "validator",
+				itemId: milestone.id,
+				itemTitle: milestone.title,
+				status: milestone.status,
+			});
+		}
+	}
+	return contexts.sort((a, b) => compareRunIds(a.runId, b.runId));
+}
+
+function currentOrLastRunContext(mission: MissionState): MissionRunContext | undefined {
+	const contexts = missionRunContexts(mission);
+	return contexts.find((ctx) => ctx.status === "running") ?? contexts.at(-1);
+}
+
+function describeBlock(block: MissionBlockMetadata): string {
+	return `${block.reasonCategory} on ${block.kind} ${block.failedItemId} (${block.failedItemTitle}); run ${block.runId}${block.status ? ` reported ${block.status}` : ""}`;
+}
+
+function nextSuggestedAction(mission: MissionState, run?: MissionRunContext, block?: MissionBlockMetadata): string {
+	if (mission.status === "planning") return `Continue planning, then run /missions approve ${mission.id} when the plan is ready.`;
+	if (mission.status === "planned") return `Run /missions run ${mission.id} to start execution.`;
+	if (mission.status === "running") return run ? `Monitor ${run.runDir} or wait for run ${run.runId} to finish.` : "Mission is running; wait for the next worker or validator update.";
+	if (mission.status === "paused") return `Run /missions resume ${mission.id} when ready.`;
+	if (mission.status === "blocked") return block ? `Inspect block artifacts in ${block.runDir}, decide the recovery path, then revise or resume the mission.` : `Inspect ${missionDir(mission.cwd, mission.id)} and decide whether to revise or resume the mission.`;
+	if (mission.status === "failed") return block ? `Inspect failure artifacts in ${block.runDir} before retrying or revising.` : `Inspect ${missionDir(mission.cwd, mission.id)} before retrying or revising.`;
+	return `Mission is complete. Use /missions clear to hide completed missions from default Mission Control UI.`;
+}
+
 function updateWidget(ctx: ExtensionContext, mission?: MissionState): void {
-	if (!mission) {
+	if (!mission || (mission.status === "complete" && isMissionCleared(mission.cwd, mission.id))) {
 		ctx.ui.setStatus("missions", undefined);
 		ctx.ui.setWidget("missions", undefined);
 		return;
 	}
 	const features = mission.milestones.flatMap((m) => m.features);
 	const done = features.filter((f) => f.status === "complete" || f.status === "skipped").length;
-	ctx.ui.setStatus("missions", `🚀 ${done}/${features.length} ${mission.status}`);
-	const lines = [`Mission: ${mission.title} (${mission.status})`];
-	for (const m of mission.milestones.slice(0, 4)) {
+	const run = currentOrLastRunContext(mission);
+	const block = latestBlockFromArtifacts(mission);
+	ctx.ui.setStatus("missions", `🚀 ${done}/${features.length} ${mission.status}${run ? ` ${run.runId}` : ""}`);
+	const lines = [
+		`Mission: ${mission.title} (${mission.status})`,
+		`Progress: ${done}/${features.length} features`,
+		run ? `${run.label}: ${run.runId} (${run.kind} ${run.itemId})` : "Run: none recorded",
+		run ? `Artifacts: ${run.runDir}` : undefined,
+		block ? `Block: ${describeBlock(block)}` : undefined,
+		`Next: ${nextSuggestedAction(mission, run, block)}`,
+		"",
+	];
+	for (const m of mission.milestones.slice(0, 3)) {
 		lines.push(`${mark(m.status)} ${m.id} ${m.title}`);
-		for (const f of m.features.slice(0, 4)) lines.push(`  ${mark(f.status)} ${f.id} ${f.title}`);
+		for (const f of m.features.slice(0, 3)) lines.push(`  ${mark(f.status)} ${f.id} ${f.title}`);
 	}
-	ctx.ui.setWidget("missions", lines);
+	ctx.ui.setWidget("missions", lines.filter((line): line is string => line !== undefined));
 }
 
 function mark(status: string): string {
@@ -684,18 +777,26 @@ function emitMissionBlockMessage(pi: ExtensionAPI, block: MissionBlockSummary): 
 function summarizeMission(mission: MissionState): string {
 	const features = mission.milestones.flatMap((m) => m.features);
 	const done = features.filter((f) => f.status === "complete" || f.status === "skipped").length;
+	const run = currentOrLastRunContext(mission);
+	const block = latestBlockFromArtifacts(mission);
 	return [
 		`Mission: ${mission.title}`,
 		`ID: ${mission.id}`,
 		`Status: ${mission.status}`,
 		`Progress: ${done}/${features.length} features`,
 		`Dir: ${missionDir(mission.cwd, mission.id)}`,
+		run ? `${run.label}: ${run.runId}` : "Current/last run: none recorded",
+		run ? `Run item: ${run.kind} ${run.itemId} — ${run.itemTitle}` : undefined,
+		run ? `Run artifacts: ${run.runDir}` : undefined,
+		block ? `Blocked reason: ${describeBlock(block)}` : undefined,
+		block?.artifactPaths.length ? `Block artifacts: ${block.artifactPaths.join(", ")}` : undefined,
+		`Next suggested action: ${nextSuggestedAction(mission, run, block)}`,
 		"",
 		...mission.milestones.flatMap((m) => [
-			`${mark(m.status)} ${m.id}: ${m.title}`,
-			...m.features.map((f) => `  ${mark(f.status)} ${f.id}: ${f.title}${f.commit ? ` (${f.commit})` : ""}`),
+			`${mark(m.status)} ${m.id}: ${m.title}${m.validationRunId ? ` [validator ${m.validationRunId}]` : ""}`,
+			...m.features.map((f) => `  ${mark(f.status)} ${f.id}: ${f.title}${f.runId ? ` [run ${f.runId}]` : ""}${f.commit ? ` (${f.commit})` : ""}`),
 		]),
-	].join("\n");
+	].filter((line): line is string => line !== undefined).join("\n");
 }
 
 function boundedExcerpt(text: string, maxChars = 700): string {
