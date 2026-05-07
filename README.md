@@ -9,6 +9,7 @@ This is an early prototype inspired by Factory Missions, with a different design
 - `/missions` and `/mission` commands
 - interactive planning in the current pi session
 - `mission_write_plan` tool for persisting planning drafts
+- `mission_approve_plan` and `mission_start_execution` tools with explicit user confirmation
 - mission artifacts under `.pi/missions/<mission-id>/`
 - generated validation contract and mission-specific skills
 - sequential worker execution, one fresh child process per feature

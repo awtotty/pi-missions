@@ -31,7 +31,7 @@ During interactive planning, persist drafts with the `mission_write_plan` tool. 
 - `skills/validator-scrutiny/SKILL.md`: mission-specific adversarial validator procedure.
 - `skills/validator-user-testing/SKILL.md`: mission-specific QA/user-testing validator procedure when applicable.
 
-Only tell the user to approve after they have reviewed the plan and validation contract. The user approves with `/missions approve`.
+Only ask for approval after the user has reviewed the plan and validation contract. Prefer using `mission_approve_plan` to request explicit approval and queue approval for the user. After approval, prefer using `mission_start_execution` to request explicit approval and queue execution. The user should not need to manually type mission ids.
 
 ## mission.json schema
 

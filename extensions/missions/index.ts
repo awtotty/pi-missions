@@ -473,6 +473,52 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 	};
 
 	pi.registerTool({
+		name: "mission_approve_plan",
+		label: "Approve Mission Plan",
+		description: "Ask the user for explicit approval, then approve the mission plan on their behalf by queuing /missions approve. Use only after the user has reviewed the plan.",
+		parameters: Type.Object({
+			missionId: Type.Optional(Type.String()),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const missionId = params.missionId || activePlanningId || latestMission(ctx.cwd)?.id;
+			if (!missionId) {
+				return { content: [{ type: "text", text: "No mission found to approve." }], details: {}, isError: true };
+			}
+			const mission = loadMission(ctx.cwd, missionId);
+			if (!ctx.hasUI) {
+				return { content: [{ type: "text", text: "Explicit approval requires an interactive UI." }], details: { missionId }, isError: true };
+			}
+			const ok = await ctx.ui.confirm("Approve mission plan?", `${mission.title}\n\nThis will queue /missions approve ${missionId}.`);
+			if (!ok) return { content: [{ type: "text", text: "Mission approval canceled by user." }], details: { missionId } };
+			pi.sendUserMessage(`/missions approve ${missionId}`, { deliverAs: "followUp" });
+			return { content: [{ type: "text", text: `Queued approval for mission ${missionId}.` }], details: { missionId } };
+		},
+	});
+
+	pi.registerTool({
+		name: "mission_start_execution",
+		label: "Start Mission Execution",
+		description: "Ask the user for explicit approval, then start or resume sequential mission execution on their behalf by queuing /missions run.",
+		parameters: Type.Object({
+			missionId: Type.Optional(Type.String()),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const missionId = params.missionId || activePlanningId || latestMission(ctx.cwd)?.id;
+			if (!missionId) {
+				return { content: [{ type: "text", text: "No mission found to run." }], details: {}, isError: true };
+			}
+			const mission = loadMission(ctx.cwd, missionId);
+			if (!ctx.hasUI) {
+				return { content: [{ type: "text", text: "Explicit approval requires an interactive UI." }], details: { missionId }, isError: true };
+			}
+			const ok = await ctx.ui.confirm("Start mission execution?", `${mission.title}\n\nThis will queue /missions run ${missionId}. Workers may modify files and create commits.`);
+			if (!ok) return { content: [{ type: "text", text: "Mission start canceled by user." }], details: { missionId } };
+			pi.sendUserMessage(`/missions run ${missionId}`, { deliverAs: "followUp" });
+			return { content: [{ type: "text", text: `Queued execution for mission ${missionId}.` }], details: { missionId } };
+		},
+	});
+
+	pi.registerTool({
 		name: "mission_write_plan",
 		label: "Write Mission Plan",
 		description: "Persist the current interactive mission planning draft. Use during /missions planning after collaborating with the user; this does not approve or run the mission.",
@@ -525,7 +571,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			message: {
 				customType: "missions-planning-context",
 				display: false,
-				content: `[MISSION PLANNING MODE]\nMission id: ${activePlanningId}\nMission directory: ${dir}\n\nYou are the interactive mission orchestrator. Use the mission-orchestrator skill. Collaborate with the user before execution: ask clarifying questions, refine milestones/features, create a pre-implementation validation contract, and generate mission-specific worker/validator skills. Do not modify application code. Use mission_write_plan whenever the draft should be persisted. The user must approve with /missions approve before workers run.`,
+				content: `[MISSION PLANNING MODE]\nMission id: ${activePlanningId}\nMission directory: ${dir}\n\nYou are the interactive mission orchestrator. Use the mission-orchestrator skill. Collaborate with the user before execution: ask clarifying questions, refine milestones/features, create a pre-implementation validation contract, and generate mission-specific worker/validator skills. Do not modify application code. Use mission_write_plan whenever the draft should be persisted. When the user is satisfied, use mission_approve_plan to ask for explicit approval and queue approval. After approval, use mission_start_execution to ask for explicit approval and queue execution. The user should not need to type mission ids manually.`,
 			},
 		};
 	});
