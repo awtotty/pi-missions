@@ -51,6 +51,12 @@ interface MissionState {
 	models: MissionRoleModels;
 	currentMilestoneId?: string;
 	currentFeatureId?: string;
+	/**
+	 * Durable marker that implementation has passed the explicit start/run gate.
+	 * Planned missions without this marker (or legacy execution events) must not
+	 * be treated as previously started by recovery automation.
+	 */
+	executionStartedAt?: string;
 	latestBlock?: MissionBlockMetadata;
 	milestones: MissionMilestone[];
 }
@@ -206,6 +212,29 @@ function writeJson(file: string, value: unknown): void {
 
 function appendEvent(dir: string, type: string, data: unknown): void {
 	fs.appendFileSync(path.join(dir, "event-log.jsonl"), `${JSON.stringify({ ts: nowIso(), type, data })}\n`);
+}
+
+const EXECUTION_STARTED_EVENT_TYPES = new Set(["mission_execution_started", "worker_started", "validator_started", "mission_block_recorded", "mission_complete"]);
+
+function hasMissionExecutionStarted(cwd: string, mission: MissionState): boolean {
+	if (typeof mission.executionStartedAt === "string" && mission.executionStartedAt.trim()) return true;
+	const logFile = path.join(missionDir(cwd, mission.id), "event-log.jsonl");
+	if (!fs.existsSync(logFile)) return false;
+	for (const line of fs.readFileSync(logFile, "utf8").split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			const event = JSON.parse(line) as { type?: unknown };
+			if (typeof event.type === "string" && EXECUTION_STARTED_EVENT_TYPES.has(event.type)) return true;
+		} catch {
+			// Ignore malformed historical log entries; execution-start detection is best-effort for legacy missions.
+		}
+	}
+	return false;
+}
+
+function markMissionExecutionStarted(mission: MissionState): MissionState {
+	if (mission.executionStartedAt) return mission;
+	return { ...mission, executionStartedAt: nowIso() };
 }
 
 function hasRunnablePersistedPlan(cwd: string, mission: MissionState): boolean {
@@ -1529,6 +1558,11 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI)
 		const ok = await ctx.ui.confirm("Dirty git status", "Repository has uncommitted changes. Continue anyway? Workers must leave it clean after each feature.");
 		if (!ok) return;
 	}
+	if (!hasMissionExecutionStarted(ctx.cwd, mission)) {
+		mission = markMissionExecutionStarted(mission);
+		saveMission(ctx.cwd, mission);
+		appendEvent(dir, "mission_execution_started", { missionId: mission.id });
+	}
 	autoOpenMissionControl(ctx, mission);
 	ctx.ui.notify(`Running mission ${mission.title}`, "info");
 	while (true) {
@@ -1645,6 +1679,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			mission.updatedAt = nowIso();
 			if (!mission.createdAt) mission.createdAt = seedMission.createdAt;
 			mission.models = normalizeRoleModels(mission.models ?? seedMission.models);
+			if (existingMission && !mission.executionStartedAt && hasMissionExecutionStarted(ctx.cwd, existingMission)) mission.executionStartedAt = existingMission.executionStartedAt ?? nowIso();
 			if (!existingMission) {
 				const globalModels = readMissionGlobalSettings(ctx.cwd).models;
 				for (const role of MISSION_ROLES) if (mission.models[role] === "default") mission.models[role] = globalModels[role];
