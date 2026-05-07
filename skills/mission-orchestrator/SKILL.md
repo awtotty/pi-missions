@@ -98,6 +98,38 @@ Each assertion:
 
 Include functional, security, compatibility, migration, UX, observability, performance, failure-mode, and documentation assertions where relevant.
 
+## Blocked mission recovery
+
+A blocked mission is not dead. When a mission blocks during execution, take over as the main-session orchestrator: diagnose, preserve good work, revise the plan when appropriate, and resume only after the recovery plan is clear.
+
+When the user reports a block, or mission context shows `status: blocked`, first inspect status and artifacts instead of guessing:
+
+- use `mission_status` for the active mission;
+- read the latest failed worker `handoff.json` / `handoff.md` when a feature failed;
+- read the latest validator `validation-report.json` / `validation-report.md` when a milestone failed validation;
+- inspect `event-log.jsonl` when the cause is unclear;
+- check git status and recent commits when procedure or dirty-worktree issues are involved.
+
+Classify the block before acting:
+
+- **Implementation defect:** worker completed but tests, validation, or behavior failed. Convert concrete defects into new fix features.
+- **Validator failure:** preserve completed features unless evidence shows they are wrong; add fix features for each actionable defect; keep the original validation contract stable.
+- **Validator inconclusive:** identify missing environment, credentials, fixtures, or manual QA; ask the user only for the minimum missing information.
+- **Worker blocker:** dependency, ambiguity, missing command, external service, or environment problem. Ask a targeted question or add a setup/unblock feature.
+- **Procedural failure:** missing handoff, missing commit, dirty worktree, or malformed artifacts. Prefer deterministic repair of mission artifacts only when safe; otherwise explain the exact procedure failure and recommended next action.
+- **Runtime false block:** if evidence shows work completed and the block was caused by pre-existing unrelated dirt or bookkeeping, explain that clearly, repair mission state only if safe, and resume.
+
+Recovery policy:
+
+- Preserve completed commits and feature statuses unless there is evidence the work is invalid.
+- Do not discard or rewrite the validation contract just to make validation pass. Only change requirements when the user changes requirements.
+- Turn actionable defects into small, sequential fix features appended after existing work.
+- Mark failed/incomplete features or milestones back to a resumable state only when the plan makes the next worker action unambiguous.
+- Record why the plan changed in the visible chat summary and in persisted artifacts when revising the plan.
+- Ask the user only for requirement ambiguity, destructive rollback decisions, credentials/secrets, unavailable external systems, or product tradeoffs.
+- After revising, show the recovery plan in chat before calling `mission_write_plan`, just like initial planning.
+- After persistence, use `mission_start_execution` only after explicit user confirmation.
+
 ## Re-planning
 
 When reading handoffs or validation reports:
