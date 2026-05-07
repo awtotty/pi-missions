@@ -1223,19 +1223,63 @@ function childOutputPlaceholderLines(run?: MissionRunContext): string[] {
 	];
 }
 
-function missionControlDashboardLines(mission: MissionState, selection: MissionControlSelection, width: number, block?: MissionBlockMetadata): string[] {
+type MissionControlLayoutMode = "wide" | "medium" | "narrow" | "compact";
+
+function missionControlLayoutMode(width: number): MissionControlLayoutMode {
+	if (width >= 100) return "wide";
+	if (width >= 72) return "medium";
+	if (width >= 44) return "narrow";
+	return "compact";
+}
+
+function limitLines(lines: string[], maxLines: number, width: number): string[] {
+	if (lines.length <= maxLines) return lines.map((line) => clipLine(line, width));
+	const hidden = lines.length - maxLines + 1;
+	return [...lines.slice(0, Math.max(0, maxLines - 1)), `… ${hidden} more line${hidden === 1 ? "" : "s"}`].map((line) => clipLine(line, width));
+}
+
+function compactMissionControlHeader(mission: MissionState, width: number): string[] {
+	const counts = missionFeatureCounts(mission);
 	const run = currentOrLastRunContext(mission);
+	const current = mission.currentFeatureId ?? mission.currentMilestoneId ?? "mission";
+	return [
+		clipLine(`MISSION ${mission.status} · ${progressText(mission)} ${percentText(counts.done, counts.total)}`, width),
+		clipLine(`Current: ${current}${run ? ` · ${run.kind} ${run.runId}` : ""}`, width),
+	];
+}
+
+function compactGroupedFeatureLines(mission: MissionState, selection: MissionControlSelection, block?: MissionBlockMetadata): string[] {
+	const selectedId = selectionId(selection);
+	const lines: string[] = [];
+	if (block) lines.push(`${selectedId === blockSelectionId(block) ? ">" : " "} ! ${block.failedItemId}: ${block.reasonCategory}`);
+	for (const milestone of mission.milestones) {
+		const done = milestone.features.filter((f) => f.status === "complete" || f.status === "skipped").length;
+		lines.push(`${selectedId === milestone.id ? ">" : " "} ${mark(milestone.status)} ${milestone.id} (${done}/${milestone.features.length})`);
+		for (const feature of milestone.features) lines.push(`${selectedId === feature.id ? ">" : " "} ${mark(feature.status)} ${feature.id} ${feature.title}`);
+	}
+	return lines;
+}
+
+function missionControlDashboardLines(mission: MissionState, selection: MissionControlSelection, width: number, block?: MissionBlockMetadata): string[] {
+	const mode = missionControlLayoutMode(width);
+	const run = currentOrLastRunContext(mission);
+	const header = mode === "compact" ? compactMissionControlHeader(mission, width) : missionControlHeader(mission, width);
 	const currentPanel = panelLines("Current Item", currentItemLines(selection, run, block), width);
-	const featuresPanel = panelLines("Milestone Features", groupedFeatureLines(mission, selection, block), width);
+	const featuresPanel = panelLines("Milestone Features", mode === "compact" ? compactGroupedFeatureLines(mission, selection, block) : groupedFeatureLines(mission, selection, block), width);
 	const progressPanel = panelLines("Progress Log", progressLogLines(mission), width);
 	const childPanel = panelLines("Child Output", childOutputPlaceholderLines(run), width);
-	return [
-		...missionControlHeader(mission, width),
+	const lines = [
+		...header,
 		"",
-		...columnLines(currentPanel, featuresPanel, width),
-		"",
-		...columnLines(progressPanel, childPanel, width),
+		...(mode === "wide"
+			? [...columnLines(currentPanel, featuresPanel, width), "", ...columnLines(progressPanel, childPanel, width)]
+			: mode === "medium"
+				? [...currentPanel, "", ...featuresPanel, "", ...columnLines(progressPanel, childPanel, width)]
+				: mode === "narrow"
+					? [...limitLines(currentPanel, 8, width), "", ...featuresPanel, "", ...limitLines(progressPanel, 8, width), "", ...limitLines(childPanel, 5, width)]
+					: [...featuresPanel, "", ...limitLines(progressPanel, 6, width)]),
 	];
+	return lines.map((line) => clipLine(line, width));
 }
 
 function columnLines(left: string[], right: string[], width: number): string[] {
@@ -1275,6 +1319,13 @@ function missionControlHelpLines(): string[] {
 	];
 }
 
+function missionControlFooter(width: number): string {
+	const mode = missionControlLayoutMode(width);
+	if (mode === "compact") return "q close · ↑/↓ move · r refresh · ? help";
+	if (mode === "narrow") return "q/esc close · ↑/↓ move · tab focus · r refresh · ? help";
+	return `q/esc close · ↑/↓/j/k move selection · tab focus · r refresh · ? help · auto-refresh ${MISSION_CONTROL_POLL_MS / 1000}s`;
+}
+
 function missionControlTarget(cwd: string, state: MissionOrchestratorSessionState | undefined, targetMissionId?: string): MissionState | undefined {
 	if (targetMissionId) return loadMission(cwd, targetMissionId);
 	return activeMissionFromState(cwd, state);
@@ -1285,10 +1336,10 @@ function missionControlLines(cwd: string, state: MissionOrchestratorSessionState
 	try {
 		active = missionControlTarget(cwd, state, targetMissionId);
 	} catch {
-		return ["Mission Control (read-only)", "", `Mission not found: ${targetMissionId}`, "", "q/esc close"].map((line) => clipLine(line, Math.max(20, width)));
+		return ["Mission Control (read-only)", "", `Mission not found: ${targetMissionId}`, "", "q/esc close"].map((line) => clipLine(line, Math.max(1, width)));
 	}
 	const missions = active ? [active] : visibleMissions(cwd).slice(0, 10);
-	const safeWidth = Math.max(20, width);
+	const safeWidth = Math.max(1, width);
 	if (active) {
 		const block = latestBlockFromArtifacts(active);
 		if (block) {
@@ -1306,10 +1357,10 @@ function missionControlLines(cwd: string, state: MissionOrchestratorSessionState
 		return [
 			...missionControlDashboardLines(active, selection, safeWidth, block),
 			focusText,
-			...(view.showHelp ? ["", ...missionControlHelpLines().map((line) => clipLine(line, safeWidth))] : []),
+			...(view.showHelp ? ["", ...missionControlHelpLines()] : []),
 			"",
-			clipLine(`q/esc close · ↑/↓/j/k move selection · tab focus · r refresh · ? help · auto-refresh ${MISSION_CONTROL_POLL_MS / 1000}s`, safeWidth),
-		];
+			missionControlFooter(safeWidth),
+		].map((line) => clipLine(line, safeWidth));
 	}
 	const lines = ["Mission Control (read-only)", "", "No active mission.", ""];
 	if (missions.length > 0) {
