@@ -253,8 +253,7 @@ function requestMissionPauseAfterCurrent(cwd: string, mission: MissionState, sou
 	const requestedAt = nowIso();
 	writeJson(pauseRequestFile(cwd, mission.id), { schemaVersion: 1, missionId: mission.id, requestedAt, source });
 	const latest = loadMission(cwd, mission.id);
-	if (latest.status === "running" || latest.status === "planned") {
-		latest.status = "paused";
+	if (latest.status === "paused") {
 		latest.pauseRequestedAt = requestedAt;
 		saveMission(cwd, latest);
 	}
@@ -278,6 +277,15 @@ function applyPauseAfterCurrentIfRequested(ctx: ExtensionContext, missionId: str
 }
 
 const EXECUTION_STARTED_EVENT_TYPES = new Set(["mission_execution_started", "worker_started", "validator_started", "mission_block_recorded", "mission_complete"]);
+const ACTIVE_MISSION_RUNS = new Set<string>();
+
+function activeMissionRunKey(cwd: string, missionId: string): string {
+	return `${cwd}\u0000${missionId}`;
+}
+
+function isMissionRunActive(cwd: string, missionId: string): boolean {
+	return ACTIVE_MISSION_RUNS.has(activeMissionRunKey(cwd, missionId));
+}
 
 function hasMissionExecutionStarted(cwd: string, mission: MissionState): boolean {
 	if (typeof mission.executionStartedAt === "string" && mission.executionStartedAt.trim()) return true;
@@ -1749,7 +1757,7 @@ function missionControlAvailableActions(context: MissionControlActionContext): M
 				title: mission?.status === "paused" ? "Resume mission execution?" : "Start mission execution?",
 				message: mission ? `${mission.title}\n\nThis will run mission ${mission.id}. Workers may modify files and create commits.` : "Start or resume the selected mission.",
 			}),
-			isAvailable: ({ mission }) => Boolean(mission && (mission.status === "planned" || mission.status === "paused" || mission.status === "blocked")),
+			isAvailable: ({ mission, ctx }) => Boolean(mission && (mission.status === "planned" || mission.status === "paused" || mission.status === "blocked") && !isMissionRunActive(ctx.cwd, mission.id)),
 			run: async ({ ctx, pi, mission }) => {
 				if (!mission) return { ok: false, text: "No mission is selected." };
 				await runMission(mission.id, ctx, pi);
@@ -2277,8 +2285,8 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 // that settles only when the custom component calls done()/closes, so awaiting it
 // before or during runMission would make mission execution wait for the user to
 // close the UI. Auto-open Mission Control fire-and-forget and keep runMission as
-// the durable execution owner. Closing Mission Control only disposes the read-only
-// UI; it does not abort ctx.signal or any child worker/validator process.
+// the durable execution owner. Closing Mission Control only disposes the UI; it
+// does not abort ctx.signal or any child worker/validator process.
 function autoOpenMissionControl(ctx: ExtensionContext, mission: MissionState, pi: ExtensionAPI): void {
 	if (!ctx.hasUI) return;
 	const state = buildOrchestratorState(ctx.cwd, mission, {
@@ -2307,74 +2315,89 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI)
 		ctx.ui.notify("Mission is already complete.", "info");
 		return;
 	}
-	if (await gitPorcelain(mission.cwd)) {
-		const ok = await ctx.ui.confirm("Dirty git status", "Repository has uncommitted changes. Continue anyway? Workers must leave it clean after each feature.");
-		if (!ok) return;
+	if (mission.status === "running") {
+		const pendingPause = readMissionPauseRequest(ctx.cwd, mission.id);
+		ctx.ui.notify(pendingPause ? "Mission is running with a pending pause-after-current request. Wait for the current worker/validator to finish before resuming." : "Mission is already running.", "warning");
+		return;
 	}
-	if (!hasMissionExecutionStarted(ctx.cwd, mission)) {
-		mission = markMissionExecutionStarted(mission);
-		saveMission(ctx.cwd, mission);
-		appendEvent(dir, "mission_execution_started", { missionId: mission.id });
+	const runKey = activeMissionRunKey(ctx.cwd, id);
+	if (ACTIVE_MISSION_RUNS.has(runKey)) {
+		ctx.ui.notify("Mission execution is already active for this mission.", "warning");
+		return;
 	}
-	if (hasMissionPauseRequest(ctx.cwd, mission.id)) {
-		clearMissionPauseRequest(ctx.cwd, mission.id);
-		appendEvent(dir, "mission_resume_requested", { missionId: mission.id, source: "runMission" });
-	}
-	if (mission.status === "paused") {
-		mission.status = "running";
-		mission.pauseRequestedAt = undefined;
-		saveMission(ctx.cwd, mission);
-	}
-	autoOpenMissionControl(ctx, mission, pi);
-	ctx.ui.notify(`Running mission ${mission.title}`, "info");
-	while (true) {
-		mission = loadMission(ctx.cwd, id);
-		const next = findNextFeature(mission);
-		if (!next) break;
-		const workerBlock = await runWorker(ctx, mission, next.milestone, next.feature);
-		mission = loadMission(ctx.cwd, id);
-		if (mission.status === "blocked" || mission.status === "failed") {
-			if (workerBlock) emitMissionBlockMessage(pi, workerBlock);
-			ctx.ui.notify(`Mission blocked. See ${dir}`, "error");
-			ctx.ui.setWidget("missions-run", undefined);
-			return;
+	ACTIVE_MISSION_RUNS.add(runKey);
+	try {
+		if (await gitPorcelain(mission.cwd)) {
+			const ok = await ctx.ui.confirm("Dirty git status", "Repository has uncommitted changes. Continue anyway? Workers must leave it clean after each feature.");
+			if (!ok) return;
 		}
-		if (applyPauseAfterCurrentIfRequested(ctx, id, `worker:${next.feature.id}`)) return;
-		const milestone = mission.milestones.find((m) => m.id === next.milestone.id)!;
-		if (milestone.features.every((f) => f.status === "complete" || f.status === "skipped")) {
-			const validatorBlock = await runValidator(ctx, mission, milestone);
+		if (!hasMissionExecutionStarted(ctx.cwd, mission)) {
+			mission = markMissionExecutionStarted(mission);
+			saveMission(ctx.cwd, mission);
+			appendEvent(dir, "mission_execution_started", { missionId: mission.id });
+		}
+		if (hasMissionPauseRequest(ctx.cwd, mission.id)) {
+			clearMissionPauseRequest(ctx.cwd, mission.id);
+			appendEvent(dir, "mission_resume_requested", { missionId: mission.id, source: "runMission" });
+		}
+		if (mission.status === "paused") {
+			mission.status = "running";
+			mission.pauseRequestedAt = undefined;
+			saveMission(ctx.cwd, mission);
+		}
+		autoOpenMissionControl(ctx, mission, pi);
+		ctx.ui.notify(`Running mission ${mission.title}`, "info");
+		while (true) {
+			mission = loadMission(ctx.cwd, id);
+			const next = findNextFeature(mission);
+			if (!next) break;
+			const workerBlock = await runWorker(ctx, mission, next.milestone, next.feature);
 			mission = loadMission(ctx.cwd, id);
 			if (mission.status === "blocked" || mission.status === "failed") {
-				if (validatorBlock) emitMissionBlockMessage(pi, validatorBlock);
-				ctx.ui.notify(`Validation blocked mission. See ${dir}`, "error");
+				if (workerBlock) emitMissionBlockMessage(pi, workerBlock);
+				ctx.ui.notify(`Mission blocked. See ${dir}`, "error");
 				ctx.ui.setWidget("missions-run", undefined);
 				return;
 			}
-			if (applyPauseAfterCurrentIfRequested(ctx, id, `validator:${milestone.id}`)) return;
+			if (applyPauseAfterCurrentIfRequested(ctx, id, `worker:${next.feature.id}`)) return;
+			const milestone = mission.milestones.find((m) => m.id === next.milestone.id)!;
+			if (milestone.features.every((f) => f.status === "complete" || f.status === "skipped")) {
+				const validatorBlock = await runValidator(ctx, mission, milestone);
+				mission = loadMission(ctx.cwd, id);
+				if (mission.status === "blocked" || mission.status === "failed") {
+					if (validatorBlock) emitMissionBlockMessage(pi, validatorBlock);
+					ctx.ui.notify(`Validation blocked mission. See ${dir}`, "error");
+					ctx.ui.setWidget("missions-run", undefined);
+					return;
+				}
+				if (applyPauseAfterCurrentIfRequested(ctx, id, `validator:${milestone.id}`)) return;
+			}
 		}
-	}
-	mission = loadMission(ctx.cwd, id);
-	const pending = incompleteFeatures(mission);
-	if (pending.length > 0) {
-		mission.status = "blocked";
-		const runId = `${String(Date.now())}-blocked-no-runnable-pending-work`;
-		const runDir = path.join(dir, "runs", runId);
-		const block = writeNoRunnablePendingWorkReport(runDir, mission, pending);
-		persistMissionBlock(dir, mission, block, "no_runnable_pending_work");
+		mission = loadMission(ctx.cwd, id);
+		const pending = incompleteFeatures(mission);
+		if (pending.length > 0) {
+			mission.status = "blocked";
+			const runId = `${String(Date.now())}-blocked-no-runnable-pending-work`;
+			const runDir = path.join(dir, "runs", runId);
+			const block = writeNoRunnablePendingWorkReport(runDir, mission, pending);
+			persistMissionBlock(dir, mission, block, "no_runnable_pending_work");
+			saveMission(ctx.cwd, mission);
+			updateWidget(ctx, mission);
+			emitMissionBlockMessage(pi, block);
+			ctx.ui.notify(`Mission blocked: pending work remains but no feature is runnable. See ${runDir}`, "error");
+			ctx.ui.setWidget("missions-run", undefined);
+			return;
+		}
+		mission.status = "complete";
+		for (const m of mission.milestones) if (m.status !== "complete") m.status = "complete";
 		saveMission(ctx.cwd, mission);
+		appendEvent(dir, "mission_complete", {});
 		updateWidget(ctx, mission);
-		emitMissionBlockMessage(pi, block);
-		ctx.ui.notify(`Mission blocked: pending work remains but no feature is runnable. See ${runDir}`, "error");
 		ctx.ui.setWidget("missions-run", undefined);
-		return;
+		ctx.ui.notify(`Mission complete: ${mission.title}`, "info");
+	} finally {
+		ACTIVE_MISSION_RUNS.delete(runKey);
 	}
-	mission.status = "complete";
-	for (const m of mission.milestones) if (m.status !== "complete") m.status = "complete";
-	saveMission(ctx.cwd, mission);
-	appendEvent(dir, "mission_complete", {});
-	updateWidget(ctx, mission);
-	ctx.ui.setWidget("missions-run", undefined);
-	ctx.ui.notify(`Mission complete: ${mission.title}`, "info");
 }
 
 export default function missionsExtension(pi: ExtensionAPI): void {
@@ -2649,7 +2672,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("mission-control", {
-		description: "Open read-only interactive Mission Control",
+		description: "Open interactive Mission Control dashboard and controls",
 		handler: async (args, ctx) => {
 			const targetMissionId = args.trim() || undefined;
 			await openMissionControl(ctx, orchestratorState, targetMissionId, pi);
