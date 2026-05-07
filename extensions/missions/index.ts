@@ -1318,13 +1318,119 @@ function groupedFeatureLines(mission: MissionState, selection: MissionControlSel
 	return lines;
 }
 
-function childOutputPlaceholderLines(run?: MissionRunContext): string[] {
-	if (!run) return ["No current or recent child run.", "Transcript tail panel will appear here when live output support is enabled."];
+const CHILD_TRANSCRIPT_TAIL_BYTES = 128 * 1024;
+const CHILD_STDERR_TAIL_BYTES = 32 * 1024;
+const CHILD_OUTPUT_MAX_SNIPPETS = 8;
+const CHILD_OUTPUT_MAX_STDERR_LINES = 4;
+
+interface ChildTailReadResult {
+	text: string;
+	truncated: boolean;
+	missing: boolean;
+	error?: string;
+}
+
+function safeReadTailText(file: string, maxBytes: number): ChildTailReadResult {
+	if (!fs.existsSync(file)) return { text: "", truncated: false, missing: true };
+	try {
+		return { ...readTailText(file, maxBytes), missing: false };
+	} catch (error) {
+		return { text: "", truncated: false, missing: false, error: error instanceof Error ? error.message : String(error) };
+	}
+}
+
+function compactSnippetText(value: string, maxChars = 220): string {
+	const compact = value.replace(/\s+/g, " ").trim();
+	return compact.length > maxChars ? `${compact.slice(0, Math.max(0, maxChars - 1))}…` : compact;
+}
+
+function contentPartSnippet(part: unknown): string | undefined {
+	if (!part || typeof part !== "object") return undefined;
+	const record = part as Record<string, unknown>;
+	const type = typeof record.type === "string" ? record.type : "content";
+	if (typeof record.text === "string") return compactSnippetText(record.text);
+	if (typeof record.message === "string") return compactSnippetText(record.message);
+	if (typeof record.name === "string" && (type === "tool_use" || type === "tool_call")) return `tool ${record.name}`;
+	if (type === "tool_result" || type === "tool_output") {
+		if (typeof record.content === "string") return `tool result: ${compactSnippetText(record.content)}`;
+		return "tool result";
+	}
+	if (typeof record.content === "string") return compactSnippetText(record.content);
+	return undefined;
+}
+
+function messageSnippet(message: unknown): string | undefined {
+	if (!message || typeof message !== "object") return undefined;
+	const record = message as Record<string, unknown>;
+	if (typeof record.content === "string") return compactSnippetText(record.content);
+	if (Array.isArray(record.content)) {
+		const snippets = record.content.map(contentPartSnippet).filter((snippet): snippet is string => Boolean(snippet));
+		if (snippets.length > 0) return snippets.join(" | ");
+	}
+	return undefined;
+}
+
+function transcriptEventSnippet(event: Record<string, unknown>): string | undefined {
+	const type = typeof event.type === "string" ? event.type : "event";
+	const directText = [event.text, event.message, event.output, event.stdout].find((value): value is string => typeof value === "string" && value.trim().length > 0);
+	if (directText) return `${type}: ${compactSnippetText(directText)}`;
+	const nestedMessage = messageSnippet(event.message);
+	if (nestedMessage) return `${type}: ${nestedMessage}`;
+	const delta = event.delta && typeof event.delta === "object" ? event.delta as Record<string, unknown> : undefined;
+	if (typeof delta?.text === "string" && delta.text.trim()) return `${type}: ${compactSnippetText(delta.text)}`;
+	const contentDelta = event.content_delta && typeof event.content_delta === "object" ? event.content_delta as Record<string, unknown> : undefined;
+	if (typeof contentDelta?.text === "string" && contentDelta.text.trim()) return `${type}: ${compactSnippetText(contentDelta.text)}`;
+	if (typeof event.name === "string" && (type.includes("tool") || event.tool_use_id)) return `${type}: tool ${event.name}`;
+	return undefined;
+}
+
+function transcriptTailLines(file: string): string[] {
+	const tail = safeReadTailText(file, CHILD_TRANSCRIPT_TAIL_BYTES);
+	if (tail.missing) return ["transcript.jsonl: not available yet"];
+	if (tail.error) return [`transcript.jsonl: could not read tail (${tail.error})`];
+	const snippets: string[] = [];
+	let malformed = 0;
+	for (const rawLine of tail.text.split("\n")) {
+		const line = rawLine.trim();
+		if (!line) continue;
+		try {
+			const parsed = JSON.parse(line) as unknown;
+			if (parsed && typeof parsed === "object") {
+				const snippet = transcriptEventSnippet(parsed as Record<string, unknown>);
+				if (snippet) snippets.push(snippet);
+			} else {
+				malformed += 1;
+			}
+		} catch {
+			malformed += 1;
+			if (snippets.length < CHILD_OUTPUT_MAX_SNIPPETS) snippets.push(`stdout: ${compactSnippetText(line)}`);
+		}
+	}
+	const prefix = tail.truncated ? "transcript tail" : "transcript";
+	const lines = [`${prefix}: ${snippets.length ? `showing ${Math.min(CHILD_OUTPUT_MAX_SNIPPETS, snippets.length)} snippet${Math.min(CHILD_OUTPUT_MAX_SNIPPETS, snippets.length) === 1 ? "" : "s"}` : "no displayable child messages"}${malformed ? ` · ${malformed} malformed/raw` : ""}`];
+	lines.push(...snippets.slice(-CHILD_OUTPUT_MAX_SNIPPETS));
+	return lines;
+}
+
+function stderrTailLines(file: string): string[] {
+	const tail = safeReadTailText(file, CHILD_STDERR_TAIL_BYTES);
+	if (tail.missing) return [];
+	if (tail.error) return [`stderr.txt: could not read tail (${tail.error})`];
+	const stderrLines = tail.text.split("\n").map((line) => compactSnippetText(line)).filter(Boolean).slice(-CHILD_OUTPUT_MAX_STDERR_LINES);
+	if (stderrLines.length === 0) return [];
+	return [`${tail.truncated ? "stderr tail" : "stderr"}:`, ...stderrLines.map((line) => `stderr: ${line}`)];
+}
+
+function childOutputLines(run?: MissionRunContext): string[] {
+	if (!run) return ["No current or recent child run.", "Waiting for transcript.jsonl or stderr.txt artifacts."];
+	const transcriptFile = path.join(run.runDir, "transcript.jsonl");
+	const stderrFile = path.join(run.runDir, "stderr.txt");
 	return [
 		`${run.label}: ${run.runId}`,
 		`Item: ${run.kind} ${run.itemId} — ${run.itemTitle}`,
 		`Artifacts: ${run.runDir}`,
-		"Child stdout/transcript tail placeholder; bounded live tail support follows in a later feature.",
+		...transcriptTailLines(transcriptFile),
+		...stderrTailLines(stderrFile),
 	];
 }
 
@@ -1372,7 +1478,7 @@ function missionControlDashboardLines(mission: MissionState, selection: MissionC
 	const currentPanel = panelLines("Current Item", currentItemLines(selection, run, block), width);
 	const featuresPanel = panelLines("Milestone Features", mode === "compact" ? compactGroupedFeatureLines(mission, selection, block) : groupedFeatureLines(mission, selection, block), width);
 	const progressPanel = panelLines("Progress Log", progressLogLines(mission), width);
-	const childPanel = panelLines("Child Output", childOutputPlaceholderLines(run), width);
+	const childPanel = panelLines("Child Output", childOutputLines(run), width);
 	const lines = [
 		...header,
 		"",
