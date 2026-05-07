@@ -114,7 +114,7 @@ interface RunResult {
 	finalText: string;
 }
 
-type BlockReasonCategory = "child_exit_nonzero" | "missing_handoff" | "dirty_worktree" | "worker_reported_blocked" | "validator_report_failed" | "missing_validation_report";
+type BlockReasonCategory = "child_exit_nonzero" | "missing_handoff" | "dirty_worktree" | "worker_reported_blocked" | "validator_report_failed" | "missing_validation_report" | "no_runnable_pending_work";
 
 interface MissionBlockSummary {
 	kind: "worker" | "validator";
@@ -811,7 +811,9 @@ function formatMissionBlockMessage(block: MissionBlockSummary): string {
 		: `Milestone ${block.milestoneId} - ${block.milestoneTitle}`;
 	return [
 		"[MISSION BLOCKED - RECOVERY CONTEXT]",
-		"A mission child agent blocked execution. Continue recovery in this main chat as the mission orchestrator; do not treat the mission as dead.",
+		block.reasonCategory === "no_runnable_pending_work"
+			? "Mission execution stopped because pending work remains but no feature is currently runnable. Continue recovery in this main chat as the mission orchestrator; do not treat the mission as dead."
+			: "A mission child agent blocked execution. Continue recovery in this main chat as the mission orchestrator; do not treat the mission as dead.",
 		"",
 		`Mission: ${block.missionId} — ${block.missionTitle}`,
 		`Blocked during: ${block.kind}`,
@@ -1372,6 +1374,73 @@ function findNextFeature(mission: MissionState): { milestone: MissionMilestone; 
 	return undefined;
 }
 
+function incompleteFeatures(mission: MissionState): Array<{ milestone: MissionMilestone; feature: MissionFeature; unsatisfiedDependencies: string[] }> {
+	const statuses = featureStatusById(mission);
+	const incomplete: Array<{ milestone: MissionMilestone; feature: MissionFeature; unsatisfiedDependencies: string[] }> = [];
+	for (const milestone of mission.milestones) {
+		for (const feature of milestone.features) {
+			if (feature.status === "complete" || feature.status === "skipped") continue;
+			const unsatisfiedDependencies = (feature.dependencies ?? []).filter((dependencyId) => {
+				const dependencyStatus = statuses.get(dependencyId);
+				return dependencyStatus !== "complete" && dependencyStatus !== "skipped";
+			});
+			incomplete.push({ milestone, feature, unsatisfiedDependencies });
+		}
+	}
+	return incomplete;
+}
+
+function writeNoRunnablePendingWorkReport(runDir: string, mission: MissionState, pending: ReturnType<typeof incompleteFeatures>): MissionBlockSummary {
+	ensureDir(runDir);
+	const primary = pending[0];
+	const report = {
+		schemaVersion: 1,
+		timestamp: nowIso(),
+		missionId: mission.id,
+		missionTitle: mission.title,
+		reason: "No pending feature is currently runnable, but incomplete feature work remains.",
+		pendingFeatures: pending.map(({ milestone, feature, unsatisfiedDependencies }) => ({
+			milestoneId: milestone.id,
+			milestoneTitle: milestone.title,
+			featureId: feature.id,
+			featureTitle: feature.title,
+			status: feature.status,
+			dependencies: feature.dependencies ?? [],
+			unsatisfiedDependencies,
+		})),
+	};
+	const reportJson = path.join(runDir, "unresolved-pending-work.json");
+	const reportMd = path.join(runDir, "unresolved-pending-work.md");
+	writeJson(reportJson, report);
+	fs.writeFileSync(reportMd, [
+		"# Unresolved pending mission work",
+		"",
+		"Mission execution stopped because no pending feature is runnable, but incomplete feature work remains. This usually means dependencies are unsatisfied, missing, failed, or otherwise invalid in the persisted plan.",
+		"",
+		...report.pendingFeatures.flatMap((feature) => [
+			`- ${feature.featureId} - ${feature.featureTitle} (${feature.status})`,
+			`  - milestone: ${feature.milestoneId} - ${feature.milestoneTitle}`,
+			`  - dependencies: ${feature.dependencies.length > 0 ? feature.dependencies.join(", ") : "none"}`,
+			`  - unsatisfied dependencies: ${feature.unsatisfiedDependencies.length > 0 ? feature.unsatisfiedDependencies.join(", ") : "none"}`,
+		]),
+		"",
+	].join("\n"));
+	return {
+		kind: "worker",
+		missionId: mission.id,
+		missionTitle: mission.title,
+		milestoneId: primary?.milestone.id ?? mission.currentMilestoneId ?? "unknown",
+		milestoneTitle: primary?.milestone.title ?? mission.currentMilestoneId ?? "Unknown milestone",
+		featureId: primary?.feature.id,
+		featureTitle: primary?.feature.title,
+		runId: path.basename(runDir),
+		runDir,
+		exitCode: 0,
+		status: "no runnable pending work",
+		artifactPaths: existingPaths([reportJson, reportMd]),
+	};
+}
+
 function shouldAutoResumeAfterPlanRevision(cwd: string, existingMission: MissionState | undefined, revisedMission: MissionState): boolean {
 	if (!existingMission || existingMission.status !== "blocked") return false;
 	if (!hasMissionExecutionStarted(cwd, existingMission)) return false;
@@ -1615,6 +1684,20 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI)
 		}
 	}
 	mission = loadMission(ctx.cwd, id);
+	const pending = incompleteFeatures(mission);
+	if (pending.length > 0) {
+		mission.status = "blocked";
+		const runId = `${String(Date.now())}-blocked-no-runnable-pending-work`;
+		const runDir = path.join(dir, "runs", runId);
+		const block = writeNoRunnablePendingWorkReport(runDir, mission, pending);
+		persistMissionBlock(dir, mission, block, "no_runnable_pending_work");
+		saveMission(ctx.cwd, mission);
+		updateWidget(ctx, mission);
+		emitMissionBlockMessage(pi, block);
+		ctx.ui.notify(`Mission blocked: pending work remains but no feature is runnable. See ${runDir}`, "error");
+		ctx.ui.setWidget("missions-run", undefined);
+		return;
+	}
 	mission.status = "complete";
 	for (const m of mission.milestones) if (m.status !== "complete") m.status = "complete";
 	saveMission(ctx.cwd, mission);
