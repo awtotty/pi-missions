@@ -953,10 +953,41 @@ function padLineToWidth(line: string, width: number): string {
 	return `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
 }
 
-function progressText(mission: MissionState): string {
+function missionFeatureCounts(mission: MissionState): { done: number; total: number; running: number; failed: number; pending: number } {
 	const features = mission.milestones.flatMap((m) => m.features);
 	const done = features.filter((f) => f.status === "complete" || f.status === "skipped").length;
-	return `${done}/${features.length}`;
+	const running = features.filter((f) => f.status === "running").length;
+	const failed = features.filter((f) => f.status === "failed").length;
+	const pending = features.filter((f) => f.status === "pending").length;
+	return { done, total: features.length, running, failed, pending };
+}
+
+function progressText(mission: MissionState): string {
+	const counts = missionFeatureCounts(mission);
+	return `${counts.done}/${counts.total}`;
+}
+
+function percentText(done: number, total: number): string {
+	return total > 0 ? `${Math.round((done / total) * 100)}%` : "0%";
+}
+
+function progressBar(done: number, total: number, width: number): string {
+	const safeWidth = Math.max(8, width);
+	const filled = total > 0 ? Math.round((done / total) * safeWidth) : 0;
+	return `${"█".repeat(Math.max(0, Math.min(safeWidth, filled)))}${"░".repeat(Math.max(0, safeWidth - filled))}`;
+}
+
+function dividerLine(label: string, width: number): string {
+	const safeWidth = Math.max(20, width);
+	const prefix = `── ${label} `;
+	return clipLine(`${prefix}${"─".repeat(Math.max(0, safeWidth - visibleWidth(prefix)))}`, safeWidth);
+}
+
+function panelLines(title: string, body: string[], width: number): string[] {
+	const safeWidth = Math.max(20, width);
+	const header = dividerLine(title, safeWidth);
+	const clippedBody = body.length > 0 ? body.map((line) => clipLine(line, safeWidth)) : [clipLine("(no data)", safeWidth)];
+	return [header, ...clippedBody];
 }
 
 interface MissionControlEvent {
@@ -1070,12 +1101,14 @@ function moveMissionControlSelection(mission: MissionState, selectedId: string |
 
 function missionControlHeader(mission: MissionState, width: number): string[] {
 	const run = currentOrLastRunContext(mission);
-	const runText = run ? `${run.label}: ${run.runId} (${run.kind} ${run.itemId})` : "Current run: none";
+	const counts = missionFeatureCounts(mission);
+	const barWidth = Math.max(8, Math.min(32, width - 38));
+	const runText = run ? `${run.label} ${run.runId} (${run.kind} ${run.itemId})` : "no active run";
 	return [
-		`Mission Control (read-only) — ${mission.title}`,
-		`Status: ${mission.status}  Progress: ${progressText(mission)}  ${runText}`,
-		`Mission: ${mission.id}`,
-	].map((line) => clipLine(line, width));
+		clipLine(`MISSION CONTROL DASHBOARD — ${mission.title}`, width),
+		clipLine(`Mission ${mission.id} · ${mission.status} · updated ${mission.updatedAt}`, width),
+		clipLine(`[${progressBar(counts.done, counts.total, barWidth)}] ${progressText(mission)} ${percentText(counts.done, counts.total)} · ${counts.running} running · ${counts.pending} pending · ${counts.failed} failed · ${runText}`, width),
+	];
 }
 
 function missionTreeLines(mission: MissionState, selection: MissionControlSelection, block?: MissionBlockMetadata): string[] {
@@ -1133,15 +1166,76 @@ function missionDetailsLines(selection: MissionControlSelection, run?: MissionRu
 	return lines;
 }
 
-function eventTimelineLines(mission: MissionState): string[] {
+function progressLogLines(mission: MissionState): string[] {
 	const events = readMissionEvents(mission);
-	const lines = ["Event timeline"];
-	if (events.length === 0) return [...lines, "(no events recorded)"];
-	for (const event of events) {
+	if (events.length === 0) return ["(no events recorded)"];
+	return events.map((event) => {
 		const stamp = event.ts ? event.ts.replace(/^\d{4}-/, "").replace(/\.\d{3}Z$/, "Z") : "unknown time";
-		lines.push(`${stamp}  ${event.type}${eventDataSummary(event.data)}`);
+		return `${stamp}  ${event.type}${eventDataSummary(event.data)}`;
+	});
+}
+
+function currentItemLines(selection: MissionControlSelection, run?: MissionRunContext, block?: MissionBlockMetadata): string[] {
+	if (selection.kind === "mission") return [`${mark(selection.mission.status)} Mission: ${selection.mission.title}`, `Status: ${selection.mission.status}`, `Created: ${selection.mission.createdAt}`];
+	if (selection.kind === "block") return blockInspectionLines(selection.block).slice(1, 8);
+	if (selection.kind === "milestone") {
+		const done = selection.milestone.features.filter((f) => f.status === "complete" || f.status === "skipped").length;
+		return [
+			`${mark(selection.milestone.status)} Milestone ${selection.milestone.id}: ${selection.milestone.title}`,
+			`Status: ${selection.milestone.status} · Features ${done}/${selection.milestone.features.length}`,
+			...(selection.milestone.objective ? [`Objective: ${selection.milestone.objective}`] : []),
+			...(selection.milestone.validation ? [`Validation: ${selection.milestone.validation}`] : []),
+		];
+	}
+	const lines = [
+		`${mark(selection.feature.status)} Feature ${selection.feature.id}: ${selection.feature.title}`,
+		`Milestone: ${selection.milestone.id} — ${selection.milestone.title}`,
+		`Status: ${selection.feature.status}`,
+		...(selection.feature.dependencies?.length ? [`Dependencies: ${selection.feature.dependencies.join(", ")}`] : []),
+		...(selection.feature.runId ? [`Run: ${selection.feature.runId}`] : []),
+		...(selection.feature.commit ? [`Commit: ${selection.feature.commit}`] : []),
+		`Description: ${selection.feature.description}`,
+	];
+	if (run) lines.push(`Run context: ${run.label} ${run.runId} · ${run.kind} ${run.itemId}`);
+	if (block) lines.push(`Block: ${block.reasonCategory} on ${block.failedItemId}`);
+	return lines;
+}
+
+function groupedFeatureLines(mission: MissionState, selection: MissionControlSelection, block?: MissionBlockMetadata): string[] {
+	const selectedId = selectionId(selection);
+	const lines = [`${selectedId === mission.id ? ">" : " "} ${mark(mission.status)} ${mission.id}`];
+	if (block) lines.push(`${selectedId === blockSelectionId(block) ? ">" : " "} ! Block ${block.reasonCategory} on ${block.failedItemId}`);
+	for (const milestone of mission.milestones) {
+		const done = milestone.features.filter((f) => f.status === "complete" || f.status === "skipped").length;
+		lines.push(`${selectedId === milestone.id ? ">" : " "} ${mark(milestone.status)} ${milestone.id} ${milestone.title} (${done}/${milestone.features.length})`);
+		for (const feature of milestone.features) lines.push(`${selectedId === feature.id ? ">" : " "}   ${mark(feature.status)} ${feature.id} ${feature.title}`);
 	}
 	return lines;
+}
+
+function childOutputPlaceholderLines(run?: MissionRunContext): string[] {
+	if (!run) return ["No current or recent child run.", "Transcript tail panel will appear here when live output support is enabled."];
+	return [
+		`${run.label}: ${run.runId}`,
+		`Item: ${run.kind} ${run.itemId} — ${run.itemTitle}`,
+		`Artifacts: ${run.runDir}`,
+		"Child stdout/transcript tail placeholder; bounded live tail support follows in a later feature.",
+	];
+}
+
+function missionControlDashboardLines(mission: MissionState, selection: MissionControlSelection, width: number, block?: MissionBlockMetadata): string[] {
+	const run = currentOrLastRunContext(mission);
+	const currentPanel = panelLines("Current Item", currentItemLines(selection, run, block), width);
+	const featuresPanel = panelLines("Milestone Features", groupedFeatureLines(mission, selection, block), width);
+	const progressPanel = panelLines("Progress Log", progressLogLines(mission), width);
+	const childPanel = panelLines("Child Output", childOutputPlaceholderLines(run), width);
+	return [
+		...missionControlHeader(mission, width),
+		"",
+		...columnLines(currentPanel, featuresPanel, width),
+		"",
+		...columnLines(progressPanel, childPanel, width),
+	];
 }
 
 function columnLines(left: string[], right: string[], width: number): string[] {
@@ -1171,9 +1265,9 @@ const MISSION_CONTROL_POLL_MS = 1500;
 function missionControlHelpLines(): string[] {
 	return [
 		"Help",
-		"↑/k: select previous mission tree item",
-		"↓/j: select next mission tree item",
-		"tab: cycle focus hint between tree and timeline",
+		"↑/k: select previous mission/milestone/feature item",
+		"↓/j: select next mission/milestone/feature item",
+		"tab: cycle focus hint between features and progress log",
 		"r: refresh mission artifacts",
 		"?: toggle this help",
 		"q/esc: close Mission Control",
@@ -1208,15 +1302,10 @@ function missionControlLines(cwd: string, state: MissionOrchestratorSessionState
 		}
 		const selection = missionControlSelectionById(active, view.selectedId, block);
 		view.selectedId = selectionId(selection);
-		const run = currentOrLastRunContext(active);
-		const focusText = view.focus === "tree" ? "Focus: mission tree" : "Focus: event timeline";
+		const focusText = view.focus === "tree" ? "Focus: milestone features" : "Focus: progress log";
 		return [
-			...missionControlHeader(active, safeWidth),
+			...missionControlDashboardLines(active, selection, safeWidth, block),
 			focusText,
-			"",
-			...columnLines(missionTreeLines(active, selection, block), missionDetailsLines(selection, run, block), safeWidth),
-			"",
-			...eventTimelineLines(active).map((line) => clipLine(line, safeWidth)),
 			...(view.showHelp ? ["", ...missionControlHelpLines().map((line) => clipLine(line, safeWidth))] : []),
 			"",
 			clipLine(`q/esc close · ↑/↓/j/k move selection · tab focus · r refresh · ? help · auto-refresh ${MISSION_CONTROL_POLL_MS / 1000}s`, safeWidth),
