@@ -64,6 +64,26 @@ interface ClearCompletedResult {
 	text: string;
 }
 
+interface MissionOrchestratorSessionState {
+	schemaVersion: 1;
+	cwd: string;
+	updatedAt: string;
+	activeMissionId?: string;
+	activePlanningMissionId?: string;
+	activeRunningMissionId?: string;
+	lastMissionId?: string;
+	context?: {
+		id: string;
+		title: string;
+		status: Status;
+		currentMilestoneId?: string;
+		currentFeatureId?: string;
+	};
+}
+
+const ORCHESTRATOR_STATE_ENTRY = "missions-orchestrator-state";
+const LEGACY_ACTIVE_PLANNING_ENTRY = "missions-active-planning";
+
 interface MissionCommandResult {
 	ok: boolean;
 	text: string;
@@ -132,6 +152,81 @@ function listMissions(cwd: string): MissionState[] {
 
 function latestMission(cwd: string): MissionState | undefined {
 	return listMissions(cwd)[0];
+}
+
+function isActiveMissionStatus(status: Status): boolean {
+	return status === "planning" || status === "planned" || status === "running" || status === "paused" || status === "blocked";
+}
+
+function activeMissionFromState(cwd: string, state?: MissionOrchestratorSessionState): MissionState | undefined {
+	const ids = [state?.activeMissionId, state?.activePlanningMissionId, state?.activeRunningMissionId, state?.lastMissionId].filter((id): id is string => Boolean(id));
+	for (const id of ids) {
+		try {
+			const mission = loadMission(cwd, id);
+			if (isActiveMissionStatus(mission.status)) return mission;
+		} catch {
+			// Ignore stale session entries that point at missions no longer present in this checkout.
+		}
+	}
+	return listMissions(cwd).find((mission) => isActiveMissionStatus(mission.status));
+}
+
+function buildOrchestratorState(cwd: string, mission?: MissionState, overrides: Partial<MissionOrchestratorSessionState> = {}): MissionOrchestratorSessionState {
+	const hasOverride = (key: keyof MissionOrchestratorSessionState) => Object.prototype.hasOwnProperty.call(overrides, key);
+	const activeMissionId = hasOverride("activeMissionId") ? overrides.activeMissionId : mission?.id;
+	const activePlanningMissionId = hasOverride("activePlanningMissionId") ? overrides.activePlanningMissionId : mission?.status === "planning" ? mission.id : undefined;
+	const activeRunningMissionId = hasOverride("activeRunningMissionId") ? overrides.activeRunningMissionId : mission?.status === "running" || mission?.status === "paused" ? mission.id : undefined;
+	return {
+		schemaVersion: 1,
+		cwd,
+		updatedAt: nowIso(),
+		activeMissionId,
+		activePlanningMissionId,
+		activeRunningMissionId,
+		lastMissionId: overrides.lastMissionId ?? mission?.id ?? activeMissionId,
+		context: mission
+			? {
+				id: mission.id,
+				title: mission.title,
+				status: mission.status,
+				currentMilestoneId: mission.currentMilestoneId,
+				currentFeatureId: mission.currentFeatureId,
+			}
+			: overrides.context,
+	};
+}
+
+function latestOrchestratorStateFromSession(cwd: string, entries: ReturnType<ExtensionContext["sessionManager"]["getEntries"]>): MissionOrchestratorSessionState | undefined {
+	let state: MissionOrchestratorSessionState | undefined;
+	let legacyPlanningId: string | undefined;
+	for (const entry of entries) {
+		if (entry.type !== "custom") continue;
+		if (entry.customType === ORCHESTRATOR_STATE_ENTRY) {
+			const data = entry.data as Partial<MissionOrchestratorSessionState> | undefined;
+			if (data?.schemaVersion === 1 && (!data.cwd || data.cwd === cwd)) state = { ...data, schemaVersion: 1, cwd, updatedAt: data.updatedAt || nowIso() } as MissionOrchestratorSessionState;
+		}
+		if (entry.customType === LEGACY_ACTIVE_PLANNING_ENTRY) {
+			legacyPlanningId = (entry.data as { id?: string } | undefined)?.id;
+		}
+	}
+	if (!state && legacyPlanningId) return buildOrchestratorState(cwd, undefined, { activeMissionId: legacyPlanningId, activePlanningMissionId: legacyPlanningId, lastMissionId: legacyPlanningId });
+	return state;
+}
+
+function lightweightMissionContext(cwd: string, state?: MissionOrchestratorSessionState): string | undefined {
+	const mission = activeMissionFromState(cwd, state);
+	if (!mission) return undefined;
+	const dir = missionDir(cwd, mission.id);
+	const mode = mission.status === "planning" ? "planning" : mission.status === "running" || mission.status === "paused" ? "execution" : "available";
+	return [
+		"[MISSION ORCHESTRATOR CONTEXT]",
+		`Active mission (${mode}): ${mission.id} — ${mission.title} [${mission.status}]`,
+		`Mission directory: ${dir}`,
+		mission.currentMilestoneId ? `Current milestone: ${mission.currentMilestoneId}` : undefined,
+		mission.currentFeatureId ? `Current feature: ${mission.currentFeatureId}` : undefined,
+		"Use mission tools when the user asks about this mission; state-changing mission actions remain confirmation-gated.",
+		"This is lightweight context only: answer unrelated user requests normally and do not force the conversation into mission planning unless relevant.",
+	].filter((line): line is string => Boolean(line)).join("\n");
 }
 
 function readClearedMissions(cwd: string): ClearedMissionsState {
@@ -345,7 +440,7 @@ function resolveMission(cwd: string, id?: string): MissionState | undefined {
 	return id ? loadMission(cwd, id) : latestMission(cwd);
 }
 
-async function createMission(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI, setActivePlanning: (id: string) => void): Promise<void> {
+async function createMission(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI, setActivePlanning: (cwd: string, id: string) => void): Promise<void> {
 	const editedGoal = args.trim() || (await ctx.ui.editor("Mission goal", ""));
 	const goal = editedGoal ?? "";
 	if (!goal.trim()) {
@@ -372,7 +467,7 @@ async function createMission(args: string, ctx: ExtensionCommandContext, pi: Ext
 	writeJson(path.join(dir, "mission.json"), seed);
 	fs.writeFileSync(path.join(dir, "plan", "objective.md"), `# Mission Goal\n\n${goal}\n`);
 	appendEvent(dir, "interactive_planning_started", { goal });
-	setActivePlanning(id);
+	setActivePlanning(ctx.cwd, id);
 	updateWidget(ctx, seed);
 	ctx.ui.notify(`Interactive mission planning started: ${id}\n${dir}`, "info");
 
@@ -486,7 +581,7 @@ async function approveMission(options: {
 	ctx: ExtensionContext;
 	id: string;
 	activePlanningId: string | undefined;
-	setActivePlanning: (id: string | undefined) => void;
+	setActivePlanning: (cwd: string, id: string | undefined) => void;
 	requireConfirmation: boolean;
 }): Promise<boolean> {
 	const { ctx, id, activePlanningId, setActivePlanning, requireConfirmation } = options;
@@ -507,7 +602,7 @@ async function approveMission(options: {
 	mission.status = "planned";
 	saveMission(ctx.cwd, mission);
 	appendEvent(dir, "mission_approved", {});
-	if (activePlanningId === id) setActivePlanning(undefined);
+	if (activePlanningId === id) setActivePlanning(ctx.cwd, undefined);
 	updateWidget(ctx, mission);
 	ctx.ui.notify(`Mission approved. Run with /missions run ${id}`, "info");
 	return true;
@@ -567,10 +662,33 @@ async function runMission(args: string, ctx: ExtensionContext): Promise<void> {
 }
 
 export default function missionsExtension(pi: ExtensionAPI): void {
+	let orchestratorState: MissionOrchestratorSessionState | undefined;
 	let activePlanningId: string | undefined;
-	const setActivePlanning = (id: string | undefined) => {
+	let activeMissionId: string | undefined;
+	let activeRunningId: string | undefined;
+
+	const persistOrchestratorState = (cwd: string, mission?: MissionState, overrides: Partial<MissionOrchestratorSessionState> = {}) => {
+		const hasOverride = (key: keyof MissionOrchestratorSessionState) => Object.prototype.hasOwnProperty.call(overrides, key);
+		orchestratorState = buildOrchestratorState(cwd, mission, {
+			...overrides,
+			activeMissionId: hasOverride("activeMissionId") ? overrides.activeMissionId : mission?.id ?? activeMissionId,
+			activePlanningMissionId: hasOverride("activePlanningMissionId") ? overrides.activePlanningMissionId : activePlanningId,
+			activeRunningMissionId: hasOverride("activeRunningMissionId") ? overrides.activeRunningMissionId : activeRunningId,
+		});
+		activeMissionId = orchestratorState.activeMissionId;
+		activePlanningId = orchestratorState.activePlanningMissionId;
+		activeRunningId = orchestratorState.activeRunningMissionId;
+		pi.appendEntry(ORCHESTRATOR_STATE_ENTRY, orchestratorState);
+	};
+
+	const setActivePlanning = (cwd: string, id: string | undefined) => {
 		activePlanningId = id;
-		pi.appendEntry("missions-active-planning", { id });
+		activeMissionId = id ?? activeMissionId;
+		let mission: MissionState | undefined;
+		if (id) {
+			try { mission = loadMission(cwd, id); } catch { /* Persist the id even if artifacts are not readable yet. */ }
+		}
+		persistOrchestratorState(cwd, mission, { activeMissionId: id ?? activeMissionId, activePlanningMissionId: id });
 	};
 
 	pi.registerTool({
@@ -592,6 +710,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			const ok = await ctx.ui.confirm("Approve mission plan?", `${mission.title}\n\nThis will approve mission ${missionId} now.`);
 			if (!ok) return { content: [{ type: "text", text: "Mission approval canceled by user." }], details: { missionId } };
 			const approved = await approveMission({ ctx, id: missionId, activePlanningId, setActivePlanning, requireConfirmation: false });
+			if (approved) persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, missionId), { activeMissionId: missionId, activePlanningMissionId: undefined });
 			return {
 				content: [{ type: "text", text: approved ? `Approved mission ${missionId}.` : `Mission ${missionId} was not approved.` }],
 				details: { missionId },
@@ -618,7 +737,10 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			}
 			const ok = await ctx.ui.confirm("Start mission execution?", `${mission.title}\n\nThis will run mission ${missionId} now. Workers may modify files and create commits.`);
 			if (!ok) return { content: [{ type: "text", text: "Mission start canceled by user." }], details: { missionId } };
+			activeRunningId = missionId;
+			persistOrchestratorState(ctx.cwd, mission, { activeMissionId: missionId, activePlanningMissionId: undefined, activeRunningMissionId: missionId });
 			await runMission(missionId, ctx);
+			persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, missionId), { activeMissionId: missionId, activePlanningMissionId: undefined, activeRunningMissionId: undefined });
 			return { content: [{ type: "text", text: `Started or resumed mission ${missionId}.` }], details: { missionId } };
 		},
 	});
@@ -665,18 +787,19 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			if (params.validatorUserTestingSkillMd) fs.writeFileSync(path.join(dir, "skills/validator-user-testing/SKILL.md"), params.validatorUserTestingSkillMd);
 			appendEvent(dir, "interactive_plan_written", { title: mission.title, milestones: mission.milestones?.length ?? 0 });
 			updateWidget(ctx, mission);
+			persistOrchestratorState(ctx.cwd, mission, { activeMissionId: missionId, activePlanningMissionId: missionId });
 			return { content: [{ type: "text", text: `Mission plan draft written to ${dir}. User can continue refining or run /missions approve ${missionId}.` }], details: { missionId, dir } };
 		},
 	});
 
 	pi.on("before_agent_start", async (_event, ctx) => {
-		if (!activePlanningId) return;
-		const dir = missionDir(ctx.cwd, activePlanningId);
+		const content = lightweightMissionContext(ctx.cwd, orchestratorState);
+		if (!content) return;
 		return {
 			message: {
-				customType: "missions-planning-context",
+				customType: "missions-orchestrator-context",
 				display: false,
-				content: `[MISSION PLANNING MODE]\nMission id: ${activePlanningId}\nMission directory: ${dir}\n\nYou are the interactive mission orchestrator. Use the mission-orchestrator skill. Collaborate with the user before execution: ask clarifying questions, refine milestones/features, create a pre-implementation validation contract, and generate mission-specific worker/validator skills. Do not modify application code. Use mission_write_plan whenever the draft should be persisted. When the user is satisfied, use mission_approve_plan to ask for explicit approval and approve the mission. After approval, use mission_start_execution to ask for explicit approval and start execution. The user should not need to type mission ids manually.`, 
+				content,
 			},
 		};
 	});
@@ -707,10 +830,17 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 					return { ok: false, text: "No mission to approve." };
 				}
 				const approved = await approveMission({ ctx, id, activePlanningId, setActivePlanning, requireConfirmation: true });
+				if (approved) persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, id), { activeMissionId: id, activePlanningMissionId: undefined });
 				return { ok: approved, text: approved ? `Approved mission ${id}.` : `Mission ${id} was not approved.`, details: { missionId: id } };
 			}
 			if (subcommand === "run" || subcommand === "resume") {
-				await runMission(args, ctx);
+				const id = args || activeMissionId || latestMission(ctx.cwd)?.id;
+				if (id) {
+					activeRunningId = id;
+					persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, id), { activeMissionId: id, activePlanningMissionId: undefined, activeRunningMissionId: id });
+				}
+				await runMission(args || id || "", ctx);
+				if (id) persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, id), { activeMissionId: id, activePlanningMissionId: undefined, activeRunningMissionId: undefined });
 				return { ok: true, text: "Mission run command completed." };
 			}
 			if (subcommand === "list") {
@@ -806,13 +936,15 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		for (const entry of ctx.sessionManager.getEntries()) {
-			if (entry.type === "custom" && entry.customType === "missions-active-planning") {
-				activePlanningId = (entry.data as { id?: string } | undefined)?.id;
-			}
+		orchestratorState = latestOrchestratorStateFromSession(ctx.cwd, ctx.sessionManager.getEntries());
+		const active = activeMissionFromState(ctx.cwd, orchestratorState);
+		if (!orchestratorState && active) orchestratorState = buildOrchestratorState(ctx.cwd, active);
+		activeMissionId = active?.id ?? orchestratorState?.activeMissionId;
+		activePlanningId = active?.status === "planning" ? active.id : orchestratorState?.activePlanningMissionId;
+		activeRunningId = active?.status === "running" || active?.status === "paused" ? active.id : orchestratorState?.activeRunningMissionId;
+		if (active && (!orchestratorState?.context || orchestratorState.context.id !== active.id || orchestratorState.context.status !== active.status)) {
+			persistOrchestratorState(ctx.cwd, active, { activeMissionId: active.id, activePlanningMissionId: activePlanningId, activeRunningMissionId: activeRunningId });
 		}
-		const latest = latestMission(ctx.cwd);
-		if (!activePlanningId && latest?.status === "planning") activePlanningId = latest.id;
-		updateWidget(ctx, latest);
+		updateWidget(ctx, active ?? latestMission(ctx.cwd));
 	});
 }
