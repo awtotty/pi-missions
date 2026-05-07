@@ -16,6 +16,8 @@ const BASE_SKILLS = {
 
 type Status = "planning" | "planned" | "running" | "paused" | "blocked" | "complete" | "failed";
 type ItemStatus = "pending" | "running" | "complete" | "failed" | "skipped";
+type MissionRole = "orchestrator" | "worker" | "validator";
+type MissionRoleModels = Record<MissionRole, string>;
 
 interface MissionFeature {
 	id: string;
@@ -45,7 +47,7 @@ interface MissionState {
 	createdAt: string;
 	updatedAt: string;
 	cwd: string;
-	models: { orchestrator: string; worker: string; validator: string };
+	models: MissionRoleModels;
 	currentMilestoneId?: string;
 	currentFeatureId?: string;
 	latestBlock?: MissionBlockMetadata;
@@ -56,6 +58,12 @@ interface ClearedMissionsState {
 	schemaVersion: 1;
 	updatedAt: string;
 	clearedMissionIds: string[];
+}
+
+interface MissionGlobalSettings {
+	schemaVersion: 1;
+	updatedAt: string;
+	models: MissionRoleModels;
 }
 
 interface ClearCompletedResult {
@@ -136,8 +144,24 @@ interface MissionBlockMetadata {
 	artifactPaths: string[];
 }
 
+const MISSION_ROLES: MissionRole[] = ["orchestrator", "worker", "validator"];
+const DEFAULT_ROLE_MODELS: MissionRoleModels = { orchestrator: "default", worker: "default", validator: "default" };
+
 function nowIso(): string {
 	return new Date().toISOString();
+}
+
+function normalizeRoleModels(models?: Partial<Record<MissionRole, unknown>>): MissionRoleModels {
+	const normalized = { ...DEFAULT_ROLE_MODELS };
+	for (const role of MISSION_ROLES) {
+		const value = models?.[role];
+		if (typeof value === "string" && value.trim()) normalized[role] = value.trim();
+	}
+	return normalized;
+}
+
+function isMissionRole(value: string): value is MissionRole {
+	return (MISSION_ROLES as string[]).includes(value);
 }
 
 function missionRoot(cwd: string): string {
@@ -150,6 +174,10 @@ function missionDir(cwd: string, id: string): string {
 
 function clearedMissionsFile(cwd: string): string {
 	return path.join(missionRoot(cwd), "cleared.json");
+}
+
+function globalSettingsFile(cwd: string): string {
+	return path.join(missionRoot(cwd), "settings.json");
 }
 
 function ensureDir(dir: string): void {
@@ -305,6 +333,46 @@ function readClearedMissions(cwd: string): ClearedMissionsState {
 
 function writeClearedMissions(cwd: string, state: ClearedMissionsState): void {
 	writeJson(clearedMissionsFile(cwd), { ...state, schemaVersion: 1, updatedAt: nowIso(), clearedMissionIds: [...new Set(state.clearedMissionIds)].sort() });
+}
+
+function readMissionGlobalSettings(cwd: string): MissionGlobalSettings {
+	const file = globalSettingsFile(cwd);
+	if (!fs.existsSync(file)) return { schemaVersion: 1, updatedAt: nowIso(), models: { ...DEFAULT_ROLE_MODELS } };
+	const parsed = readJson<Partial<MissionGlobalSettings>>(file);
+	return {
+		schemaVersion: 1,
+		updatedAt: parsed.updatedAt || nowIso(),
+		models: normalizeRoleModels(parsed.models),
+	};
+}
+
+function writeMissionGlobalSettings(cwd: string, settings: MissionGlobalSettings): void {
+	writeJson(globalSettingsFile(cwd), { schemaVersion: 1, updatedAt: nowIso(), models: normalizeRoleModels(settings.models) });
+}
+
+function resolveRoleModel(cwd: string, mission: MissionState, role: MissionRole): string {
+	const missionModel = mission.models?.[role];
+	if (missionModel && missionModel !== "default") return missionModel;
+	return readMissionGlobalSettings(cwd).models[role];
+}
+
+function formatGlobalModels(cwd: string): string {
+	const settings = readMissionGlobalSettings(cwd);
+	return [
+		"Global mission role model defaults:",
+		...MISSION_ROLES.map((role) => `- ${role}: ${settings.models[role]}`),
+		`Settings file: ${globalSettingsFile(cwd)}`,
+		"",
+		"Set with: /missions models <role> <model> (or /missions models set <role> <model>)",
+		"Use 'default' to inherit pi's default model for a role.",
+	].join("\n");
+}
+
+function setGlobalModel(cwd: string, role: MissionRole, model: string): string {
+	const settings = readMissionGlobalSettings(cwd);
+	settings.models[role] = model.trim() || "default";
+	writeMissionGlobalSettings(cwd, settings);
+	return formatGlobalModels(cwd);
 }
 
 function isMissionCleared(cwd: string, id: string): boolean {
@@ -660,7 +728,7 @@ function createPlanningMission(cwd: string, requestedId?: string): MissionState 
 		createdAt: nowIso(),
 		updatedAt: nowIso(),
 		cwd,
-		models: { orchestrator: "default", worker: "default", validator: "default" },
+		models: readMissionGlobalSettings(cwd).models,
 		milestones: [],
 	};
 }
@@ -693,7 +761,7 @@ async function runWorker(ctx: ExtensionContext, mission: MissionState, milestone
 	const result = await runPiChild({
 		cwd: mission.cwd,
 		prompt,
-		model: mission.models.worker,
+		model: resolveRoleModel(mission.cwd, mission, "worker"),
 		systemPromptFiles: [BASE_SKILLS.worker, path.join(dir, "skills/worker/SKILL.md")],
 		transcriptFile: path.join(runDir, "transcript.jsonl"),
 		signal: ctx.signal,
@@ -791,7 +859,7 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 	const result = await runPiChild({
 		cwd: mission.cwd,
 		prompt,
-		model: mission.models.validator,
+		model: resolveRoleModel(mission.cwd, mission, "validator"),
 		systemPromptFiles: [BASE_SKILLS.validator, path.join(dir, "skills/validator-scrutiny/SKILL.md")],
 		transcriptFile: path.join(runDir, "transcript.jsonl"),
 		signal: ctx.signal,
@@ -1036,7 +1104,11 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			mission.status = existingMission && existingMission.status !== "planning" && mission.status === "planning" ? existingMission.status : mission.status || seedMission.status;
 			mission.updatedAt = nowIso();
 			if (!mission.createdAt) mission.createdAt = seedMission.createdAt;
-			if (!mission.models) mission.models = seedMission.models;
+			mission.models = normalizeRoleModels(mission.models ?? seedMission.models);
+			if (!existingMission) {
+				const globalModels = readMissionGlobalSettings(ctx.cwd).models;
+				for (const role of MISSION_ROLES) if (mission.models[role] === "default") mission.models[role] = globalModels[role];
+			}
 			writeJson(path.join(dir, "mission.json"), mission);
 			fs.writeFileSync(path.join(dir, "plan/objective.md"), params.objectiveMd);
 			writeJson(path.join(dir, "plan/features.json"), params.featuresJson);
@@ -1073,10 +1145,35 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 		const [subcommand, ...rest] = rawArgs.trim().split(/\s+/).filter(Boolean);
 		const args = rest.join(" ");
 		try {
-			if (!subcommand || subcommand === "new" || !["status", "approve", "run", "resume", "list", "clear"].includes(subcommand)) {
+			if (!subcommand || subcommand === "new" || !["status", "approve", "run", "resume", "list", "clear", "models"].includes(subcommand)) {
 				const goal = subcommand === "new" ? args : rawArgs.trim();
 				await startMissionOrchestrator(goal, ctx, pi);
 				return { ok: true, text: "Mission orchestrator loaded." };
+			}
+			if (subcommand === "models") {
+				const modelArgs = args.split(/\s+/).filter(Boolean);
+				if (modelArgs[0] === "set") modelArgs.shift();
+				const [roleArg, ...modelParts] = modelArgs;
+				if (!roleArg) {
+					const text = formatGlobalModels(ctx.cwd);
+					ctx.ui.notify(text, "info");
+					return { ok: true, text, details: { settingsFile: globalSettingsFile(ctx.cwd), models: readMissionGlobalSettings(ctx.cwd).models } };
+				}
+				if (!isMissionRole(roleArg)) {
+					const text = `Unknown mission model role '${roleArg}'. Expected one of: ${MISSION_ROLES.join(", ")}.`;
+					ctx.ui.notify(text, "warning");
+					return { ok: false, text };
+				}
+				const model = modelParts.join(" ").trim();
+				if (!model) {
+					const current = readMissionGlobalSettings(ctx.cwd).models[roleArg];
+					const text = `${roleArg}: ${current}\n\nSet with: /missions models ${roleArg} <model> (or /missions models set ${roleArg} <model>)`;
+					ctx.ui.notify(text, "info");
+					return { ok: true, text, details: { role: roleArg, model: current } };
+				}
+				const text = setGlobalModel(ctx.cwd, roleArg, model);
+				ctx.ui.notify(text, "info");
+				return { ok: true, text, details: { settingsFile: globalSettingsFile(ctx.cwd), models: readMissionGlobalSettings(ctx.cwd).models } };
 			}
 			if (subcommand === "status") {
 				const mission = resolveMission(ctx.cwd, args || undefined, orchestratorState);
@@ -1129,7 +1226,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 				updateWidget(ctx, activeMissionFromState(ctx.cwd, orchestratorState) ?? latestVisibleMission(ctx.cwd));
 				return { ok: true, text: result.text, details: result };
 			}
-			const usage = "Usage: /missions [goal] | /missions new [goal] | /missions approve [id] | /missions run [id] | /missions status [id] | /missions list | /missions clear";
+			const usage = "Usage: /missions [goal] | /missions new [goal] | /missions approve [id] | /missions run [id] | /missions status [id] | /missions list | /missions clear | /missions models [set] [role] [model]";
 			ctx.ui.notify(usage, "warning");
 			return { ok: false, text: usage };
 		} catch (error) {
@@ -1194,7 +1291,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("missions", {
-		description: "Plan and run long sequential missions (/missions [goal]|run|status|list|clear)",
+		description: "Plan and run long sequential missions (/missions [goal]|run|status|list|clear|models)",
 		handler: async (args, ctx) => { await handleMissions(args, ctx); },
 	});
 
