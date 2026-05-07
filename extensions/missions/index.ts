@@ -326,7 +326,7 @@ function missionPlanningKickoffContext(cwd: string, goal: string): string {
 		"Use the mission-orchestrator skill for mission planning. Do not write application code while planning.",
 		"First brainstorm with the user: ask clarifying questions, push back on scope, surface tradeoffs, and iterate in normal chat.",
 		"Do not call mission_write_plan merely because /missions was invoked. Call mission_write_plan only when you judge the plan and validation contract are mature enough to persist, or when the user explicitly asks you to save the draft.",
-		"After the user has reviewed and accepted the persisted plan, use mission_approve_plan to request explicit approval. Execution remains separately confirmation-gated.",
+		"After the user has reviewed the persisted plan, use mission_start_execution to request explicit confirmation before implementation begins.",
 		"The user may ask unrelated questions at any time; answer those normally and return to mission planning only when relevant.",
 	].join("\n");
 }
@@ -685,7 +685,7 @@ function describeBlock(block: MissionBlockMetadata): string {
 }
 
 function nextSuggestedAction(mission: MissionState, run?: MissionRunContext, block?: MissionBlockMetadata): string {
-	if (mission.status === "planning") return `Continue planning, then run /missions approve ${mission.id} when the plan is ready.`;
+	if (mission.status === "planning") return "Continue planning, then persist the plan when it is ready.";
 	if (mission.status === "planned") return `Run /missions run ${mission.id} to start execution.`;
 	if (mission.status === "running") return run ? `Monitor ${run.runDir} or wait for run ${run.runId} to finish.` : "Mission is running; wait for the next worker or validator update.";
 	if (mission.status === "paused") return `Run /missions resume ${mission.id} when ready.`;
@@ -861,7 +861,7 @@ function planOutline(mission: MissionState, maxMilestones = 8, maxFeaturesPerMil
 
 function persistedPlanSummary(mission: MissionState, dir: string, objectiveMd: string, validationContractJson: unknown, existingMission: boolean): string {
 	const action = existingMission ? "revised" : "written";
-	const nextAction = mission.status === "planning" ? `\n\nNext: continue refining or run /missions approve ${mission.id} after review.` : "";
+	const nextAction = mission.status === "planning" ? "\n\nNext: continue refining, then start execution after the plan is ready." : "";
 	return [
 		`Mission plan ${action}: ${mission.title}`,
 		`ID: ${mission.id}`,
@@ -1466,37 +1466,6 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 	return block;
 }
 
-async function approveMission(options: {
-	ctx: ExtensionContext;
-	id: string;
-	activePlanningId: string | undefined;
-	setActivePlanning: (cwd: string, id: string | undefined) => void;
-	requireConfirmation: boolean;
-}): Promise<boolean> {
-	const { ctx, id, activePlanningId, setActivePlanning, requireConfirmation } = options;
-	const mission = loadMission(ctx.cwd, id);
-	if (mission.milestones.length === 0) {
-		ctx.ui.notify("Cannot approve: mission has no milestones/features. Ask the orchestrator to write the plan first.", "warning");
-		return false;
-	}
-	const dir = missionDir(ctx.cwd, id);
-	if (!fs.existsSync(path.join(dir, "plan/validation-contract.json"))) {
-		ctx.ui.notify("Cannot approve: missing plan/validation-contract.json.", "warning");
-		return false;
-	}
-	if (requireConfirmation) {
-		const ok = await ctx.ui.confirm("Approve mission plan?", `${mission.title}\n\nThis locks planning and enables /missions run ${id}.`);
-		if (!ok) return false;
-	}
-	mission.status = "planned";
-	saveMission(ctx.cwd, mission);
-	appendEvent(dir, "mission_approved", {});
-	if (activePlanningId === id) setActivePlanning(ctx.cwd, undefined);
-	updateWidget(ctx, mission);
-	ctx.ui.notify(`Mission approved. Run with /missions run ${id}`, "info");
-	return true;
-}
-
 // Mission Control concurrency decision (F1/F7): ctx.ui.custom() returns a Promise
 // that settles only when the custom component calls done()/closes, so awaiting it
 // before or during runMission would make mission execution wait for the user to
@@ -1524,7 +1493,7 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI)
 	let mission = loadMission(ctx.cwd, id);
 	const dir = missionDir(ctx.cwd, id);
 	if (mission.status === "planning") {
-		ctx.ui.notify(`Mission is still in interactive planning. Approve it first with /missions approve ${id}.`, "warning");
+		ctx.ui.notify("Mission is still in interactive planning. Ask the orchestrator to persist a runnable plan first.", "warning");
 		return;
 	}
 	if (mission.status === "complete") {
@@ -1591,48 +1560,10 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 		pi.appendEntry(ORCHESTRATOR_STATE_ENTRY, orchestratorState);
 	};
 
-	const setActivePlanning = (cwd: string, id: string | undefined) => {
-		activePlanningId = id;
-		activeMissionId = id ?? activeMissionId;
-		let mission: MissionState | undefined;
-		if (id) {
-			try { mission = loadMission(cwd, id); } catch { /* Persist the id even if artifacts are not readable yet. */ }
-		}
-		persistOrchestratorState(cwd, mission, { activeMissionId: id ?? activeMissionId, activePlanningMissionId: id });
-	};
-
-	pi.registerTool({
-		name: "mission_approve_plan",
-		label: "Approve Mission Plan",
-		description: "Ask the user for explicit approval, then approve the active mission plan on their behalf. Omit missionId to use the current session's active mission. Use only after the user has reviewed the plan.",
-		parameters: Type.Object({
-			missionId: Type.Optional(Type.String()),
-		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const missionId = params.missionId || activePlanningId || activeMissionId || activeMissionFromState(ctx.cwd, orchestratorState)?.id || latestMission(ctx.cwd)?.id;
-			if (!missionId) {
-				return { content: [{ type: "text", text: "No mission found to approve." }], details: {}, isError: true };
-			}
-			const mission = loadMission(ctx.cwd, missionId);
-			if (!ctx.hasUI) {
-				return { content: [{ type: "text", text: "Explicit approval requires an interactive UI." }], details: { missionId }, isError: true };
-			}
-			const ok = await ctx.ui.confirm("Approve mission plan?", `${mission.title}\n\nThis will approve mission ${missionId} now.`);
-			if (!ok) return { content: [{ type: "text", text: "Mission approval canceled by user." }], details: { missionId } };
-			const approved = await approveMission({ ctx, id: missionId, activePlanningId, setActivePlanning, requireConfirmation: false });
-			if (approved) persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, missionId), { activeMissionId: missionId, activePlanningMissionId: undefined });
-			return {
-				content: [{ type: "text", text: approved ? `Approved mission ${missionId}.` : `Mission ${missionId} was not approved.` }],
-				details: { missionId },
-				isError: !approved,
-			};
-		},
-	});
-
 	pi.registerTool({
 		name: "mission_start_execution",
 		label: "Start Mission Execution",
-		description: "Ask the user for explicit approval, then start or resume sequential mission execution on their behalf. Omit missionId to use the current session's active mission.",
+		description: "Ask the user for explicit confirmation, then start or resume sequential mission execution on their behalf. Omit missionId to use the current session's active mission.",
 		parameters: Type.Object({
 			missionId: Type.Optional(Type.String()),
 		}),
@@ -1643,7 +1574,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			}
 			const mission = loadMission(ctx.cwd, missionId);
 			if (!ctx.hasUI) {
-				return { content: [{ type: "text", text: "Explicit approval requires an interactive UI." }], details: { missionId }, isError: true };
+				return { content: [{ type: "text", text: "Explicit confirmation requires an interactive UI." }], details: { missionId }, isError: true };
 			}
 			const ok = await ctx.ui.confirm("Start mission execution?", `${mission.title}\n\nThis will run mission ${missionId} now. Workers may modify files and create commits.`);
 			if (!ok) return { content: [{ type: "text", text: "Mission start canceled by user." }], details: { missionId } };
@@ -1658,7 +1589,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "mission_write_plan",
 		label: "Write or Revise Mission Plan",
-		description: "Persist the current interactive mission planning draft or revise the active mission plan. Omit missionId to use the current session's active planning/running mission; this does not approve or run the mission.",
+		description: "Persist the current interactive mission planning draft or revise the active mission plan. Omit missionId to use the current session's active planning/running mission; this does not start or resume execution.",
 		parameters: Type.Object({
 			missionId: Type.Optional(Type.String()),
 			mission: Type.Any({ description: "Complete mission.json object matching the mission-orchestrator schema." }),
@@ -1729,7 +1660,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 		const [subcommand, ...rest] = rawArgs.trim().split(/\s+/).filter(Boolean);
 		const args = rest.join(" ");
 		try {
-			if (!subcommand || subcommand === "new" || !["status", "approve", "run", "resume", "list", "clear", "models"].includes(subcommand)) {
+			if (!subcommand || subcommand === "new" || !["status", "run", "resume", "list", "clear", "models"].includes(subcommand)) {
 				const goal = subcommand === "new" ? args : rawArgs.trim();
 				await startMissionOrchestrator(goal, ctx, pi);
 				return { ok: true, text: "Mission orchestrator loaded." };
@@ -1770,16 +1701,6 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(text, "info");
 				return { ok: true, text, details: { missionId: mission.id } };
 			}
-			if (subcommand === "approve") {
-				const id = args || activePlanningId || activeMissionId || activeMissionFromState(ctx.cwd, orchestratorState)?.id || latestMission(ctx.cwd)?.id;
-				if (!id) {
-					ctx.ui.notify("No mission to approve.", "warning");
-					return { ok: false, text: "No mission to approve." };
-				}
-				const approved = await approveMission({ ctx, id, activePlanningId, setActivePlanning, requireConfirmation: true });
-				if (approved) persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, id), { activeMissionId: id, activePlanningMissionId: undefined });
-				return { ok: approved, text: approved ? `Approved mission ${id}.` : `Mission ${id} was not approved.`, details: { missionId: id } };
-			}
 			if (subcommand === "run" || subcommand === "resume") {
 				const id = args || activeMissionId || activeMissionFromState(ctx.cwd, orchestratorState)?.id || latestMission(ctx.cwd)?.id;
 				if (id) {
@@ -1810,7 +1731,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 				updateWidget(ctx, activeMissionFromState(ctx.cwd, orchestratorState) ?? latestVisibleMission(ctx.cwd));
 				return { ok: true, text: result.text, details: result };
 			}
-			const usage = "Usage: /missions [goal] | /missions new [goal] | /missions approve [id] | /missions run [id] | /missions status [id] | /missions list | /missions clear | /missions models [set] [role] [model]";
+			const usage = "Usage: /missions [goal] | /missions new [goal] | /missions run [id] | /missions status [id] | /missions list | /missions clear | /missions models [set] [role] [model]";
 			ctx.ui.notify(usage, "warning");
 			return { ok: false, text: usage };
 		} catch (error) {
