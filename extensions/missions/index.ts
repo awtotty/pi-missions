@@ -760,6 +760,25 @@ async function runWorker(ctx: ExtensionContext, mission: MissionState, milestone
 	return block;
 }
 
+function completedFeatureReviewContext(dir: string, milestone: MissionMilestone): string {
+	const completedFeatures = milestone.features.filter((feature) => feature.status === "complete");
+	if (completedFeatures.length === 0) return "Completed features available for code review: none recorded.";
+	const lines = ["Completed features available for code review:"];
+	for (const feature of completedFeatures) {
+		const runDir = feature.runId ? path.join(dir, "runs", feature.runId) : undefined;
+		const handoffJson = runDir ? path.join(runDir, "handoff.json") : undefined;
+		const handoffMd = runDir ? path.join(runDir, "handoff.md") : undefined;
+		lines.push(`- ${feature.id} - ${feature.title}`);
+		lines.push(`  status: ${feature.status}`);
+		lines.push(`  commit: ${feature.commit ?? "not recorded"}`);
+		lines.push(`  worker run: ${feature.runId ?? "not recorded"}`);
+		lines.push(`  run directory: ${runDir ?? "not recorded"}`);
+		lines.push(`  handoff.json: ${handoffJson && fs.existsSync(handoffJson) ? handoffJson : "not available"}`);
+		lines.push(`  handoff.md: ${handoffMd && fs.existsSync(handoffMd) ? handoffMd : "not available"}`);
+	}
+	return lines.join("\n");
+}
+
 async function runValidator(ctx: ExtensionContext, mission: MissionState, milestone: MissionMilestone): Promise<MissionBlockSummary | undefined> {
 	const dir = missionDir(mission.cwd, mission.id);
 	const runId = `${String(Date.now())}-validator-${milestone.id}`;
@@ -767,7 +786,8 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 	ensureDir(runDir);
 	milestone.validationRunId = runId;
 	appendEvent(dir, "validator_started", { milestoneId: milestone.id, runId });
-	const prompt = `Use the mission-validator skill and the mission-specific scrutiny validator skill if present. Validate this completed milestone adversarially.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\n\nRead the validation contract, mission plan, and worker handoffs. Run appropriate checks. Write validation-report.json and validation-report.md in the run directory.`;
+	const featureReviewContext = completedFeatureReviewContext(dir, milestone);
+	const prompt = `Use the mission-validator skill and the mission-specific scrutiny validator skill if present. Validate this completed milestone adversarially.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\n\n${featureReviewContext}\n\nPerform a per-feature adversarial code review for each completed feature listed above, using the recorded commits and handoff paths where available. Inspect relevant diffs/handoffs, assess whether tests and procedure were adequate, and report code-review defects or procedure findings. Also check the milestone against the validation contract and mission plan. Run appropriate checks. Write validation-report.json and validation-report.md in the run directory.`;
 	const result = await runPiChild({
 		cwd: mission.cwd,
 		prompt,
