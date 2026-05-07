@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { matchesKey } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 const EXTENSION_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -893,8 +893,12 @@ function resolveMission(cwd: string, id?: string, state?: MissionOrchestratorSes
 
 function clipLine(line: string, width: number): string {
 	const limit = Math.max(1, width);
-	if (line.length <= limit) return line;
-	return limit === 1 ? "…" : `${line.slice(0, limit - 1)}…`;
+	return truncateToWidth(line, limit);
+}
+
+function padLineToWidth(line: string, width: number): string {
+	const clipped = clipLine(line, width);
+	return `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
 }
 
 function progressText(mission: MissionState): string {
@@ -1096,8 +1100,8 @@ function columnLines(left: string[], right: string[], width: number): string[] {
 	const rows = Math.max(left.length, right.length);
 	const lines: string[] = [];
 	for (let i = 0; i < rows; i += 1) {
-		const leftText = clipLine(left[i] ?? "", leftWidth).padEnd(leftWidth, " ");
-		lines.push(`${leftText}${gap}${clipLine(right[i] ?? "", rightWidth)}`);
+		const leftText = padLineToWidth(left[i] ?? "", leftWidth);
+		lines.push(clipLine(`${leftText}${gap}${clipLine(right[i] ?? "", rightWidth)}`, width));
 	}
 	return lines;
 }
