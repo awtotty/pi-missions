@@ -1610,8 +1610,33 @@ interface MissionControlViewState {
 	selectedId?: string;
 	selectedRecentMissionId?: string;
 	lastAutoFocusedBlockId?: string;
+	pendingActionId?: string;
 	showHelp: boolean;
 	focus: "tree" | "timeline";
+}
+
+type MissionControlActionKind = "mutation";
+type MissionControlActionSeverity = "info" | "warning" | "destructive" | "execution";
+
+interface MissionControlActionContext {
+	ctx: ExtensionContext;
+	state?: MissionOrchestratorSessionState;
+	view: MissionControlViewState;
+	targetMissionId?: string;
+	mission?: MissionState;
+}
+
+interface MissionControlAction {
+	id: string;
+	key: string;
+	label: string;
+	description: string;
+	kind: MissionControlActionKind;
+	severity: MissionControlActionSeverity;
+	requiresConfirmation: boolean;
+	confirmation?: (context: MissionControlActionContext) => { title: string; message: string };
+	isAvailable?: (context: MissionControlActionContext) => boolean;
+	run: (context: MissionControlActionContext) => Promise<MissionCommandResult> | MissionCommandResult;
 }
 
 const MISSION_CONTROL_POLL_MS = 1500;
@@ -1624,8 +1649,8 @@ function missionControlHelpLines(): string[] {
 		"tab: cycle focus hint between features and progress log",
 		"r: refresh mission artifacts",
 		"?: toggle this help",
-		"q/esc: close Mission Control",
-		"Mission Control is read-only; no mission state is changed by these keys.",
+		"q/esc: close Mission Control only",
+		"Mutating Mission Control actions use explicit shortcuts, audit events, notifications, and confirmation when required.",
 	];
 }
 
@@ -1633,7 +1658,71 @@ function missionControlFooter(width: number): string {
 	const mode = missionControlLayoutMode(width);
 	if (mode === "compact") return "q close · ↑/↓ move · r refresh · ? help";
 	if (mode === "narrow") return "q/esc close · ↑/↓ move · tab focus · r refresh · ? help";
-	return `q/esc close · ↑/↓/j/k move selection · tab focus · r refresh · ? help · auto-refresh ${MISSION_CONTROL_POLL_MS / 1000}s`;
+	return `q/esc close · ↑/↓/j/k move selection · tab focus · r refresh · ? help · confirmed actions only · auto-refresh ${MISSION_CONTROL_POLL_MS / 1000}s`;
+}
+
+function missionControlAvailableActions(_context: MissionControlActionContext): MissionControlAction[] {
+	// F6 establishes the action contract and dispatcher used by later Mission
+	// Control controls. Concrete mutating actions are intentionally registered by
+	// their owning features so pause/resume/clear semantics stay scoped and auditable.
+	return [];
+}
+
+function matchesMissionControlActionKey(data: string, action: MissionControlAction): boolean {
+	return data === action.key;
+}
+
+function missionControlActionEventData(context: MissionControlActionContext, action: MissionControlAction, extra: Record<string, unknown> = {}): Record<string, unknown> {
+	return {
+		actionId: action.id,
+		key: action.key,
+		label: action.label,
+		severity: action.severity,
+		missionId: context.mission?.id,
+		...extra,
+	};
+}
+
+async function dispatchMissionControlAction(data: string, context: MissionControlActionContext): Promise<boolean> {
+	const action = missionControlAvailableActions(context).find((candidate) => matchesMissionControlActionKey(data, candidate));
+	if (!action) return false;
+	if (context.view.pendingActionId) {
+		context.ctx.ui.notify(`Mission Control action already pending: ${context.view.pendingActionId}`, "warning");
+		return true;
+	}
+	if (action.isAvailable && !action.isAvailable(context)) {
+		context.ctx.ui.notify(`Mission Control action unavailable: ${action.label}`, "warning");
+		return true;
+	}
+	const dir = context.mission ? missionDir(context.ctx.cwd, context.mission.id) : undefined;
+	if (action.requiresConfirmation) {
+		if (!context.ctx.hasUI) {
+			context.ctx.ui.notify(`Mission Control action requires confirmation: ${action.label}`, "warning");
+			return true;
+		}
+		const confirmation = action.confirmation?.(context) ?? { title: `Confirm ${action.label}?`, message: action.description };
+		const ok = await context.ctx.ui.confirm(confirmation.title, confirmation.message);
+		if (!ok) {
+			if (dir) appendEvent(dir, "mission_control_action_canceled", missionControlActionEventData(context, action));
+			context.ctx.ui.notify(`Mission Control action canceled: ${action.label}`, "info");
+			return true;
+		}
+	}
+	context.view.pendingActionId = action.id;
+	if (dir) appendEvent(dir, "mission_control_action_started", missionControlActionEventData(context, action));
+	context.ctx.ui.notify(`Mission Control action started: ${action.label}`, "info");
+	try {
+		const result = await action.run(context);
+		if (dir) appendEvent(dir, "mission_control_action_finished", missionControlActionEventData(context, action, { ok: result.ok }));
+		context.ctx.ui.notify(result.text, result.ok ? "info" : "warning");
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		if (dir) appendEvent(dir, "mission_control_action_failed", missionControlActionEventData(context, action, { error: message }));
+		context.ctx.ui.notify(`Mission Control action failed: ${message}`, "error");
+	} finally {
+		context.view.pendingActionId = undefined;
+	}
+	return true;
 }
 
 function missionControlTarget(cwd: string, state: MissionOrchestratorSessionState | undefined, targetMissionId?: string): MissionState | undefined {
@@ -1646,7 +1735,7 @@ function missionControlLines(cwd: string, state: MissionOrchestratorSessionState
 	try {
 		active = missionControlTarget(cwd, state, targetMissionId);
 	} catch {
-		return ["Mission Control (read-only)", "", `Mission not found: ${targetMissionId}`, "", "q/esc close"].map((line) => clipLine(line, Math.max(1, width)));
+		return ["Mission Control", "", `Mission not found: ${targetMissionId}`, "", "q/esc close"].map((line) => clipLine(line, Math.max(1, width)));
 	}
 	const missions = active ? [active] : visibleMissions(cwd).slice(0, 10);
 	const safeWidth = Math.max(1, width);
@@ -1672,7 +1761,7 @@ function missionControlLines(cwd: string, state: MissionOrchestratorSessionState
 			missionControlFooter(safeWidth),
 		].map((line) => clipLine(line, safeWidth));
 	}
-	const lines = ["Mission Control (read-only)", "", "No active mission.", ""];
+	const lines = ["Mission Control", "", "No active mission.", ""];
 	if (missions.length > 0) {
 		if (!view.selectedRecentMissionId || !missions.some((mission) => mission.id === view.selectedRecentMissionId)) view.selectedRecentMissionId = missions[0]?.id;
 		lines.push("Recent visible missions:");
@@ -1736,6 +1825,13 @@ async function openMissionControl(ctx: ExtensionContext, state?: MissionOrchestr
 				const moveBy = data === "k" || matchesKey(data, "up") || data === "\u001b[A" ? -1 : data === "j" || matchesKey(data, "down") || data === "\u001b[B" ? 1 : 0;
 				if (data === "q" || matchesKey(data, "escape")) {
 					close();
+					return;
+				}
+				const actionContext = { ctx, state, view, targetMissionId, mission: active };
+				if (missionControlAvailableActions(actionContext).some((action) => matchesMissionControlActionKey(data, action))) {
+					void dispatchMissionControlAction(data, actionContext).then(() => {
+						if (!closed) tui.requestRender();
+					});
 					return;
 				}
 				if (moveBy !== 0) {
