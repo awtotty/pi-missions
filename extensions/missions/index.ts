@@ -996,35 +996,134 @@ interface MissionControlEvent {
 	data?: unknown;
 }
 
+interface MissionControlEventWindow {
+	events: MissionControlEvent[];
+	parsedInTail: number;
+	malformedInTail: number;
+	truncated: boolean;
+	maxEvents: number;
+}
+
 type MissionControlSelection =
 	| { kind: "mission"; mission: MissionState }
 	| { kind: "block"; mission: MissionState; block: MissionBlockMetadata }
 	| { kind: "milestone"; mission: MissionState; milestone: MissionMilestone }
 	| { kind: "feature"; mission: MissionState; milestone: MissionMilestone; feature: MissionFeature };
 
-function readMissionEvents(mission: MissionState, maxEvents = 8): MissionControlEvent[] {
+function readTailText(file: string, maxBytes: number): { text: string; truncated: boolean } {
+	const stat = fs.statSync(file);
+	const bytesToRead = Math.min(stat.size, Math.max(1, maxBytes));
+	const start = Math.max(0, stat.size - bytesToRead);
+	const buffer = Buffer.alloc(bytesToRead);
+	const fd = fs.openSync(file, "r");
+	try {
+		fs.readSync(fd, buffer, 0, bytesToRead, start);
+	} finally {
+		fs.closeSync(fd);
+	}
+	let text = buffer.toString("utf8");
+	if (start > 0) {
+		const firstNewline = text.indexOf("\n");
+		text = firstNewline >= 0 ? text.slice(firstNewline + 1) : "";
+	}
+	return { text, truncated: start > 0 };
+}
+
+function readMissionEventWindow(mission: MissionState, maxEvents = 8, maxBytes = 64 * 1024): MissionControlEventWindow {
 	const logFile = path.join(missionDir(mission.cwd, mission.id), "event-log.jsonl");
-	if (!fs.existsSync(logFile)) return [];
+	if (!fs.existsSync(logFile)) return { events: [], parsedInTail: 0, malformedInTail: 0, truncated: false, maxEvents };
+	const tail = readTailText(logFile, maxBytes);
 	const events: MissionControlEvent[] = [];
-	for (const line of fs.readFileSync(logFile, "utf8").split("\n")) {
+	let malformedInTail = 0;
+	for (const line of tail.text.split("\n")) {
 		if (!line.trim()) continue;
 		try {
 			const parsed = JSON.parse(line) as { ts?: unknown; type?: unknown; data?: unknown };
 			if (typeof parsed.type === "string") events.push({ ts: typeof parsed.ts === "string" ? parsed.ts : undefined, type: parsed.type, data: parsed.data });
+			else malformedInTail += 1;
 		} catch {
-			// Ignore malformed historical log entries; Mission Control is best-effort/read-only.
+			// Ignore malformed historical log entries; Mission Control is best-effort and must keep rendering.
+			malformedInTail += 1;
 		}
 	}
-	return events.slice(-maxEvents);
+	return { events: events.slice(-maxEvents), parsedInTail: events.length, malformedInTail, truncated: tail.truncated, maxEvents };
 }
 
-function eventDataSummary(data: unknown): string {
-	if (!data || typeof data !== "object") return "";
-	const record = data as Record<string, unknown>;
-	const parts = [record.milestoneId, record.featureId, record.runId, record.status, record.exitCode]
-		.filter((value): value is string | number => typeof value === "string" || typeof value === "number")
-		.map(String);
-	return parts.length ? ` (${parts.join(" · ")})` : "";
+function relativeEventTime(ts: string | undefined, now = Date.now()): string {
+	if (!ts) return "time ?";
+	const time = Date.parse(ts);
+	if (!Number.isFinite(time)) return "time ?";
+	const diffSeconds = Math.max(0, Math.round((now - time) / 1000));
+	if (diffSeconds < 60) return `${diffSeconds}s ago`;
+	const diffMinutes = Math.round(diffSeconds / 60);
+	if (diffMinutes < 60) return `${diffMinutes}m ago`;
+	const diffHours = Math.round(diffMinutes / 60);
+	if (diffHours < 48) return `${diffHours}h ago`;
+	const diffDays = Math.round(diffHours / 24);
+	if (diffDays < 14) return `${diffDays}d ago`;
+	return ts.replace(/^\d{4}-/, "").replace(/T/, " ").replace(/\.\d{3}Z$/, "Z");
+}
+
+function eventIcon(event: MissionControlEvent): string {
+	const data = event.data && typeof event.data === "object" ? event.data as Record<string, unknown> : undefined;
+	const exitCode = typeof data?.exitCode === "number" ? data.exitCode : undefined;
+	if (event.type.includes("block") || event.type.includes("failed") || event.type.includes("error") || (typeof exitCode === "number" && exitCode !== 0)) return "✗";
+	if (event.type.includes("finished") || event.type.includes("complete")) return "✓";
+	if (event.type.includes("started")) return "▶";
+	if (event.type.includes("plan") || event.type.includes("written")) return "◆";
+	return "•";
+}
+
+function eventLabel(type: string): string {
+	const labels: Record<string, string> = {
+		interactive_plan_written: "plan written",
+		mission_execution_started: "execution started",
+		worker_started: "worker started",
+		worker_finished: "worker finished",
+		worker_failed: "worker failed",
+		validator_started: "validator started",
+		validator_finished: "validator finished",
+		mission_block_recorded: "block recorded",
+		handoff_parse_error: "handoff parse error",
+		validation_parse_error: "validation parse error",
+		mission_complete: "mission complete",
+	};
+	return labels[type] ?? type.replace(/_/g, " ");
+}
+
+function shortRunId(runId: unknown): string | undefined {
+	if (typeof runId !== "string" || !runId) return undefined;
+	const parts = runId.split("-");
+	return parts.length >= 3 ? `${parts[1]}-${parts.slice(2).join("-")}` : runId;
+}
+
+function eventDataSummary(event: MissionControlEvent): string {
+	if (!event.data || typeof event.data !== "object") return "";
+	const record = event.data as Record<string, unknown>;
+	const pieces: string[] = [];
+	const featureId = typeof record.featureId === "string" ? record.featureId : undefined;
+	const milestoneId = typeof record.milestoneId === "string" ? record.milestoneId : undefined;
+	const runId = shortRunId(record.runId);
+	const status = typeof record.status === "string" ? record.status : undefined;
+	const exitCode = typeof record.exitCode === "number" ? record.exitCode : undefined;
+	const kind = typeof record.kind === "string" ? record.kind : undefined;
+	const failedItemId = typeof record.failedItemId === "string" ? record.failedItemId : undefined;
+	const reason = typeof record.reasonCategory === "string" ? record.reasonCategory.replace(/_/g, " ") : undefined;
+	if (event.type === "mission_block_recorded") {
+		if (kind || failedItemId) pieces.push([kind, failedItemId].filter(Boolean).join(" "));
+		if (reason) pieces.push(reason);
+	} else {
+		if (featureId) pieces.push(featureId);
+		else if (milestoneId) pieces.push(milestoneId);
+		if (status) pieces.push(status);
+		if (typeof exitCode === "number") pieces.push(`exit ${exitCode}`);
+	}
+	if (runId) pieces.push(`run ${runId}`);
+	return pieces.length ? ` — ${pieces.join(" · ")}` : "";
+}
+
+function formatMissionEventLine(event: MissionControlEvent, now = Date.now()): string {
+	return `${relativeEventTime(event.ts, now).padStart(7)} ${eventIcon(event)} ${eventLabel(event.type)}${eventDataSummary(event)}`;
 }
 
 function runArtifactSummaryLines(run: MissionRunContext): string[] {
@@ -1167,12 +1266,18 @@ function missionDetailsLines(selection: MissionControlSelection, run?: MissionRu
 }
 
 function progressLogLines(mission: MissionState): string[] {
-	const events = readMissionEvents(mission);
-	if (events.length === 0) return ["(no events recorded)"];
-	return events.map((event) => {
-		const stamp = event.ts ? event.ts.replace(/^\d{4}-/, "").replace(/\.\d{3}Z$/, "Z") : "unknown time";
-		return `${stamp}  ${event.type}${eventDataSummary(event.data)}`;
-	});
+	const window = readMissionEventWindow(mission);
+	if (window.events.length === 0) {
+		return window.malformedInTail > 0
+			? [`No parseable events in recent log tail; skipped ${window.malformedInTail} malformed entr${window.malformedInTail === 1 ? "y" : "ies"}.`]
+			: ["(no events recorded)"];
+	}
+	const prefix = window.truncated ? "Recent tail" : "Recent log";
+	const hidden = Math.max(0, window.parsedInTail - window.events.length);
+	const lines = [`${prefix}: showing ${window.events.length}/${window.parsedInTail} parsed event${window.parsedInTail === 1 ? "" : "s"}${hidden ? ` (${hidden} older in tail)` : ""}${window.malformedInTail ? ` · skipped ${window.malformedInTail} malformed` : ""}`];
+	const now = Date.now();
+	for (const event of window.events) lines.push(formatMissionEventLine(event, now));
+	return lines;
 }
 
 function currentItemLines(selection: MissionControlSelection, run?: MissionRunContext, block?: MissionBlockMetadata): string[] {
