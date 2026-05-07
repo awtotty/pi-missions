@@ -98,6 +98,22 @@ interface RunResult {
 	finalText: string;
 }
 
+interface MissionBlockSummary {
+	kind: "worker" | "validator";
+	missionId: string;
+	missionTitle: string;
+	milestoneId: string;
+	milestoneTitle: string;
+	featureId?: string;
+	featureTitle?: string;
+	runId: string;
+	runDir: string;
+	exitCode: number;
+	status?: string;
+	dirty?: string;
+	artifactPaths: string[];
+}
+
 function nowIso(): string {
 	return new Date().toISOString();
 }
@@ -439,6 +455,48 @@ function mark(status: string): string {
 	return "○";
 }
 
+function existingPaths(paths: string[]): string[] {
+	return paths.filter((file) => fs.existsSync(file));
+}
+
+function formatMissionBlockMessage(block: MissionBlockSummary): string {
+	const failedItem = block.kind === "worker"
+		? `Feature ${block.featureId} - ${block.featureTitle}`
+		: `Milestone ${block.milestoneId} - ${block.milestoneTitle}`;
+	return [
+		"[MISSION BLOCKED - RECOVERY CONTEXT]",
+		"A mission child agent blocked execution. Continue recovery in this main chat as the mission orchestrator; do not treat the mission as dead.",
+		"",
+		`Mission: ${block.missionId} — ${block.missionTitle}`,
+		`Blocked during: ${block.kind}`,
+		`Failed item: ${failedItem}`,
+		block.kind === "worker" ? `Milestone: ${block.milestoneId} - ${block.milestoneTitle}` : undefined,
+		`Run id: ${block.runId}`,
+		`Run directory: ${block.runDir}`,
+		`Exit code: ${block.exitCode}`,
+		block.status ? `Reported status: ${block.status}` : undefined,
+		block.dirty ? `Git status after child run:\n${block.dirty}` : undefined,
+		"",
+		"Artifacts:",
+		...(block.artifactPaths.length > 0 ? block.artifactPaths.map((file) => `- ${file}`) : ["- No handoff/report artifact found; inspect transcript/stderr in the run directory."]),
+		"",
+		"Suggested next inspection steps:",
+		block.kind === "worker" ? "1. Read handoff.json and handoff.md if present." : "1. Read validation-report.json and validation-report.md if present.",
+		"2. Inspect transcript.jsonl and stderr.txt in the run directory for the child-agent failure mode.",
+		"3. Check `git status --short` and review any relevant diffs/commits mentioned by the artifacts.",
+		"4. Decide whether this is an implementation defect, validation defect, planning issue, environmental/tooling issue, or procedural failure; revise/resume the mission only after the recovery path is clear.",
+	].filter((line): line is string => Boolean(line)).join("\n");
+}
+
+function emitMissionBlockMessage(pi: ExtensionAPI, block: MissionBlockSummary): void {
+	pi.sendMessage({
+		customType: "missions-block-context",
+		display: true,
+		content: formatMissionBlockMessage(block),
+		details: block,
+	}, { triggerTurn: true, deliverAs: "followUp" });
+}
+
 function summarizeMission(mission: MissionState): string {
 	const features = mission.milestones.flatMap((m) => m.features);
 	const done = features.filter((f) => f.status === "complete" || f.status === "skipped").length;
@@ -553,7 +611,7 @@ function findNextFeature(mission: MissionState): { milestone: MissionMilestone; 
 	return undefined;
 }
 
-async function runWorker(ctx: ExtensionContext, mission: MissionState, milestone: MissionMilestone, feature: MissionFeature): Promise<void> {
+async function runWorker(ctx: ExtensionContext, mission: MissionState, milestone: MissionMilestone, feature: MissionFeature): Promise<MissionBlockSummary | undefined> {
 	const dir = missionDir(mission.cwd, mission.id);
 	const runId = `${String(Date.now())}-worker-${feature.id}`;
 	const runDir = path.join(dir, "runs", runId);
@@ -593,21 +651,52 @@ async function runWorker(ctx: ExtensionContext, mission: MissionState, milestone
 	const dirty = await gitPorcelain(mission.cwd);
 	const head = await gitHead(mission.cwd);
 	feature.commit = handoff?.commit || head;
+	let block: MissionBlockSummary | undefined;
 	if (result.exitCode !== 0 || !handoff || dirty) {
 		feature.status = "failed";
 		mission.status = "blocked";
 		appendEvent(dir, "worker_failed", { featureId: feature.id, dirty, hasHandoff: Boolean(handoff) });
+		block = {
+			kind: "worker",
+			missionId: mission.id,
+			missionTitle: mission.title,
+			milestoneId: milestone.id,
+			milestoneTitle: milestone.title,
+			featureId: feature.id,
+			featureTitle: feature.title,
+			runId,
+			runDir,
+			exitCode: result.exitCode,
+			status: handoff?.status ?? (!handoff ? "missing handoff" : undefined),
+			dirty: dirty || undefined,
+			artifactPaths: existingPaths([handoffFile, path.join(runDir, "handoff.md"), path.join(runDir, "transcript.jsonl"), path.join(runDir, "stderr.txt")]),
+		};
 	} else if (handoff.status === "complete") {
 		feature.status = "complete";
 	} else {
 		feature.status = handoff.status === "blocked" ? "failed" : "failed";
 		mission.status = "blocked";
+		block = {
+			kind: "worker",
+			missionId: mission.id,
+			missionTitle: mission.title,
+			milestoneId: milestone.id,
+			milestoneTitle: milestone.title,
+			featureId: feature.id,
+			featureTitle: feature.title,
+			runId,
+			runDir,
+			exitCode: result.exitCode,
+			status: handoff.status,
+			artifactPaths: existingPaths([handoffFile, path.join(runDir, "handoff.md"), path.join(runDir, "transcript.jsonl"), path.join(runDir, "stderr.txt")]),
+		};
 	}
 	saveMission(ctx.cwd, mission);
 	updateWidget(ctx, mission);
+	return block;
 }
 
-async function runValidator(ctx: ExtensionContext, mission: MissionState, milestone: MissionMilestone): Promise<void> {
+async function runValidator(ctx: ExtensionContext, mission: MissionState, milestone: MissionMilestone): Promise<MissionBlockSummary | undefined> {
 	const dir = missionDir(mission.cwd, mission.id);
 	const runId = `${String(Date.now())}-validator-${milestone.id}`;
 	const runDir = path.join(dir, "runs", runId);
@@ -634,15 +723,29 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 			appendEvent(dir, "validation_parse_error", { milestoneId: milestone.id, error: String(error) });
 		}
 	}
+	let block: MissionBlockSummary | undefined;
 	if (result.exitCode === 0 && report?.status === "pass") {
 		milestone.status = "complete";
 	} else {
 		milestone.status = "failed";
 		mission.status = "blocked";
+		block = {
+			kind: "validator",
+			missionId: mission.id,
+			missionTitle: mission.title,
+			milestoneId: milestone.id,
+			milestoneTitle: milestone.title,
+			runId,
+			runDir,
+			exitCode: result.exitCode,
+			status: report?.status ?? (!report ? "missing validation report" : undefined),
+			artifactPaths: existingPaths([reportFile, path.join(runDir, "validation-report.md"), path.join(runDir, "transcript.jsonl"), path.join(runDir, "stderr.txt")]),
+		};
 	}
 	appendEvent(dir, "validator_finished", { milestoneId: milestone.id, runId, exitCode: result.exitCode, status: report?.status });
 	saveMission(ctx.cwd, mission);
 	updateWidget(ctx, mission);
+	return block;
 }
 
 async function approveMission(options: {
@@ -676,7 +779,7 @@ async function approveMission(options: {
 	return true;
 }
 
-async function runMission(args: string, ctx: ExtensionContext): Promise<void> {
+async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI): Promise<void> {
 	const id = args.trim() || latestMission(ctx.cwd)?.id;
 	if (!id) {
 		ctx.ui.notify("No mission found. Start with /missions [goal] and persist a plan first.", "warning");
@@ -701,18 +804,20 @@ async function runMission(args: string, ctx: ExtensionContext): Promise<void> {
 		mission = loadMission(ctx.cwd, id);
 		const next = findNextFeature(mission);
 		if (!next) break;
-		await runWorker(ctx, mission, next.milestone, next.feature);
+		const workerBlock = await runWorker(ctx, mission, next.milestone, next.feature);
 		mission = loadMission(ctx.cwd, id);
 		if (mission.status === "blocked" || mission.status === "failed") {
+			if (workerBlock) emitMissionBlockMessage(pi, workerBlock);
 			ctx.ui.notify(`Mission blocked. See ${dir}`, "error");
 			ctx.ui.setWidget("missions-run", undefined);
 			return;
 		}
 		const milestone = mission.milestones.find((m) => m.id === next.milestone.id)!;
 		if (milestone.features.every((f) => f.status === "complete" || f.status === "skipped")) {
-			await runValidator(ctx, mission, milestone);
+			const validatorBlock = await runValidator(ctx, mission, milestone);
 			mission = loadMission(ctx.cwd, id);
 			if (mission.status === "blocked" || mission.status === "failed") {
+				if (validatorBlock) emitMissionBlockMessage(pi, validatorBlock);
 				ctx.ui.notify(`Validation blocked mission. See ${dir}`, "error");
 				ctx.ui.setWidget("missions-run", undefined);
 				return;
@@ -807,7 +912,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			if (!ok) return { content: [{ type: "text", text: "Mission start canceled by user." }], details: { missionId } };
 			activeRunningId = missionId;
 			persistOrchestratorState(ctx.cwd, mission, { activeMissionId: missionId, activePlanningMissionId: undefined, activeRunningMissionId: missionId });
-			await runMission(missionId, ctx);
+			await runMission(missionId, ctx, pi);
 			persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, missionId), { activeMissionId: missionId, activePlanningMissionId: undefined, activeRunningMissionId: undefined });
 			return { content: [{ type: "text", text: `Started or resumed mission ${missionId}.` }], details: { missionId } };
 		},
@@ -915,7 +1020,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 					activeRunningId = id;
 					persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, id), { activeMissionId: id, activePlanningMissionId: undefined, activeRunningMissionId: id });
 				}
-				await runMission(args || id || "", ctx);
+				await runMission(args || id || "", ctx, pi);
 				if (id) persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, id), { activeMissionId: id, activePlanningMissionId: undefined, activeRunningMissionId: undefined });
 				return { ok: true, text: "Mission run command completed." };
 			}
