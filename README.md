@@ -31,6 +31,14 @@ pi -e /workspace/pi-missions
 
 After edits, use `/reload` in pi.
 
+## Run tests
+
+The current validation check is TypeScript type checking:
+
+```bash
+npm run typecheck
+```
+
 ## Commands
 
 ```text
