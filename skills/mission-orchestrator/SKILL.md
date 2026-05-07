@@ -24,7 +24,7 @@ Do not call `mission_write_plan` immediately just because mission planning has s
 
 Before calling `mission_write_plan`, present a visible, reviewable plan draft in chat. This review must include the objective, the milestone/feature outline, important assumptions and non-goals, and a bounded validation-contract summary. Do not dump huge validation contracts inline; summarize categories, counts, and representative/high-risk assertions. The only exception is when the user explicitly asks you to save a draft whose required review content is already visible in the current chat.
 
-When ready, persist drafts with the `mission_write_plan` tool. This writes these artifacts into the mission directory but does not approve or run the mission:
+When ready, persist drafts with the `mission_write_plan` tool. This writes these artifacts into the mission directory but does not start or run the mission:
 
 - `mission.json`: machine-readable mission state.
 - `plan/objective.md`: user goal, constraints, non-goals, assumptions.
@@ -35,7 +35,7 @@ When ready, persist drafts with the `mission_write_plan` tool. This writes these
 - `skills/validator-scrutiny/SKILL.md`: mission-specific adversarial validator procedure.
 - `skills/validator-user-testing/SKILL.md`: mission-specific QA/user-testing validator procedure when applicable.
 
-Only ask for approval after the user has reviewed the visible plan draft and validation-contract summary in chat. Prefer using `mission_approve_plan` to request explicit approval and approve the mission for the user. After approval, prefer using `mission_start_execution` to request explicit approval and start execution. Use `mission_status` and `mission_list` for read-only mission inspection without confirmation. Use `mission_clear_completed` for clearing completed missions only after explicit user confirmation. The user should not need to manually type mission ids.
+After the user has reviewed the visible plan draft and validation-contract summary in chat, use `mission_start_execution` when they explicitly confirm that implementation should begin. Persisted plans are directly runnable, and `mission_start_execution` (or `/missions run`) is the single explicit confirmation gate before workers start. Use `mission_status` and `mission_list` for read-only mission inspection without confirmation. Use `mission_clear_completed` for clearing completed missions only after explicit user confirmation. The user should not need to manually type mission ids.
 
 ## mission.json schema
 
@@ -128,7 +128,7 @@ Recovery policy:
 - Record why the plan changed in the visible chat summary and in persisted artifacts when revising the plan.
 - Ask the user only for requirement ambiguity, destructive rollback decisions, credentials/secrets, unavailable external systems, or product tradeoffs.
 - After revising, show the recovery plan in chat before calling `mission_write_plan`, just like initial planning.
-- After persistence, use `mission_start_execution` only after explicit user confirmation.
+- After persistence, use `mission_start_execution` only after explicit user confirmation to start or resume execution.
 
 ## Re-planning
 

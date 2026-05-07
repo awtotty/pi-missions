@@ -321,7 +321,7 @@ function lightweightMissionContext(cwd: string, state?: MissionOrchestratorSessi
 		mission.currentMilestoneId ? `Current milestone: ${mission.currentMilestoneId}` : undefined,
 		mission.currentFeatureId ? `Current feature: ${mission.currentFeatureId}` : undefined,
 		mission.status === "planning" ? "The current assistant/session is the mission orchestrator. Continue planning inline when the user discusses this mission." : undefined,
-		"Use mission tools when the user asks about this mission; state-changing mission actions remain confirmation-gated.",
+		"Use mission tools when the user asks about this mission; /missions run and mission_start_execution are the confirmation gate before implementation starts.",
 		"This is lightweight context only: answer unrelated user requests normally and do not force the conversation into mission planning unless relevant.",
 	].filter((line): line is string => Boolean(line)).join("\n");
 }
@@ -340,7 +340,7 @@ function missionPlanningKickoffContext(cwd: string, goal: string): string {
 		"Use the mission-orchestrator skill for mission planning. Do not write application code while planning.",
 		"First brainstorm with the user: ask clarifying questions, push back on scope, surface tradeoffs, and iterate in normal chat.",
 		"Do not call mission_write_plan merely because /missions was invoked. Call mission_write_plan only when you judge the plan and validation contract are mature enough to persist, or when the user explicitly asks you to save the draft.",
-		"After the user has reviewed the persisted plan, use mission_start_execution to request explicit confirmation before implementation begins.",
+		"After the user has reviewed the persisted plan, use mission_start_execution as the single explicit start/run confirmation gate before implementation begins.",
 		"The user may ask unrelated questions at any time; answer those normally and return to mission planning only when relevant.",
 	].join("\n");
 }
@@ -875,7 +875,11 @@ function planOutline(mission: MissionState, maxMilestones = 8, maxFeaturesPerMil
 
 function persistedPlanSummary(mission: MissionState, dir: string, objectiveMd: string, validationContractJson: unknown, existingMission: boolean): string {
 	const action = existingMission ? "revised" : "written";
-	const nextAction = mission.status === "planning" ? "\n\nNext: continue refining, then start execution after the plan is ready." : "";
+	const nextAction = mission.status === "planning"
+		? "\n\nNext: continue refining, then persist a runnable plan when it is ready."
+		: mission.status === "planned"
+			? `\n\nNext: review the saved plan, then run /missions run ${mission.id} or use mission_start_execution to confirm and start implementation.`
+			: "";
 	return [
 		`Mission plan ${action}: ${mission.title}`,
 		`ID: ${mission.id}`,

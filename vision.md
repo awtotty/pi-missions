@@ -6,7 +6,7 @@ Missions is a system that combines delegation, creator-verifier, broadcast, and 
 
 1. Describes a software goal
 2. Scope the goals through conversation
-3. Approve the plan
+3. Start the reviewed plan with an explicit run confirmation
 4. Missions handles execution
 
 ## Roles

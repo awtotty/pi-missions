@@ -10,7 +10,7 @@ This is an early prototype inspired by Factory Missions, with a different design
 - chat-first brainstorming and plan refinement in the current pi session
 - lazy `mission_write_plan` persistence after the orchestrator shows a reviewable plan in chat
 - persisted plans are echoed as bounded, reviewable summaries instead of hidden-only artifact writes
-- `mission_approve_plan` and `mission_start_execution` tools with explicit user confirmation
+- `mission_start_execution` tool with explicit user confirmation as the single start/run gate
 - mission artifacts under `.pi/missions/<mission-id>/`
 - generated validation contract and mission-specific skills
 - sequential worker execution, one fresh child process per feature
@@ -81,8 +81,7 @@ Use these scenarios for release-style checks of mission flows. They complement, 
 ```text
 /missions [goal]           Load the orchestrator into the current conversation
 /missions new [goal]       Alias for /missions [goal]
-/missions approve [id]     Approve the persisted plan and unlock execution
-/missions run [id]         Run or resume a mission sequentially
+/missions run [id]         Start or resume a persisted mission sequentially
 /missions status [id]      Show mission status
 /mission-control [id]      Open the read-only Mission Control TUI
 /missions list             List missions
@@ -92,11 +91,11 @@ Use these scenarios for release-style checks of mission flows. They complement, 
 /mission ...               Alias for /missions
 ```
 
-`/missions` is a chat-first workflow: it loads the mission orchestrator skill into the current conversation, then brainstorming, scoping, assumptions, milestones, features, and validation planning happen in chat. When a plan is persisted, the assistant should show the plan content for review and `mission_write_plan` returns a concise visible summary with artifact locations, so users are not asked to approve an unseen hidden file write.
+`/missions` is a chat-first workflow: it loads the mission orchestrator skill into the current conversation, then brainstorming, scoping, assumptions, milestones, features, and validation planning happen in chat. When a plan is persisted, the assistant should show the plan content for review and `mission_write_plan` returns a concise visible summary with artifact locations. Persisted plans are directly runnable; `/missions run` or `mission_start_execution` is the single explicit confirmation gate before implementation begins.
 
 ## Mission Control
 
-`/mission-control [mission-id]` opens a dedicated Mission Control dashboard in interactive pi sessions. Mission Control v1 is read-only: it monitors mission artifacts and run state, but does not pause, resume, redirect, approve, clear, or otherwise mutate missions. In non-interactive/RPC/headless contexts, use `/missions status` or the `mission_status` tool instead.
+`/mission-control [mission-id]` opens a dedicated Mission Control dashboard in interactive pi sessions. Mission Control v1 is read-only: it monitors mission artifacts and run state, but does not pause, resume, redirect, clear, or otherwise mutate missions. In non-interactive/RPC/headless contexts, use `/missions status` or the `mission_status` tool instead.
 
 When opened without an id, Mission Control prefers the active mission. If there is no active mission, it shows recent visible missions or an empty state. The dashboard includes mission progress, milestone/feature tree, selected item details, an event timeline, and block-focus details with artifact paths and suggested inspection steps when a mission is blocked.
 
