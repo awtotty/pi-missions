@@ -695,30 +695,19 @@ function nextSuggestedAction(mission: MissionState, run?: MissionRunContext, blo
 }
 
 function updateWidget(ctx: ExtensionContext, mission?: MissionState): void {
+	// Mission Control is now the rich mission visibility surface. Keep only the
+	// compact footer/status indicator here and always clear the legacy mission
+	// widget so stale rich mission UI cannot survive reload, clear, block, or
+	// completion transitions.
+	ctx.ui.setWidget("missions", undefined);
 	if (!mission || (mission.status === "complete" && isMissionCleared(mission.cwd, mission.id))) {
 		ctx.ui.setStatus("missions", undefined);
-		ctx.ui.setWidget("missions", undefined);
 		return;
 	}
 	const features = mission.milestones.flatMap((m) => m.features);
 	const done = features.filter((f) => f.status === "complete" || f.status === "skipped").length;
 	const run = currentOrLastRunContext(mission);
-	const block = latestBlockFromArtifacts(mission);
 	ctx.ui.setStatus("missions", `🚀 ${done}/${features.length} ${mission.status}${run ? ` ${run.runId}` : ""}`);
-	const lines = [
-		`Mission: ${mission.title} (${mission.status})`,
-		`Progress: ${done}/${features.length} features`,
-		run ? `${run.label}: ${run.runId} (${run.kind} ${run.itemId})` : "Run: none recorded",
-		run ? `Artifacts: ${run.runDir}` : undefined,
-		block ? `Block: ${describeBlock(block)}` : undefined,
-		`Next: ${nextSuggestedAction(mission, run, block)}`,
-		"",
-	];
-	for (const m of mission.milestones.slice(0, 3)) {
-		lines.push(`${mark(m.status)} ${m.id} ${m.title}`);
-		for (const f of m.features.slice(0, 3)) lines.push(`  ${mark(f.status)} ${f.id} ${f.title}`);
-	}
-	ctx.ui.setWidget("missions", lines.filter((line): line is string => line !== undefined));
 }
 
 function mark(status: string): string {

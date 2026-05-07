@@ -68,12 +68,12 @@ Use these scenarios for release-style checks of mission flows. They complement, 
 4. For a non-`default` orchestrator model, start `/missions` or `/missions new` and confirm pi applies the model before the kickoff message, or shows a clear warning if the reference is invalid or credentials are unavailable.
 5. During execution, confirm worker and validator child runs resolve per-mission `default` slots through the current global defaults.
 
-### Mission Control status and widget output
+### Mission Control status and footer indicator
 
 1. Run `/missions status <mission-id>` while a mission is planned, running, blocked, and complete.
 2. Confirm the status output includes progress, mission directory, current or last run id, run item, run artifact path, blocked reason and block artifacts when present, and a next suggested action.
 3. Confirm the `mission_status` tool returns the same summary semantics as `/missions status`.
-4. Observe the mission widget during execution and after `/missions clear`; it should show useful active/blocked context and avoid stale completed-mission UI after completed missions are cleared.
+4. Observe the footer/status indicator during execution and after `/missions clear`; it should remain compact (`ctx.ui.setStatus("missions", ...)`) while the old rich always-on mission widget stays hidden and no stale completed-mission widget appears.
 
 ## Commands
 
