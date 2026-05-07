@@ -307,7 +307,7 @@ async function createMission(args: string, ctx: ExtensionCommandContext, pi: Ext
 	ctx.ui.notify(`Interactive mission planning started: ${id}\n${dir}`, "info");
 
 	pi.sendUserMessage(
-		`Use the mission-orchestrator skill. We are now interactively planning mission ${id}.\n\nMission directory: ${dir}\nTarget repository cwd: ${ctx.cwd}\nCurrent time: ${nowIso()}\n\nUser goal:\n${goal}\n\nDo not write application code. Collaborate with the user: ask clarifying questions, push back on scope, propose milestones/features, and draft a pre-implementation validation contract. When the plan is ready, call mission_write_plan to persist the current draft. Tell the user to run /missions approve ${id} only after they are satisfied.`,
+		`Use the mission-orchestrator skill. We are now interactively planning mission ${id}.\n\nMission directory: ${dir}\nTarget repository cwd: ${ctx.cwd}\nCurrent time: ${nowIso()}\n\nUser goal:\n${goal}\n\nDo not write application code. Collaborate with the user: ask clarifying questions, push back on scope, propose milestones/features, and draft a pre-implementation validation contract. When the plan is ready, call mission_write_plan to persist the current draft. After the user is satisfied, use mission_approve_plan to request explicit approval and approve the mission for them.`,
 	);
 }
 
@@ -320,7 +320,7 @@ function findNextFeature(mission: MissionState): { milestone: MissionMilestone; 
 	return undefined;
 }
 
-async function runWorker(ctx: ExtensionCommandContext, mission: MissionState, milestone: MissionMilestone, feature: MissionFeature): Promise<void> {
+async function runWorker(ctx: ExtensionContext, mission: MissionState, milestone: MissionMilestone, feature: MissionFeature): Promise<void> {
 	const dir = missionDir(mission.cwd, mission.id);
 	const runId = `${String(Date.now())}-worker-${feature.id}`;
 	const runDir = path.join(dir, "runs", runId);
@@ -374,7 +374,7 @@ async function runWorker(ctx: ExtensionCommandContext, mission: MissionState, mi
 	updateWidget(ctx, mission);
 }
 
-async function runValidator(ctx: ExtensionCommandContext, mission: MissionState, milestone: MissionMilestone): Promise<void> {
+async function runValidator(ctx: ExtensionContext, mission: MissionState, milestone: MissionMilestone): Promise<void> {
 	const dir = missionDir(mission.cwd, mission.id);
 	const runId = `${String(Date.now())}-validator-${milestone.id}`;
 	const runDir = path.join(dir, "runs", runId);
@@ -412,7 +412,38 @@ async function runValidator(ctx: ExtensionCommandContext, mission: MissionState,
 	updateWidget(ctx, mission);
 }
 
-async function runMission(args: string, ctx: ExtensionCommandContext): Promise<void> {
+async function approveMission(options: {
+	ctx: ExtensionContext;
+	id: string;
+	activePlanningId: string | undefined;
+	setActivePlanning: (id: string | undefined) => void;
+	requireConfirmation: boolean;
+}): Promise<boolean> {
+	const { ctx, id, activePlanningId, setActivePlanning, requireConfirmation } = options;
+	const mission = loadMission(ctx.cwd, id);
+	if (mission.milestones.length === 0) {
+		ctx.ui.notify("Cannot approve: mission has no milestones/features. Ask the orchestrator to write the plan first.", "warning");
+		return false;
+	}
+	const dir = missionDir(ctx.cwd, id);
+	if (!fs.existsSync(path.join(dir, "plan/validation-contract.json"))) {
+		ctx.ui.notify("Cannot approve: missing plan/validation-contract.json.", "warning");
+		return false;
+	}
+	if (requireConfirmation) {
+		const ok = await ctx.ui.confirm("Approve mission plan?", `${mission.title}\n\nThis locks planning and enables /missions run ${id}.`);
+		if (!ok) return false;
+	}
+	mission.status = "planned";
+	saveMission(ctx.cwd, mission);
+	appendEvent(dir, "mission_approved", {});
+	if (activePlanningId === id) setActivePlanning(undefined);
+	updateWidget(ctx, mission);
+	ctx.ui.notify(`Mission approved. Run with /missions run ${id}`, "info");
+	return true;
+}
+
+async function runMission(args: string, ctx: ExtensionContext): Promise<void> {
 	const id = args.trim() || latestMission(ctx.cwd)?.id;
 	if (!id) {
 		ctx.ui.notify("No mission found. Start with /missions new", "warning");
@@ -475,7 +506,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "mission_approve_plan",
 		label: "Approve Mission Plan",
-		description: "Ask the user for explicit approval, then approve the mission plan on their behalf by queuing /missions approve. Use only after the user has reviewed the plan.",
+		description: "Ask the user for explicit approval, then approve the mission plan on their behalf. Use only after the user has reviewed the plan.",
 		parameters: Type.Object({
 			missionId: Type.Optional(Type.String()),
 		}),
@@ -488,17 +519,21 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			if (!ctx.hasUI) {
 				return { content: [{ type: "text", text: "Explicit approval requires an interactive UI." }], details: { missionId }, isError: true };
 			}
-			const ok = await ctx.ui.confirm("Approve mission plan?", `${mission.title}\n\nThis will queue /missions approve ${missionId}.`);
+			const ok = await ctx.ui.confirm("Approve mission plan?", `${mission.title}\n\nThis will approve mission ${missionId} now.`);
 			if (!ok) return { content: [{ type: "text", text: "Mission approval canceled by user." }], details: { missionId } };
-			pi.sendUserMessage(`/missions approve ${missionId}`, { deliverAs: "followUp" });
-			return { content: [{ type: "text", text: `Queued approval for mission ${missionId}.` }], details: { missionId } };
+			const approved = await approveMission({ ctx, id: missionId, activePlanningId, setActivePlanning, requireConfirmation: false });
+			return {
+				content: [{ type: "text", text: approved ? `Approved mission ${missionId}.` : `Mission ${missionId} was not approved.` }],
+				details: { missionId },
+				isError: !approved,
+			};
 		},
 	});
 
 	pi.registerTool({
 		name: "mission_start_execution",
 		label: "Start Mission Execution",
-		description: "Ask the user for explicit approval, then start or resume sequential mission execution on their behalf by queuing /missions run.",
+		description: "Ask the user for explicit approval, then start or resume sequential mission execution on their behalf.",
 		parameters: Type.Object({
 			missionId: Type.Optional(Type.String()),
 		}),
@@ -511,10 +546,10 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			if (!ctx.hasUI) {
 				return { content: [{ type: "text", text: "Explicit approval requires an interactive UI." }], details: { missionId }, isError: true };
 			}
-			const ok = await ctx.ui.confirm("Start mission execution?", `${mission.title}\n\nThis will queue /missions run ${missionId}. Workers may modify files and create commits.`);
+			const ok = await ctx.ui.confirm("Start mission execution?", `${mission.title}\n\nThis will run mission ${missionId} now. Workers may modify files and create commits.`);
 			if (!ok) return { content: [{ type: "text", text: "Mission start canceled by user." }], details: { missionId } };
-			pi.sendUserMessage(`/missions run ${missionId}`, { deliverAs: "followUp" });
-			return { content: [{ type: "text", text: `Queued execution for mission ${missionId}.` }], details: { missionId } };
+			await runMission(missionId, ctx);
+			return { content: [{ type: "text", text: `Started or resumed mission ${missionId}.` }], details: { missionId } };
 		},
 	});
 
@@ -571,7 +606,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			message: {
 				customType: "missions-planning-context",
 				display: false,
-				content: `[MISSION PLANNING MODE]\nMission id: ${activePlanningId}\nMission directory: ${dir}\n\nYou are the interactive mission orchestrator. Use the mission-orchestrator skill. Collaborate with the user before execution: ask clarifying questions, refine milestones/features, create a pre-implementation validation contract, and generate mission-specific worker/validator skills. Do not modify application code. Use mission_write_plan whenever the draft should be persisted. When the user is satisfied, use mission_approve_plan to ask for explicit approval and queue approval. After approval, use mission_start_execution to ask for explicit approval and queue execution. The user should not need to type mission ids manually.`,
+				content: `[MISSION PLANNING MODE]\nMission id: ${activePlanningId}\nMission directory: ${dir}\n\nYou are the interactive mission orchestrator. Use the mission-orchestrator skill. Collaborate with the user before execution: ask clarifying questions, refine milestones/features, create a pre-implementation validation contract, and generate mission-specific worker/validator skills. Do not modify application code. Use mission_write_plan whenever the draft should be persisted. When the user is satisfied, use mission_approve_plan to ask for explicit approval and approve the mission. After approval, use mission_start_execution to ask for explicit approval and start execution. The user should not need to type mission ids manually.`, 
 			},
 		};
 	});
@@ -596,24 +631,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 					ctx.ui.notify("No mission to approve.", "warning");
 					return;
 				}
-				const mission = loadMission(ctx.cwd, id);
-				if (mission.milestones.length === 0) {
-					ctx.ui.notify("Cannot approve: mission has no milestones/features. Ask the orchestrator to write the plan first.", "warning");
-					return;
-				}
-				const dir = missionDir(ctx.cwd, id);
-				if (!fs.existsSync(path.join(dir, "plan/validation-contract.json"))) {
-					ctx.ui.notify("Cannot approve: missing plan/validation-contract.json.", "warning");
-					return;
-				}
-				const ok = await ctx.ui.confirm("Approve mission plan?", `${mission.title}\n\nThis locks planning and enables /missions run ${id}.`);
-				if (!ok) return;
-				mission.status = "planned";
-				saveMission(ctx.cwd, mission);
-				appendEvent(dir, "mission_approved", {});
-				if (activePlanningId === id) setActivePlanning(undefined);
-				updateWidget(ctx, mission);
-				ctx.ui.notify(`Mission approved. Run with /missions run ${id}`, "info");
+				await approveMission({ ctx, id, activePlanningId, setActivePlanning, requireConfirmation: true });
 				return;
 			}
 			if (subcommand === "run" || subcommand === "resume") return await runMission(args, ctx);
