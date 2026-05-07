@@ -50,6 +50,9 @@ npm run typecheck
 /missions run [id]         Run or resume a mission sequentially
 /missions status [id]      Show mission status
 /missions list             List missions
+/missions models           Inspect global role model defaults
+/missions models <role> <model>
+                           Set a global role model default
 /mission ...               Alias for /missions
 ```
 
@@ -82,7 +85,7 @@ npm run typecheck
 
 ## Role model defaults
 
-The mission schema has separate model slots:
+Missions use separate model slots for each role:
 
 ```json
 {
@@ -94,7 +97,19 @@ The mission schema has separate model slots:
 }
 ```
 
-For now these default to pi's current default model. Later this should become configurable globally and per mission.
+Global defaults are configured with `/missions models`:
+
+```text
+/missions models                         Show current global defaults and settings file
+/missions models orchestrator <model>    Set the planner/orchestrator default
+/missions models worker <model>          Set the feature worker default
+/missions models validator <model>       Set the milestone validator default
+/missions models set <role> <model>      Equivalent explicit set form
+```
+
+The supported roles are `orchestrator`, `worker`, and `validator`. Use `default` as a model value when a role should fall back to pi's current default model.
+
+The defaults are stored in `.pi/missions/settings.json` for the target repository. New missions start from those global defaults, while the existing per-mission `models` object remains valid for compatibility. During execution, a per-mission role value other than `default` is used directly; a per-mission `default` slot is resolved through the current global default for that role.
 
 ## Design notes
 
