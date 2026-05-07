@@ -231,22 +231,21 @@ function lightweightMissionContext(cwd: string, state?: MissionOrchestratorSessi
 	].filter((line): line is string => Boolean(line)).join("\n");
 }
 
-function missionPlanningKickoffContext(cwd: string, mission: MissionState, goal: string): string {
+function missionPlanningKickoffContext(cwd: string, goal: string): string {
 	return [
-		"[MISSION PLANNING KICKOFF]",
-		"The user started a new mission in this current session with /missions new.",
-		"You are the mission orchestrator in this same session; do not assume a detached planning context.",
-		`Mission: ${mission.id}`,
-		`Mission directory: ${missionDir(cwd, mission.id)}`,
+		"[MISSION ORCHESTRATOR REQUEST]",
+		"The user invoked /missions in the current session.",
+		"You are the mission orchestrator in this same ongoing conversation; do not assume a detached planning mode or wizard UI.",
 		`Target repository cwd: ${cwd}`,
 		`Current time: ${nowIso()}`,
 		"",
-		"User goal:",
-		goal,
+		"User goal or context:",
+		goal || "The user wants to discuss or continue mission planning.",
 		"",
 		"Use the mission-orchestrator skill for mission planning. Do not write application code while planning.",
-		"Collaborate with the user: ask clarifying questions, push back on scope, propose milestones/features, and draft a pre-implementation validation contract.",
-		"When the plan is ready, call mission_write_plan to persist the current draft. After the user is satisfied, use mission_approve_plan to request explicit approval and approve the mission for them.",
+		"First brainstorm with the user: ask clarifying questions, push back on scope, surface tradeoffs, and iterate in normal chat.",
+		"Do not call mission_write_plan merely because /missions was invoked. Call mission_write_plan only when you judge the plan and validation contract are mature enough to persist, or when the user explicitly asks you to save the draft.",
+		"After the user has reviewed and accepted the persisted plan, use mission_approve_plan to request explicit approval. Execution remains separately confirmation-gated.",
 		"The user may ask unrelated questions at any time; answer those normally and return to mission planning only when relevant.",
 	].join("\n");
 }
@@ -462,44 +461,31 @@ function resolveMission(cwd: string, id?: string, state?: MissionOrchestratorSes
 	return id ? loadMission(cwd, id) : activeMissionFromState(cwd, state) ?? latestMission(cwd);
 }
 
-async function createMission(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI, setActivePlanning: (cwd: string, id: string) => void): Promise<void> {
-	const editedGoal = args.trim() || (await ctx.ui.editor("Mission goal", ""));
-	const goal = editedGoal ?? "";
-	if (!goal.trim()) {
-		ctx.ui.notify("Mission creation canceled: no goal provided.", "warning");
-		return;
-	}
+async function startMissionOrchestrator(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
+	const goal = args.trim();
+	pi.appendEntry(PLANNING_KICKOFF_ENTRY, { schemaVersion: 1, cwd: ctx.cwd, goal, createdAt: nowIso() });
+	ctx.ui.notify("Mission orchestrator loaded in this session.", "info");
+	pi.sendMessage({
+		customType: "missions-planning-kickoff",
+		display: false,
+		content: missionPlanningKickoffContext(ctx.cwd, goal),
+		details: { cwd: ctx.cwd },
+	}, { triggerTurn: true });
+}
 
-	const id = `mission-${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
-	const dir = missionDir(ctx.cwd, id);
-	ensureDir(path.join(dir, "plan"));
-	ensureDir(path.join(dir, "skills"));
-	ensureDir(path.join(dir, "runs"));
-	const seed: MissionState = {
+function createPlanningMission(cwd: string, requestedId?: string): MissionState {
+	const id = requestedId || `mission-${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
+	return {
 		schemaVersion: 1,
 		id,
 		title: "Planning...",
 		status: "planning",
 		createdAt: nowIso(),
 		updatedAt: nowIso(),
-		cwd: ctx.cwd,
+		cwd,
 		models: { orchestrator: "default", worker: "default", validator: "default" },
 		milestones: [],
 	};
-	writeJson(path.join(dir, "mission.json"), seed);
-	fs.writeFileSync(path.join(dir, "plan", "objective.md"), `# Mission Goal\n\n${goal}\n`);
-	appendEvent(dir, "interactive_planning_started", { goal });
-	setActivePlanning(ctx.cwd, id);
-	pi.appendEntry(PLANNING_KICKOFF_ENTRY, { schemaVersion: 1, id, cwd: ctx.cwd, goal, createdAt: nowIso() });
-	updateWidget(ctx, seed);
-	ctx.ui.notify(`Mission planning started in the current session: ${id}\n${dir}`, "info");
-
-	pi.sendMessage({
-		customType: "missions-planning-kickoff",
-		display: false,
-		content: missionPlanningKickoffContext(ctx.cwd, seed, goal),
-		details: { missionId: id, dir },
-	}, { triggerTurn: true });
 }
 
 function findNextFeature(mission: MissionState): { milestone: MissionMilestone; feature: MissionFeature } | undefined {
@@ -637,7 +623,7 @@ async function approveMission(options: {
 async function runMission(args: string, ctx: ExtensionContext): Promise<void> {
 	const id = args.trim() || latestMission(ctx.cwd)?.id;
 	if (!id) {
-		ctx.ui.notify("No mission found. Start with /missions new", "warning");
+		ctx.ui.notify("No mission found. Start with /missions [goal] and persist a plan first.", "warning");
 		return;
 	}
 	let mission = loadMission(ctx.cwd, id);
@@ -788,12 +774,11 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const active = activeMissionFromState(ctx.cwd, orchestratorState);
-			const missionId = params.missionId || activePlanningId || activeMissionId || active?.id;
-			if (!missionId) {
-				return { content: [{ type: "text", text: "No active mission. Run /missions new first or provide missionId." }], details: {}, isError: true };
-			}
+			const requestedMission = params.mission as Partial<MissionState>;
+			const missionId = params.missionId || activePlanningId || activeMissionId || active?.id || requestedMission.id || createPlanningMission(ctx.cwd).id;
 			const dir = missionDir(ctx.cwd, missionId);
 			const existingMission = fs.existsSync(path.join(dir, "mission.json")) ? loadMission(ctx.cwd, missionId) : undefined;
+			const seedMission = existingMission ?? createPlanningMission(ctx.cwd, missionId);
 			ensureDir(path.join(dir, "plan"));
 			ensureDir(path.join(dir, "skills/worker"));
 			ensureDir(path.join(dir, "skills/validator-scrutiny"));
@@ -801,10 +786,11 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			const mission = params.mission as MissionState;
 			mission.id = missionId;
 			mission.cwd = ctx.cwd;
-			mission.status = existingMission && existingMission.status !== "planning" && mission.status === "planning" ? existingMission.status : mission.status || existingMission?.status || "planning";
+			mission.schemaVersion = 1;
+			mission.status = existingMission && existingMission.status !== "planning" && mission.status === "planning" ? existingMission.status : mission.status || seedMission.status;
 			mission.updatedAt = nowIso();
-			if (!mission.createdAt) mission.createdAt = existingMission?.createdAt || nowIso();
-			if (!mission.models) mission.models = { orchestrator: "default", worker: "default", validator: "default" };
+			if (!mission.createdAt) mission.createdAt = seedMission.createdAt;
+			if (!mission.models) mission.models = seedMission.models;
 			writeJson(path.join(dir, "mission.json"), mission);
 			fs.writeFileSync(path.join(dir, "plan/objective.md"), params.objectiveMd);
 			writeJson(path.join(dir, "plan/features.json"), params.featuresJson);
@@ -841,7 +827,12 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 		const [subcommand, ...rest] = rawArgs.trim().split(/\s+/).filter(Boolean);
 		const args = rest.join(" ");
 		try {
-			if (!subcommand || subcommand === "status") {
+			if (!subcommand || subcommand === "new" || !["status", "approve", "run", "resume", "list", "clear"].includes(subcommand)) {
+				const goal = subcommand === "new" ? args : rawArgs.trim();
+				await startMissionOrchestrator(goal, ctx, pi);
+				return { ok: true, text: "Mission orchestrator loaded." };
+			}
+			if (subcommand === "status") {
 				const mission = resolveMission(ctx.cwd, args || undefined, orchestratorState);
 				if (!mission) {
 					ctx.ui.notify("No missions found.", "info");
@@ -851,10 +842,6 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 				const text = summarizeMission(mission);
 				ctx.ui.notify(text, "info");
 				return { ok: true, text, details: { missionId: mission.id } };
-			}
-			if (subcommand === "new") {
-				await createMission(args, ctx, pi, setActivePlanning);
-				return { ok: true, text: "Mission creation started." };
 			}
 			if (subcommand === "approve") {
 				const id = args || activePlanningId || activeMissionId || activeMissionFromState(ctx.cwd, orchestratorState)?.id || latestMission(ctx.cwd)?.id;
@@ -895,7 +882,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(result.text, result.clearedIds.length > 0 ? "info" : "warning");
 				return { ok: true, text: result.text, details: result };
 			}
-			const usage = "Usage: /missions new [goal] | /missions approve [id] | /missions run [id] | /missions status [id] | /missions list | /missions clear";
+			const usage = "Usage: /missions [goal] | /missions new [goal] | /missions approve [id] | /missions run [id] | /missions status [id] | /missions list | /missions clear";
 			ctx.ui.notify(usage, "warning");
 			return { ok: false, text: usage };
 		} catch (error) {
@@ -959,7 +946,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("missions", {
-		description: "Plan and run long sequential missions (/missions new|run|status|list|clear)",
+		description: "Plan and run long sequential missions (/missions [goal]|run|status|list|clear)",
 		handler: async (args, ctx) => { await handleMissions(args, ctx); },
 	});
 

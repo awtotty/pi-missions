@@ -6,9 +6,9 @@ This is an early prototype inspired by Factory Missions, with a different design
 
 ## Current scope
 
-- `/missions` and `/mission` commands
+- `/missions` and `/mission` commands that load the orchestrator into the current conversation
 - interactive planning in the current pi session
-- `mission_write_plan` tool for persisting planning drafts
+- lazy `mission_write_plan` persistence when the orchestrator judges a draft is ready
 - `mission_approve_plan` and `mission_start_execution` tools with explicit user confirmation
 - mission artifacts under `.pi/missions/<mission-id>/`
 - generated validation contract and mission-specific skills
@@ -43,7 +43,8 @@ npm run typecheck
 ## Commands
 
 ```text
-/missions new [goal]       Start interactive planning for a new mission
+/missions [goal]           Load the orchestrator into the current conversation
+/missions new [goal]       Alias for /missions [goal]
 /missions approve [id]     Approve the persisted plan and unlock execution
 /missions run [id]         Run or resume a mission sequentially
 /missions status [id]      Show mission status
