@@ -48,6 +48,7 @@ interface MissionState {
 	models: { orchestrator: string; worker: string; validator: string };
 	currentMilestoneId?: string;
 	currentFeatureId?: string;
+	latestBlock?: MissionBlockMetadata;
 	milestones: MissionMilestone[];
 }
 
@@ -98,6 +99,8 @@ interface RunResult {
 	finalText: string;
 }
 
+type BlockReasonCategory = "child_exit_nonzero" | "missing_handoff" | "dirty_worktree" | "worker_reported_blocked" | "validator_report_failed" | "missing_validation_report";
+
 interface MissionBlockSummary {
 	kind: "worker" | "validator";
 	missionId: string;
@@ -106,6 +109,25 @@ interface MissionBlockSummary {
 	milestoneTitle: string;
 	featureId?: string;
 	featureTitle?: string;
+	runId: string;
+	runDir: string;
+	exitCode: number;
+	status?: string;
+	dirty?: string;
+	artifactPaths: string[];
+	reasonCategory?: BlockReasonCategory;
+}
+
+interface MissionBlockMetadata {
+	schemaVersion: 1;
+	timestamp: string;
+	reasonCategory: BlockReasonCategory;
+	kind: "worker" | "validator";
+	failedItemId: string;
+	failedItemTitle: string;
+	missionId: string;
+	milestoneId: string;
+	featureId?: string;
 	runId: string;
 	runDir: string;
 	exitCode: number;
@@ -459,6 +481,46 @@ function existingPaths(paths: string[]): string[] {
 	return paths.filter((file) => fs.existsSync(file));
 }
 
+function classifyWorkerBlock(result: RunResult, handoff: any, dirty: string): BlockReasonCategory {
+	if (result.exitCode !== 0) return "child_exit_nonzero";
+	if (!handoff) return "missing_handoff";
+	if (dirty) return "dirty_worktree";
+	return "worker_reported_blocked";
+}
+
+function classifyValidatorBlock(result: RunResult, report: any): BlockReasonCategory {
+	if (result.exitCode !== 0) return "child_exit_nonzero";
+	if (!report) return "missing_validation_report";
+	return "validator_report_failed";
+}
+
+function blockMetadataFromSummary(block: MissionBlockSummary, reasonCategory: BlockReasonCategory): MissionBlockMetadata {
+	return {
+		schemaVersion: 1,
+		timestamp: nowIso(),
+		reasonCategory,
+		kind: block.kind,
+		failedItemId: block.kind === "worker" ? block.featureId ?? block.milestoneId : block.milestoneId,
+		failedItemTitle: block.kind === "worker" ? block.featureTitle ?? block.milestoneTitle : block.milestoneTitle,
+		missionId: block.missionId,
+		milestoneId: block.milestoneId,
+		featureId: block.featureId,
+		runId: block.runId,
+		runDir: block.runDir,
+		exitCode: block.exitCode,
+		status: block.status,
+		dirty: block.dirty,
+		artifactPaths: block.artifactPaths,
+	};
+}
+
+function persistMissionBlock(dir: string, mission: MissionState, block: MissionBlockSummary, reasonCategory: BlockReasonCategory): void {
+	block.reasonCategory = reasonCategory;
+	const latestBlock = blockMetadataFromSummary(block, reasonCategory);
+	mission.latestBlock = latestBlock;
+	appendEvent(dir, "mission_block_recorded", latestBlock);
+}
+
 function formatMissionBlockMessage(block: MissionBlockSummary): string {
 	const failedItem = block.kind === "worker"
 		? `Feature ${block.featureId} - ${block.featureTitle}`
@@ -473,6 +535,7 @@ function formatMissionBlockMessage(block: MissionBlockSummary): string {
 		block.kind === "worker" ? `Milestone: ${block.milestoneId} - ${block.milestoneTitle}` : undefined,
 		`Run id: ${block.runId}`,
 		`Run directory: ${block.runDir}`,
+		block.reasonCategory ? `Reason category: ${block.reasonCategory}` : undefined,
 		`Exit code: ${block.exitCode}`,
 		block.status ? `Reported status: ${block.status}` : undefined,
 		block.dirty ? `Git status after child run:\n${block.dirty}` : undefined,
@@ -691,6 +754,7 @@ async function runWorker(ctx: ExtensionContext, mission: MissionState, milestone
 			artifactPaths: existingPaths([handoffFile, path.join(runDir, "handoff.md"), path.join(runDir, "transcript.jsonl"), path.join(runDir, "stderr.txt")]),
 		};
 	}
+	if (block) persistMissionBlock(dir, mission, block, classifyWorkerBlock(result, handoff, dirty));
 	saveMission(ctx.cwd, mission);
 	updateWidget(ctx, mission);
 	return block;
@@ -742,6 +806,7 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 			artifactPaths: existingPaths([reportFile, path.join(runDir, "validation-report.md"), path.join(runDir, "transcript.jsonl"), path.join(runDir, "stderr.txt")]),
 		};
 	}
+	if (block) persistMissionBlock(dir, mission, block, classifyValidatorBlock(result, report));
 	appendEvent(dir, "validator_finished", { milestoneId: milestone.id, runId, exitCode: result.exitCode, status: report?.status });
 	saveMission(ctx.cwd, mission);
 	updateWidget(ctx, mission);
