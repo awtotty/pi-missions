@@ -155,6 +155,10 @@ function latestMission(cwd: string): MissionState | undefined {
 	return listMissions(cwd)[0];
 }
 
+function latestVisibleMission(cwd: string): MissionState | undefined {
+	return listMissions(cwd).find((mission) => !isMissionCleared(cwd, mission.id));
+}
+
 function isActiveMissionStatus(status: Status): boolean {
 	return status === "planning" || status === "planned" || status === "running" || status === "paused" || status === "blocked";
 }
@@ -932,6 +936,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 				}
 				const result = clearCompletedMissions(ctx.cwd);
 				ctx.ui.notify(result.text, result.clearedIds.length > 0 ? "info" : "warning");
+				updateWidget(ctx, activeMissionFromState(ctx.cwd, orchestratorState) ?? latestVisibleMission(ctx.cwd));
 				return { ok: true, text: result.text, details: result };
 			}
 			const usage = "Usage: /missions [goal] | /missions new [goal] | /missions approve [id] | /missions run [id] | /missions status [id] | /missions list | /missions clear";
@@ -988,6 +993,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			try {
 				const result = clearCompletedMissions(ctx.cwd);
 				ctx.ui.notify(result.text, result.clearedIds.length > 0 ? "info" : "warning");
+				updateWidget(ctx, activeMissionFromState(ctx.cwd, orchestratorState) ?? latestVisibleMission(ctx.cwd));
 				return { content: [{ type: "text", text: result.text }], details: result };
 			} catch (error) {
 				const text = `missions clear failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -1017,6 +1023,6 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 		if (active && (!orchestratorState?.context || orchestratorState.context.id !== active.id || orchestratorState.context.status !== active.status)) {
 			persistOrchestratorState(ctx.cwd, active, { activeMissionId: active.id, activePlanningMissionId: activePlanningId, activeRunningMissionId: activeRunningId });
 		}
-		updateWidget(ctx, active ?? latestMission(ctx.cwd));
+		updateWidget(ctx, active ?? latestVisibleMission(ctx.cwd));
 	});
 }
