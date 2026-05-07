@@ -35,11 +35,45 @@ After edits, use `/reload` in pi.
 
 ## Run tests
 
-The current validation check is TypeScript type checking:
+The current automated validation check is TypeScript type checking:
 
 ```bash
 npm run typecheck
 ```
+
+## Manual validation scenarios
+
+Use these scenarios for release-style checks of mission flows. They complement, but do not replace, the automated `npm run typecheck` validation command.
+
+### Block injection and recovery context
+
+1. Start or use a small test mission with at least one feature.
+2. Force a worker or validator block, for example by temporarily making a feature worker produce a non-`complete` handoff in a disposable checkout or by using an intentionally failing validation contract.
+3. Run `/missions run <mission-id>`.
+4. Confirm the main chat receives a visible `[MISSION BLOCKED - RECOVERY CONTEXT]` follow-up that includes the mission id, failed feature or milestone, run id, run directory, exit code/status, artifact paths when present, and suggested inspection steps.
+5. Inspect `.pi/missions/<mission-id>/mission.json` and `event-log.jsonl` and confirm `latestBlock`/`mission_block_recorded` metadata captures the reason category, failed item, run id, artifact paths, and timestamp without breaking the existing mission schema.
+
+### Code-review validator behavior
+
+1. Complete a milestone containing one or more feature commits and handoffs.
+2. Run `/missions run <mission-id>` until milestone validation starts.
+3. Inspect the validator run prompt/transcript and `validation-report.md`.
+4. Confirm the validator reviews each completed feature's commit and handoff, evaluates diffs, tests, edge cases, regressions, and procedure compliance, and can report code-review defects or procedure findings separately from validation-contract assertion results.
+
+### Global role model defaults
+
+1. Run `/missions models` and note the settings file and current `orchestrator`, `worker`, and `validator` defaults.
+2. Set a default with `/missions models <role> <provider/model-id>`; use `/missions models <role> default` to restore fallback behavior.
+3. Create a new mission with `/missions new <goal>` and confirm its `models` object remains compatible while inheriting configured global defaults.
+4. For a non-`default` orchestrator model, start `/missions` or `/missions new` and confirm pi applies the model before the kickoff message, or shows a clear warning if the reference is invalid or credentials are unavailable.
+5. During execution, confirm worker and validator child runs resolve per-mission `default` slots through the current global defaults.
+
+### Mission Control status and widget output
+
+1. Run `/missions status <mission-id>` while a mission is planned, running, blocked, and complete.
+2. Confirm the status output includes progress, mission directory, current or last run id, run item, run artifact path, blocked reason and block artifacts when present, and a next suggested action.
+3. Confirm the `mission_status` tool returns the same summary semantics as `/missions status`.
+4. Observe the mission widget during execution and after `/missions clear`; it should show useful active/blocked context and avoid stale completed-mission UI after completed missions are cleared.
 
 ## Commands
 
