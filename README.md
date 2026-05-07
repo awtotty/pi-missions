@@ -111,6 +111,8 @@ The supported roles are `orchestrator`, `worker`, and `validator`. Use `default`
 
 The defaults are stored in `.pi/missions/settings.json` for the target repository. New missions start from those global defaults, while the existing per-mission `models` object remains valid for compatibility. During execution, a per-mission role value other than `default` is used directly; a per-mission `default` slot is resolved through the current global default for that role.
 
+When `/missions` or `/missions new` loads the current-session orchestrator, a non-`default` global `orchestrator` value is resolved against pi's model registry and applied to the active session before the kickoff message is sent. Use canonical `provider/model-id` references when possible. If the model cannot be found or credentials are unavailable, pi leaves the current model unchanged and shows a warning.
+
 ## Design notes
 
 - The extension is the durable runtime: commands, child process spawning, state files, git guardrails, and UI status.

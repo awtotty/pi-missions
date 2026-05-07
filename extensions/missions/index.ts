@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Message } from "@earendil-works/pi-ai";
+import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -375,6 +375,59 @@ function setGlobalModel(cwd: string, role: MissionRole, model: string): string {
 	return formatGlobalModels(cwd);
 }
 
+function findMissionModelReference(modelReference: string, models: Model<Api>[]): Model<Api> | undefined {
+	const reference = modelReference.trim();
+	if (!reference) return undefined;
+
+	const slash = reference.indexOf("/");
+	if (slash > 0) {
+		const provider = reference.slice(0, slash);
+		const modelId = reference.slice(slash + 1);
+		const canonical = models.find((model) => model.provider === provider && model.id === modelId);
+		if (canonical) return canonical;
+	}
+
+	const exactIdMatches = models.filter((model) => model.id === reference);
+	if (exactIdMatches.length === 1) return exactIdMatches[0];
+
+	const exactNameMatches = models.filter((model) => model.name === reference);
+	if (exactNameMatches.length === 1) return exactNameMatches[0];
+
+	return undefined;
+}
+
+function describeModel(model: Model<Api>): string {
+	return `${model.provider}/${model.id}`;
+}
+
+async function applyGlobalOrchestratorModelDefault(ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<string | undefined> {
+	const modelReference = readMissionGlobalSettings(ctx.cwd).models.orchestrator;
+	if (!modelReference || modelReference === "default") return undefined;
+
+	ctx.modelRegistry.refresh();
+	const model = findMissionModelReference(modelReference, ctx.modelRegistry.getAll());
+	if (!model) {
+		const warning = `Mission orchestrator model default '${modelReference}' was not applied: no matching model was found. Use a provider/model reference from /model or set /missions models orchestrator default.`;
+		ctx.ui.notify(warning, "warning");
+		return warning;
+	}
+
+	if (ctx.model?.provider === model.provider && ctx.model.id === model.id) {
+		return `Mission orchestrator model default already active: ${describeModel(model)}.`;
+	}
+
+	const switched = await pi.setModel(model);
+	if (!switched) {
+		const warning = `Mission orchestrator model default '${modelReference}' resolved to ${describeModel(model)} but was not applied because credentials are unavailable for provider '${model.provider}'. Configure credentials or set /missions models orchestrator default.`;
+		ctx.ui.notify(warning, "warning");
+		return warning;
+	}
+
+	const message = `Mission orchestrator model default applied: ${describeModel(model)}.`;
+	ctx.ui.notify(message, "info");
+	return message;
+}
+
 function isMissionCleared(cwd: string, id: string): boolean {
 	return readClearedMissions(cwd).clearedMissionIds.includes(id);
 }
@@ -708,13 +761,14 @@ function resolveMission(cwd: string, id?: string, state?: MissionOrchestratorSes
 
 async function startMissionOrchestrator(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
 	const goal = args.trim();
-	pi.appendEntry(PLANNING_KICKOFF_ENTRY, { schemaVersion: 1, cwd: ctx.cwd, goal, createdAt: nowIso() });
+	const modelStatus = await applyGlobalOrchestratorModelDefault(ctx, pi);
+	pi.appendEntry(PLANNING_KICKOFF_ENTRY, { schemaVersion: 1, cwd: ctx.cwd, goal, createdAt: nowIso(), orchestratorModelStatus: modelStatus });
 	ctx.ui.notify("Mission orchestrator loaded in this session.", "info");
 	pi.sendMessage({
 		customType: "missions-planning-kickoff",
 		display: false,
 		content: missionPlanningKickoffContext(ctx.cwd, goal),
-		details: { cwd: ctx.cwd },
+		details: { cwd: ctx.cwd, orchestratorModelStatus: modelStatus },
 	}, { triggerTurn: true });
 }
 
