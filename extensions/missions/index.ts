@@ -1155,6 +1155,15 @@ function eventLabel(type: string): string {
 		validator_started: "validator started",
 		validator_finished: "validator finished",
 		mission_block_recorded: "block recorded",
+		mission_pause_requested: "pause requested",
+		mission_paused_after_current: "paused after current",
+		mission_resume_requested: "resume requested",
+		mission_auto_resume_after_plan_revision: "auto resume requested",
+		mission_cleared: "mission cleared",
+		mission_control_action_started: "control action started",
+		mission_control_action_finished: "control action finished",
+		mission_control_action_canceled: "control action canceled",
+		mission_control_action_failed: "control action failed",
 		handoff_parse_error: "handoff parse error",
 		validation_parse_error: "validation parse error",
 		mission_complete: "mission complete",
@@ -1180,13 +1189,21 @@ function eventDataSummary(event: MissionControlEvent): string {
 	const kind = typeof record.kind === "string" ? record.kind : undefined;
 	const failedItemId = typeof record.failedItemId === "string" ? record.failedItemId : undefined;
 	const reason = typeof record.reasonCategory === "string" ? record.reasonCategory.replace(/_/g, " ") : undefined;
+	const actionId = typeof record.actionId === "string" ? record.actionId.replace(/-/g, " ") : undefined;
+	const source = typeof record.source === "string" ? record.source.replace(/_/g, " ") : undefined;
+	const completedUnit = typeof record.completedUnit === "string" ? record.completedUnit : undefined;
+	const ok = typeof record.ok === "boolean" ? record.ok : undefined;
 	if (event.type === "mission_block_recorded") {
 		if (kind || failedItemId) pieces.push([kind, failedItemId].filter(Boolean).join(" "));
 		if (reason) pieces.push(reason);
 	} else {
 		if (featureId) pieces.push(featureId);
 		else if (milestoneId) pieces.push(milestoneId);
+		if (actionId) pieces.push(actionId);
+		if (completedUnit) pieces.push(`after ${completedUnit}`);
+		if (source) pieces.push(source);
 		if (status) pieces.push(status);
+		if (typeof ok === "boolean") pieces.push(ok ? "ok" : "not ok");
 		if (typeof exitCode === "number") pieces.push(`exit ${exitCode}`);
 	}
 	if (runId) pieces.push(`run ${runId}`);
@@ -2606,7 +2623,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 				updateWidget(ctx, activeMissionFromState(ctx.cwd, orchestratorState) ?? latestVisibleMission(ctx.cwd));
 				return { ok: true, text: result.text, details: result };
 			}
-			const usage = "Usage: /missions [goal] | /missions new [goal] | /missions run [id] | /missions status [id] | /missions list | /missions clear | /missions models [set] [role] [model]";
+			const usage = "Usage: /missions [goal] | /missions new [goal] | /missions run|resume [id] | /missions status [id] | /missions list | /missions clear | /missions models [set] [role] [model]";
 			ctx.ui.notify(usage, "warning");
 			return { ok: false, text: usage };
 		} catch (error) {
