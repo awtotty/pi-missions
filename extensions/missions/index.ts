@@ -57,6 +57,7 @@ interface MissionState {
 	 * be treated as previously started by recovery automation.
 	 */
 	executionStartedAt?: string;
+	pauseRequestedAt?: string;
 	latestBlock?: MissionBlockMetadata;
 	milestones: MissionMilestone[];
 }
@@ -220,6 +221,60 @@ function writeJson(file: string, value: unknown): void {
 
 function appendEvent(dir: string, type: string, data: unknown): void {
 	fs.appendFileSync(path.join(dir, "event-log.jsonl"), `${JSON.stringify({ ts: nowIso(), type, data })}\n`);
+}
+
+function pauseRequestFile(cwd: string, missionId: string): string {
+	return path.join(missionDir(cwd, missionId), "pause-request.json");
+}
+
+function readMissionPauseRequest(cwd: string, missionId: string): { requestedAt: string; source?: string } | undefined {
+	const file = pauseRequestFile(cwd, missionId);
+	if (!fs.existsSync(file)) return undefined;
+	try {
+		const request = readJson<{ requestedAt?: unknown; source?: unknown }>(file);
+		if (typeof request.requestedAt === "string" && request.requestedAt.trim()) return { requestedAt: request.requestedAt, source: typeof request.source === "string" ? request.source : undefined };
+	} catch {
+		// Treat malformed pause markers as present so Mission Control does not accidentally resume past a user's stop request.
+	}
+	return { requestedAt: nowIso(), source: "malformed_pause_request" };
+}
+
+function hasMissionPauseRequest(cwd: string, missionId: string): boolean {
+	return Boolean(readMissionPauseRequest(cwd, missionId));
+}
+
+function clearMissionPauseRequest(cwd: string, missionId: string): void {
+	const file = pauseRequestFile(cwd, missionId);
+	if (fs.existsSync(file)) fs.unlinkSync(file);
+}
+
+function requestMissionPauseAfterCurrent(cwd: string, mission: MissionState, source: string): MissionCommandResult {
+	const dir = missionDir(cwd, mission.id);
+	const requestedAt = nowIso();
+	writeJson(pauseRequestFile(cwd, mission.id), { schemaVersion: 1, missionId: mission.id, requestedAt, source });
+	const latest = loadMission(cwd, mission.id);
+	if (latest.status === "running" || latest.status === "planned") {
+		latest.status = "paused";
+		latest.pauseRequestedAt = requestedAt;
+		saveMission(cwd, latest);
+	}
+	appendEvent(dir, "mission_pause_requested", { missionId: mission.id, requestedAt, source });
+	return { ok: true, text: `Pause-after-current requested for ${mission.id}. Current worker/validator will continue; no new unit will start.` };
+}
+
+function applyPauseAfterCurrentIfRequested(ctx: ExtensionContext, missionId: string, completedUnit: string): boolean {
+	const request = readMissionPauseRequest(ctx.cwd, missionId);
+	if (!request) return false;
+	const mission = loadMission(ctx.cwd, missionId);
+	if (mission.status === "complete" || mission.status === "failed" || mission.status === "blocked") return false;
+	mission.status = "paused";
+	mission.pauseRequestedAt = request.requestedAt;
+	saveMission(ctx.cwd, mission);
+	appendEvent(missionDir(ctx.cwd, missionId), "mission_paused_after_current", { missionId, requestedAt: request.requestedAt, completedUnit });
+	updateWidget(ctx, mission);
+	ctx.ui.setWidget("missions-run", undefined);
+	ctx.ui.notify(`Mission paused after current unit: ${mission.title}`, "info");
+	return true;
 }
 
 const EXECUTION_STARTED_EVENT_TYPES = new Set(["mission_execution_started", "worker_started", "validator_started", "mission_block_recorded", "mission_complete"]);
@@ -1620,6 +1675,7 @@ type MissionControlActionSeverity = "info" | "warning" | "destructive" | "execut
 
 interface MissionControlActionContext {
 	ctx: ExtensionContext;
+	pi: ExtensionAPI;
 	state?: MissionOrchestratorSessionState;
 	view: MissionControlViewState;
 	targetMissionId?: string;
@@ -1648,6 +1704,8 @@ function missionControlHelpLines(): string[] {
 		"↓/j: select next mission/milestone/feature item",
 		"tab: cycle focus hint between features and progress log",
 		"r: refresh mission artifacts",
+		"p: request pause-after-current (does not kill current worker/validator)",
+		"s: start/resume mission execution (confirmation required)",
 		"?: toggle this help",
 		"q/esc: close Mission Control only",
 		"Mutating Mission Control actions use explicit shortcuts, audit events, notifications, and confirmation when required.",
@@ -1656,16 +1714,44 @@ function missionControlHelpLines(): string[] {
 
 function missionControlFooter(width: number): string {
 	const mode = missionControlLayoutMode(width);
-	if (mode === "compact") return "q close · ↑/↓ move · r refresh · ? help";
-	if (mode === "narrow") return "q/esc close · ↑/↓ move · tab focus · r refresh · ? help";
-	return `q/esc close · ↑/↓/j/k move selection · tab focus · r refresh · ? help · confirmed actions only · auto-refresh ${MISSION_CONTROL_POLL_MS / 1000}s`;
+	if (mode === "compact") return "q close · ↑/↓ move · p pause · s start · r refresh · ? help";
+	if (mode === "narrow") return "q/esc close · ↑/↓ move · p pause · s start/resume · r refresh · ? help";
+	return `q/esc close · ↑/↓/j/k move selection · tab focus · p pause-after-current · s start/resume · r refresh · ? help · confirmed actions only · auto-refresh ${MISSION_CONTROL_POLL_MS / 1000}s`;
 }
 
-function missionControlAvailableActions(_context: MissionControlActionContext): MissionControlAction[] {
-	// F6 establishes the action contract and dispatcher used by later Mission
-	// Control controls. Concrete mutating actions are intentionally registered by
-	// their owning features so pause/resume/clear semantics stay scoped and auditable.
-	return [];
+function missionControlAvailableActions(context: MissionControlActionContext): MissionControlAction[] {
+	return [
+		{
+			id: "pause-after-current",
+			key: "p",
+			label: "Pause after current",
+			description: "Record a durable pause request. The active worker/validator is not killed; mission execution stops before launching the next unit of work.",
+			kind: "mutation",
+			severity: "warning",
+			requiresConfirmation: false,
+			isAvailable: ({ mission, ctx }) => Boolean(mission && mission.status === "running" && !hasMissionPauseRequest(ctx.cwd, mission.id)),
+			run: ({ ctx, mission }) => mission ? requestMissionPauseAfterCurrent(ctx.cwd, mission, "mission_control") : { ok: false, text: "No mission is selected." },
+		},
+		{
+			id: "start-resume",
+			key: "s",
+			label: "Start/resume mission",
+			description: "Start or resume mission execution using the existing runMission path.",
+			kind: "mutation",
+			severity: "execution",
+			requiresConfirmation: true,
+			confirmation: ({ mission }) => ({
+				title: mission?.status === "paused" ? "Resume mission execution?" : "Start mission execution?",
+				message: mission ? `${mission.title}\n\nThis will run mission ${mission.id}. Workers may modify files and create commits.` : "Start or resume the selected mission.",
+			}),
+			isAvailable: ({ mission }) => Boolean(mission && (mission.status === "planned" || mission.status === "paused" || mission.status === "blocked")),
+			run: async ({ ctx, pi, mission }) => {
+				if (!mission) return { ok: false, text: "No mission is selected." };
+				await runMission(mission.id, ctx, pi);
+				return { ok: true, text: `Start/resume requested for ${mission.id}.` };
+			},
+		},
+	];
 }
 
 function matchesMissionControlActionKey(data: string, action: MissionControlAction): boolean {
@@ -1782,7 +1868,7 @@ function missionControlMoveRecentMission(cwd: string, selectedId: string | undef
 	return missions[nextIndex]?.id;
 }
 
-async function openMissionControl(ctx: ExtensionContext, state?: MissionOrchestratorSessionState, targetMissionId?: string): Promise<MissionCommandResult> {
+async function openMissionControl(ctx: ExtensionContext, state: MissionOrchestratorSessionState | undefined, targetMissionId: string | undefined, pi: ExtensionAPI): Promise<MissionCommandResult> {
 	if (!ctx.hasUI) {
 		const text = "Mission Control requires an interactive UI.";
 		ctx.ui.notify(text, "warning");
@@ -1827,7 +1913,7 @@ async function openMissionControl(ctx: ExtensionContext, state?: MissionOrchestr
 					close();
 					return;
 				}
-				const actionContext = { ctx, state, view, targetMissionId, mission: active };
+				const actionContext = { ctx, pi, state, view, targetMissionId, mission: active };
 				if (missionControlAvailableActions(actionContext).some((action) => matchesMissionControlActionKey(data, action))) {
 					void dispatchMissionControlAction(data, actionContext).then(() => {
 						if (!closed) tui.requestRender();
@@ -2166,14 +2252,14 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 // close the UI. Auto-open Mission Control fire-and-forget and keep runMission as
 // the durable execution owner. Closing Mission Control only disposes the read-only
 // UI; it does not abort ctx.signal or any child worker/validator process.
-function autoOpenMissionControl(ctx: ExtensionContext, mission: MissionState): void {
+function autoOpenMissionControl(ctx: ExtensionContext, mission: MissionState, pi: ExtensionAPI): void {
 	if (!ctx.hasUI) return;
 	const state = buildOrchestratorState(ctx.cwd, mission, {
 		activeMissionId: mission.id,
 		activePlanningMissionId: undefined,
 		activeRunningMissionId: mission.id,
 	});
-	void openMissionControl(ctx, state).catch((error) => {
+	void openMissionControl(ctx, state, undefined, pi).catch((error) => {
 		ctx.ui.notify(`Mission Control failed to open: ${error instanceof Error ? error.message : String(error)}`, "warning");
 	});
 }
@@ -2203,7 +2289,16 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI)
 		saveMission(ctx.cwd, mission);
 		appendEvent(dir, "mission_execution_started", { missionId: mission.id });
 	}
-	autoOpenMissionControl(ctx, mission);
+	if (hasMissionPauseRequest(ctx.cwd, mission.id)) {
+		clearMissionPauseRequest(ctx.cwd, mission.id);
+		appendEvent(dir, "mission_resume_requested", { missionId: mission.id, source: "runMission" });
+	}
+	if (mission.status === "paused") {
+		mission.status = "running";
+		mission.pauseRequestedAt = undefined;
+		saveMission(ctx.cwd, mission);
+	}
+	autoOpenMissionControl(ctx, mission, pi);
 	ctx.ui.notify(`Running mission ${mission.title}`, "info");
 	while (true) {
 		mission = loadMission(ctx.cwd, id);
@@ -2217,6 +2312,7 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI)
 			ctx.ui.setWidget("missions-run", undefined);
 			return;
 		}
+		if (applyPauseAfterCurrentIfRequested(ctx, id, `worker:${next.feature.id}`)) return;
 		const milestone = mission.milestones.find((m) => m.id === next.milestone.id)!;
 		if (milestone.features.every((f) => f.status === "complete" || f.status === "skipped")) {
 			const validatorBlock = await runValidator(ctx, mission, milestone);
@@ -2227,6 +2323,7 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI)
 				ctx.ui.setWidget("missions-run", undefined);
 				return;
 			}
+			if (applyPauseAfterCurrentIfRequested(ctx, id, `validator:${milestone.id}`)) return;
 		}
 	}
 	mission = loadMission(ctx.cwd, id);
@@ -2528,7 +2625,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 		description: "Open read-only interactive Mission Control",
 		handler: async (args, ctx) => {
 			const targetMissionId = args.trim() || undefined;
-			await openMissionControl(ctx, orchestratorState, targetMissionId);
+			await openMissionControl(ctx, orchestratorState, targetMissionId, pi);
 		},
 	});
 
