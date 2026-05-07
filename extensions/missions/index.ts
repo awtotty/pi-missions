@@ -452,6 +452,58 @@ function summarizeMission(mission: MissionState): string {
 	].join("\n");
 }
 
+function boundedExcerpt(text: string, maxChars = 700): string {
+	const normalized = text.replace(/\r\n/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean).join(" ");
+	if (normalized.length <= maxChars) return normalized || "(no objective text provided)";
+	return `${normalized.slice(0, maxChars - 1).trimEnd()}…`;
+}
+
+function validationSummary(validationContractJson: unknown): string {
+	const maybeAssertions = (validationContractJson as { assertions?: unknown } | undefined)?.assertions;
+	if (!Array.isArray(maybeAssertions)) return "Validation: no assertions array found.";
+	const categories = new Map<string, number>();
+	for (const assertion of maybeAssertions) {
+		const category = typeof (assertion as { category?: unknown })?.category === "string" ? (assertion as { category: string }).category : "uncategorized";
+		categories.set(category, (categories.get(category) ?? 0) + 1);
+	}
+	const categoryText = [...categories.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([category, count]) => `${category}: ${count}`).join(", ");
+	return `Validation: ${maybeAssertions.length} assertion${maybeAssertions.length === 1 ? "" : "s"}${categoryText ? ` (${categoryText})` : ""}.`;
+}
+
+function planOutline(mission: MissionState, maxMilestones = 8, maxFeaturesPerMilestone = 8): string[] {
+	if (!Array.isArray(mission.milestones) || mission.milestones.length === 0) return ["(no milestones provided)"];
+	const lines: string[] = [];
+	for (const milestone of mission.milestones.slice(0, maxMilestones)) {
+		lines.push(`${mark(milestone.status)} ${milestone.id}: ${milestone.title}`);
+		const features = Array.isArray(milestone.features) ? milestone.features : [];
+		for (const feature of features.slice(0, maxFeaturesPerMilestone)) {
+			lines.push(`  ${mark(feature.status)} ${feature.id}: ${feature.title}`);
+		}
+		if (features.length > maxFeaturesPerMilestone) lines.push(`  … ${features.length - maxFeaturesPerMilestone} more feature${features.length - maxFeaturesPerMilestone === 1 ? "" : "s"}`);
+	}
+	if (mission.milestones.length > maxMilestones) lines.push(`… ${mission.milestones.length - maxMilestones} more milestone${mission.milestones.length - maxMilestones === 1 ? "" : "s"}`);
+	return lines;
+}
+
+function persistedPlanSummary(mission: MissionState, dir: string, objectiveMd: string, validationContractJson: unknown, existingMission: boolean): string {
+	const action = existingMission ? "revised" : "written";
+	const nextAction = mission.status === "planning" ? `\n\nNext: continue refining or run /missions approve ${mission.id} after review.` : "";
+	return [
+		`Mission plan ${action}: ${mission.title}`,
+		`ID: ${mission.id}`,
+		`Status: ${mission.status}`,
+		`Artifact directory: ${dir}`,
+		"",
+		"Objective excerpt:",
+		boundedExcerpt(objectiveMd),
+		"",
+		"Milestones and features:",
+		...planOutline(mission),
+		"",
+		validationSummary(validationContractJson),
+	].join("\n") + nextAction;
+}
+
 function missionListText(cwd: string): string {
 	const missions = listMissions(cwd);
 	return missions.length ? missions.map((m) => `${m.id}  ${m.status}${isMissionCleared(cwd, m.id) ? " (cleared)" : ""}  ${m.title}`).join("\n") : "No missions found.";
@@ -806,8 +858,8 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 				activePlanningMissionId: mission.status === "planning" ? missionId : undefined,
 				activeRunningMissionId: mission.status === "running" || mission.status === "paused" ? missionId : undefined,
 			});
-			const nextAction = mission.status === "planning" ? ` User can continue refining or run /missions approve ${missionId}.` : "";
-			return { content: [{ type: "text", text: `Mission plan written to ${dir}.${nextAction}` }], details: { missionId, dir } };
+			const text = persistedPlanSummary(mission, dir, params.objectiveMd, params.validationContractJson, Boolean(existingMission));
+			return { content: [{ type: "text", text }], details: { missionId, dir } };
 		},
 	});
 
