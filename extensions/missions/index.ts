@@ -275,6 +275,15 @@ function summarizeMission(mission: MissionState): string {
 	].join("\n");
 }
 
+function missionListText(cwd: string): string {
+	const missions = listMissions(cwd);
+	return missions.length ? missions.map((m) => `${m.id}  ${m.status}  ${m.title}`).join("\n") : "No missions found.";
+}
+
+function resolveMission(cwd: string, id?: string): MissionState | undefined {
+	return id ? loadMission(cwd, id) : latestMission(cwd);
+}
+
 async function createMission(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI, setActivePlanning: (id: string) => void): Promise<void> {
 	const editedGoal = args.trim() || (await ctx.ui.editor("Mission goal", ""));
 	const goal = editedGoal ?? "";
@@ -616,7 +625,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 		const args = rest.join(" ");
 		try {
 			if (!subcommand || subcommand === "status") {
-				const mission = args ? loadMission(ctx.cwd, args) : latestMission(ctx.cwd);
+				const mission = resolveMission(ctx.cwd, args || undefined);
 				if (!mission) ctx.ui.notify("No missions found.", "info");
 				else {
 					updateWidget(ctx, mission);
@@ -636,11 +645,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			}
 			if (subcommand === "run" || subcommand === "resume") return await runMission(args, ctx);
 			if (subcommand === "list") {
-				const missions = listMissions(ctx.cwd);
-				ctx.ui.notify(
-					missions.length ? missions.map((m) => `${m.id}  ${m.status}  ${m.title}`).join("\n") : "No missions found.",
-					"info",
-				);
+				ctx.ui.notify(missionListText(ctx.cwd), "info");
 				return;
 			}
 			ctx.ui.notify("Usage: /missions new [goal] | /missions approve [id] | /missions run [id] | /missions status [id] | /missions list", "warning");
@@ -648,6 +653,51 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			ctx.ui.notify(`missions error: ${error instanceof Error ? error.message : String(error)}`, "error");
 		}
 	};
+
+	pi.registerTool({
+		name: "mission_status",
+		label: "Show Mission Status",
+		description: "Show mission status on the user's behalf. Read-only; no confirmation required. Uses the same summary semantics as /missions status.",
+		parameters: Type.Object({
+			missionId: Type.Optional(Type.String()),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const mission = resolveMission(ctx.cwd, params.missionId);
+			if (!mission) return { content: [{ type: "text", text: "No missions found." }], details: {}, isError: true };
+			updateWidget(ctx, mission);
+			const text = summarizeMission(mission);
+			ctx.ui.notify(text, "info");
+			return { content: [{ type: "text", text }], details: { missionId: mission.id } };
+		},
+	});
+
+	pi.registerTool({
+		name: "mission_list",
+		label: "List Missions",
+		description: "List missions on the user's behalf. Read-only; no confirmation required. Uses the same listing semantics as /missions list.",
+		parameters: Type.Object({}),
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			const text = missionListText(ctx.cwd);
+			ctx.ui.notify(text, "info");
+			return { content: [{ type: "text", text }], details: {} };
+		},
+	});
+
+	pi.registerTool({
+		name: "mission_clear_completed",
+		label: "Clear Completed Missions",
+		description: "Ask for explicit confirmation, then invoke /missions clear on the user's behalf using the slash-command handler.",
+		parameters: Type.Object({}),
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			if (!ctx.hasUI) {
+				return { content: [{ type: "text", text: "Explicit confirmation requires an interactive UI." }], details: {}, isError: true };
+			}
+			const ok = await ctx.ui.confirm("Clear completed missions?", "This will invoke /missions clear. Completed mission artifacts must not be deleted.");
+			if (!ok) return { content: [{ type: "text", text: "Mission clear canceled by user." }], details: {} };
+			await handleMissions("clear", ctx as ExtensionCommandContext);
+			return { content: [{ type: "text", text: "Invoked /missions clear." }], details: {} };
+		},
+	});
 
 	pi.registerCommand("missions", {
 		description: "Plan and run long sequential missions (/missions new|run|status|list)",
