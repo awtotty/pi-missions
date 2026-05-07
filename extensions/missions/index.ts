@@ -51,6 +51,25 @@ interface MissionState {
 	milestones: MissionMilestone[];
 }
 
+interface ClearedMissionsState {
+	schemaVersion: 1;
+	updatedAt: string;
+	clearedMissionIds: string[];
+}
+
+interface ClearCompletedResult {
+	clearedIds: string[];
+	alreadyClearedIds: string[];
+	completedIds: string[];
+	text: string;
+}
+
+interface MissionCommandResult {
+	ok: boolean;
+	text: string;
+	details?: unknown;
+}
+
 interface RunResult {
 	exitCode: number;
 	messages: Message[];
@@ -68,6 +87,10 @@ function missionRoot(cwd: string): string {
 
 function missionDir(cwd: string, id: string): string {
 	return path.join(missionRoot(cwd), id);
+}
+
+function clearedMissionsFile(cwd: string): string {
+	return path.join(missionRoot(cwd), "cleared.json");
 }
 
 function ensureDir(dir: string): void {
@@ -109,6 +132,44 @@ function listMissions(cwd: string): MissionState[] {
 
 function latestMission(cwd: string): MissionState | undefined {
 	return listMissions(cwd)[0];
+}
+
+function readClearedMissions(cwd: string): ClearedMissionsState {
+	const file = clearedMissionsFile(cwd);
+	if (!fs.existsSync(file)) return { schemaVersion: 1, updatedAt: nowIso(), clearedMissionIds: [] };
+	const parsed = readJson<Partial<ClearedMissionsState>>(file);
+	return {
+		schemaVersion: 1,
+		updatedAt: parsed.updatedAt || nowIso(),
+		clearedMissionIds: Array.isArray(parsed.clearedMissionIds) ? [...new Set(parsed.clearedMissionIds.filter((id): id is string => typeof id === "string"))] : [],
+	};
+}
+
+function writeClearedMissions(cwd: string, state: ClearedMissionsState): void {
+	writeJson(clearedMissionsFile(cwd), { ...state, schemaVersion: 1, updatedAt: nowIso(), clearedMissionIds: [...new Set(state.clearedMissionIds)].sort() });
+}
+
+function isMissionCleared(cwd: string, id: string): boolean {
+	return readClearedMissions(cwd).clearedMissionIds.includes(id);
+}
+
+function clearCompletedMissions(cwd: string): ClearCompletedResult {
+	const missions = listMissions(cwd);
+	const completedIds = missions.filter((mission) => mission.status === "complete").map((mission) => mission.id);
+	const state = readClearedMissions(cwd);
+	const existing = new Set(state.clearedMissionIds);
+	const clearedIds = completedIds.filter((id) => !existing.has(id));
+	const alreadyClearedIds = completedIds.filter((id) => existing.has(id));
+	if (clearedIds.length > 0) {
+		writeClearedMissions(cwd, { ...state, clearedMissionIds: [...state.clearedMissionIds, ...clearedIds] });
+		for (const id of clearedIds) appendEvent(missionDir(cwd, id), "mission_cleared", { clearedStateFile: clearedMissionsFile(cwd) });
+	}
+	const text = clearedIds.length > 0
+		? `Cleared ${clearedIds.length} completed mission${clearedIds.length === 1 ? "" : "s"}: ${clearedIds.join(", ")}. Artifacts were not deleted and statuses remain complete.`
+		: completedIds.length > 0
+			? `No completed missions to clear; ${alreadyClearedIds.length} completed mission${alreadyClearedIds.length === 1 ? " is" : "s are"} already cleared.`
+			: "No completed missions to clear.";
+	return { clearedIds, alreadyClearedIds, completedIds, text };
 }
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
@@ -277,7 +338,7 @@ function summarizeMission(mission: MissionState): string {
 
 function missionListText(cwd: string): string {
 	const missions = listMissions(cwd);
-	return missions.length ? missions.map((m) => `${m.id}  ${m.status}  ${m.title}`).join("\n") : "No missions found.";
+	return missions.length ? missions.map((m) => `${m.id}  ${m.status}${isMissionCleared(cwd, m.id) ? " (cleared)" : ""}  ${m.title}`).join("\n") : "No missions found.";
 }
 
 function resolveMission(cwd: string, id?: string): MissionState | undefined {
@@ -620,37 +681,64 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 		};
 	});
 
-	const handleMissions = async (rawArgs: string, ctx: ExtensionCommandContext) => {
+	const handleMissions = async (rawArgs: string, ctx: ExtensionCommandContext): Promise<MissionCommandResult> => {
 		const [subcommand, ...rest] = rawArgs.trim().split(/\s+/).filter(Boolean);
 		const args = rest.join(" ");
 		try {
 			if (!subcommand || subcommand === "status") {
 				const mission = resolveMission(ctx.cwd, args || undefined);
-				if (!mission) ctx.ui.notify("No missions found.", "info");
-				else {
-					updateWidget(ctx, mission);
-					ctx.ui.notify(summarizeMission(mission), "info");
+				if (!mission) {
+					ctx.ui.notify("No missions found.", "info");
+					return { ok: false, text: "No missions found." };
 				}
-				return;
+				updateWidget(ctx, mission);
+				const text = summarizeMission(mission);
+				ctx.ui.notify(text, "info");
+				return { ok: true, text, details: { missionId: mission.id } };
 			}
-			if (subcommand === "new") return await createMission(args, ctx, pi, setActivePlanning);
+			if (subcommand === "new") {
+				await createMission(args, ctx, pi, setActivePlanning);
+				return { ok: true, text: "Mission creation started." };
+			}
 			if (subcommand === "approve") {
 				const id = args || activePlanningId || latestMission(ctx.cwd)?.id;
 				if (!id) {
 					ctx.ui.notify("No mission to approve.", "warning");
-					return;
+					return { ok: false, text: "No mission to approve." };
 				}
-				await approveMission({ ctx, id, activePlanningId, setActivePlanning, requireConfirmation: true });
-				return;
+				const approved = await approveMission({ ctx, id, activePlanningId, setActivePlanning, requireConfirmation: true });
+				return { ok: approved, text: approved ? `Approved mission ${id}.` : `Mission ${id} was not approved.`, details: { missionId: id } };
 			}
-			if (subcommand === "run" || subcommand === "resume") return await runMission(args, ctx);
+			if (subcommand === "run" || subcommand === "resume") {
+				await runMission(args, ctx);
+				return { ok: true, text: "Mission run command completed." };
+			}
 			if (subcommand === "list") {
-				ctx.ui.notify(missionListText(ctx.cwd), "info");
-				return;
+				const text = missionListText(ctx.cwd);
+				ctx.ui.notify(text, "info");
+				return { ok: true, text };
 			}
-			ctx.ui.notify("Usage: /missions new [goal] | /missions approve [id] | /missions run [id] | /missions status [id] | /missions list", "warning");
+			if (subcommand === "clear") {
+				const completedCount = listMissions(ctx.cwd).filter((mission) => mission.status === "complete" && !isMissionCleared(ctx.cwd, mission.id)).length;
+				if (completedCount > 0) {
+					const ok = await ctx.ui.confirm("Clear completed missions?", `This will hide ${completedCount} completed mission${completedCount === 1 ? "" : "s"} from default mission UI. Artifacts will not be deleted and statuses will remain complete.`);
+					if (!ok) {
+						const text = "Mission clear canceled by user.";
+						ctx.ui.notify(text, "info");
+						return { ok: true, text, details: { clearedIds: [] } };
+					}
+				}
+				const result = clearCompletedMissions(ctx.cwd);
+				ctx.ui.notify(result.text, result.clearedIds.length > 0 ? "info" : "warning");
+				return { ok: true, text: result.text, details: result };
+			}
+			const usage = "Usage: /missions new [goal] | /missions approve [id] | /missions run [id] | /missions status [id] | /missions list | /missions clear";
+			ctx.ui.notify(usage, "warning");
+			return { ok: false, text: usage };
 		} catch (error) {
-			ctx.ui.notify(`missions error: ${error instanceof Error ? error.message : String(error)}`, "error");
+			const text = `missions error: ${error instanceof Error ? error.message : String(error)}`;
+			ctx.ui.notify(text, "error");
+			return { ok: false, text };
 		}
 	};
 
@@ -686,27 +774,35 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "mission_clear_completed",
 		label: "Clear Completed Missions",
-		description: "Ask for explicit confirmation, then invoke /missions clear on the user's behalf using the slash-command handler.",
+		description: "Ask for explicit confirmation, then clear completed missions on the user's behalf using the same backing behavior as /missions clear.",
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 			if (!ctx.hasUI) {
 				return { content: [{ type: "text", text: "Explicit confirmation requires an interactive UI." }], details: {}, isError: true };
 			}
-			const ok = await ctx.ui.confirm("Clear completed missions?", "This will invoke /missions clear. Completed mission artifacts must not be deleted.");
-			if (!ok) return { content: [{ type: "text", text: "Mission clear canceled by user." }], details: {} };
-			await handleMissions("clear", ctx as ExtensionCommandContext);
-			return { content: [{ type: "text", text: "Invoked /missions clear." }], details: {} };
+			const completedCount = listMissions(ctx.cwd).filter((mission) => mission.status === "complete" && !isMissionCleared(ctx.cwd, mission.id)).length;
+			const ok = await ctx.ui.confirm("Clear completed missions?", `This will hide ${completedCount} completed mission${completedCount === 1 ? "" : "s"} from default mission UI. Artifacts will not be deleted and statuses will remain complete.`);
+			if (!ok) return { content: [{ type: "text", text: "Mission clear canceled by user." }], details: { clearedIds: [] } };
+			try {
+				const result = clearCompletedMissions(ctx.cwd);
+				ctx.ui.notify(result.text, result.clearedIds.length > 0 ? "info" : "warning");
+				return { content: [{ type: "text", text: result.text }], details: result };
+			} catch (error) {
+				const text = `missions clear failed: ${error instanceof Error ? error.message : String(error)}`;
+				ctx.ui.notify(text, "error");
+				return { content: [{ type: "text", text }], details: {}, isError: true };
+			}
 		},
 	});
 
 	pi.registerCommand("missions", {
-		description: "Plan and run long sequential missions (/missions new|run|status|list)",
-		handler: handleMissions,
+		description: "Plan and run long sequential missions (/missions new|run|status|list|clear)",
+		handler: async (args, ctx) => { await handleMissions(args, ctx); },
 	});
 
 	pi.registerCommand("mission", {
 		description: "Alias for /missions",
-		handler: handleMissions,
+		handler: async (args, ctx) => { await handleMissions(args, ctx); },
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
