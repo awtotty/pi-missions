@@ -82,6 +82,7 @@ interface MissionOrchestratorSessionState {
 }
 
 const ORCHESTRATOR_STATE_ENTRY = "missions-orchestrator-state";
+const PLANNING_KICKOFF_ENTRY = "missions-planning-kickoff";
 const LEGACY_ACTIVE_PLANNING_ENTRY = "missions-active-planning";
 
 interface MissionCommandResult {
@@ -224,9 +225,30 @@ function lightweightMissionContext(cwd: string, state?: MissionOrchestratorSessi
 		`Mission directory: ${dir}`,
 		mission.currentMilestoneId ? `Current milestone: ${mission.currentMilestoneId}` : undefined,
 		mission.currentFeatureId ? `Current feature: ${mission.currentFeatureId}` : undefined,
+		mission.status === "planning" ? "The current assistant/session is the mission orchestrator. Continue planning inline when the user discusses this mission." : undefined,
 		"Use mission tools when the user asks about this mission; state-changing mission actions remain confirmation-gated.",
 		"This is lightweight context only: answer unrelated user requests normally and do not force the conversation into mission planning unless relevant.",
 	].filter((line): line is string => Boolean(line)).join("\n");
+}
+
+function missionPlanningKickoffContext(cwd: string, mission: MissionState, goal: string): string {
+	return [
+		"[MISSION PLANNING KICKOFF]",
+		"The user started a new mission in this current session with /missions new.",
+		"You are the mission orchestrator in this same session; do not assume a detached planning context.",
+		`Mission: ${mission.id}`,
+		`Mission directory: ${missionDir(cwd, mission.id)}`,
+		`Target repository cwd: ${cwd}`,
+		`Current time: ${nowIso()}`,
+		"",
+		"User goal:",
+		goal,
+		"",
+		"Use the mission-orchestrator skill for mission planning. Do not write application code while planning.",
+		"Collaborate with the user: ask clarifying questions, push back on scope, propose milestones/features, and draft a pre-implementation validation contract.",
+		"When the plan is ready, call mission_write_plan to persist the current draft. After the user is satisfied, use mission_approve_plan to request explicit approval and approve the mission for them.",
+		"The user may ask unrelated questions at any time; answer those normally and return to mission planning only when relevant.",
+	].join("\n");
 }
 
 function readClearedMissions(cwd: string): ClearedMissionsState {
@@ -468,12 +490,16 @@ async function createMission(args: string, ctx: ExtensionCommandContext, pi: Ext
 	fs.writeFileSync(path.join(dir, "plan", "objective.md"), `# Mission Goal\n\n${goal}\n`);
 	appendEvent(dir, "interactive_planning_started", { goal });
 	setActivePlanning(ctx.cwd, id);
+	pi.appendEntry(PLANNING_KICKOFF_ENTRY, { schemaVersion: 1, id, cwd: ctx.cwd, goal, createdAt: nowIso() });
 	updateWidget(ctx, seed);
-	ctx.ui.notify(`Interactive mission planning started: ${id}\n${dir}`, "info");
+	ctx.ui.notify(`Mission planning started in the current session: ${id}\n${dir}`, "info");
 
-	pi.sendUserMessage(
-		`Use the mission-orchestrator skill. We are now interactively planning mission ${id}.\n\nMission directory: ${dir}\nTarget repository cwd: ${ctx.cwd}\nCurrent time: ${nowIso()}\n\nUser goal:\n${goal}\n\nDo not write application code. Collaborate with the user: ask clarifying questions, push back on scope, propose milestones/features, and draft a pre-implementation validation contract. When the plan is ready, call mission_write_plan to persist the current draft. After the user is satisfied, use mission_approve_plan to request explicit approval and approve the mission for them.`,
-	);
+	pi.sendMessage({
+		customType: "missions-planning-kickoff",
+		display: false,
+		content: missionPlanningKickoffContext(ctx.cwd, seed, goal),
+		details: { missionId: id, dir },
+	}, { triggerTurn: true });
 }
 
 function findNextFeature(mission: MissionState): { milestone: MissionMilestone; feature: MissionFeature } | undefined {
