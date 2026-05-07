@@ -914,39 +914,150 @@ function progressText(mission: MissionState): string {
 	return `${done}/${features.length}`;
 }
 
+interface MissionControlEvent {
+	ts?: string;
+	type: string;
+	data?: unknown;
+}
+
+type MissionControlSelection =
+	| { kind: "mission"; mission: MissionState }
+	| { kind: "milestone"; mission: MissionState; milestone: MissionMilestone }
+	| { kind: "feature"; mission: MissionState; milestone: MissionMilestone; feature: MissionFeature };
+
+function readMissionEvents(mission: MissionState, maxEvents = 8): MissionControlEvent[] {
+	const logFile = path.join(missionDir(mission.cwd, mission.id), "event-log.jsonl");
+	if (!fs.existsSync(logFile)) return [];
+	const events: MissionControlEvent[] = [];
+	for (const line of fs.readFileSync(logFile, "utf8").split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			const parsed = JSON.parse(line) as { ts?: unknown; type?: unknown; data?: unknown };
+			if (typeof parsed.type === "string") events.push({ ts: typeof parsed.ts === "string" ? parsed.ts : undefined, type: parsed.type, data: parsed.data });
+		} catch {
+			// Ignore malformed historical log entries; Mission Control is best-effort/read-only.
+		}
+	}
+	return events.slice(-maxEvents);
+}
+
+function eventDataSummary(data: unknown): string {
+	if (!data || typeof data !== "object") return "";
+	const record = data as Record<string, unknown>;
+	const parts = [record.milestoneId, record.featureId, record.runId, record.status, record.exitCode]
+		.filter((value): value is string | number => typeof value === "string" || typeof value === "number")
+		.map(String);
+	return parts.length ? ` (${parts.join(" · ")})` : "";
+}
+
+function currentSelection(mission: MissionState): MissionControlSelection {
+	const currentMilestone = mission.milestones.find((m) => m.id === mission.currentMilestoneId) ?? mission.milestones.find((m) => m.status === "running") ?? mission.milestones[0];
+	if (!currentMilestone) return { kind: "mission", mission };
+	const currentFeature = currentMilestone.features.find((f) => f.id === mission.currentFeatureId) ?? currentMilestone.features.find((f) => f.status === "running");
+	if (currentFeature) return { kind: "feature", mission, milestone: currentMilestone, feature: currentFeature };
+	return { kind: "milestone", mission, milestone: currentMilestone };
+}
+
+function selectionId(selection: MissionControlSelection): string {
+	if (selection.kind === "feature") return selection.feature.id;
+	if (selection.kind === "milestone") return selection.milestone.id;
+	return selection.mission.id;
+}
+
+function missionControlHeader(mission: MissionState, width: number): string[] {
+	const run = currentOrLastRunContext(mission);
+	const runText = run ? `${run.label}: ${run.runId} (${run.kind} ${run.itemId})` : "Current run: none";
+	return [
+		`Mission Control (read-only) — ${mission.title}`,
+		`Status: ${mission.status}  Progress: ${progressText(mission)}  ${runText}`,
+		`Mission: ${mission.id}`,
+	].map((line) => clipLine(line, width));
+}
+
+function missionTreeLines(mission: MissionState, selection: MissionControlSelection): string[] {
+	const selectedId = selectionId(selection);
+	const lines = ["Mission tree", `${selectedId === mission.id ? ">" : " "} ${mark(mission.status)} ${mission.id}`];
+	for (const milestone of mission.milestones) {
+		lines.push(`${selectedId === milestone.id ? ">" : " "} ${mark(milestone.status)} ${milestone.id} ${milestone.title}`);
+		for (const feature of milestone.features) lines.push(`${selectedId === feature.id ? ">" : " "}   ${mark(feature.status)} ${feature.id} ${feature.title}`);
+	}
+	return lines;
+}
+
+function missionDetailsLines(selection: MissionControlSelection, run?: MissionRunContext, block?: MissionBlockMetadata): string[] {
+	const mission = selection.mission;
+	const lines = ["Details"];
+	if (selection.kind === "mission") {
+		lines.push(`Mission: ${mission.title}`, `ID: ${mission.id}`, `Status: ${mission.status}`, `Created: ${mission.createdAt}`, `Updated: ${mission.updatedAt}`);
+	} else if (selection.kind === "milestone") {
+		lines.push(`Milestone: ${selection.milestone.id} — ${selection.milestone.title}`, `Status: ${selection.milestone.status}`);
+		if (selection.milestone.objective) lines.push(`Objective: ${selection.milestone.objective}`);
+		if (selection.milestone.validation) lines.push(`Validation: ${selection.milestone.validation}`);
+		if (selection.milestone.validationRunId) lines.push(`Validation run: ${selection.milestone.validationRunId}`);
+	} else {
+		lines.push(`Feature: ${selection.feature.id} — ${selection.feature.title}`, `Milestone: ${selection.milestone.id} — ${selection.milestone.title}`, `Status: ${selection.feature.status}`);
+		if (selection.feature.dependencies?.length) lines.push(`Dependencies: ${selection.feature.dependencies.join(", ")}`);
+		if (selection.feature.runId) lines.push(`Run: ${selection.feature.runId}`);
+		if (selection.feature.commit) lines.push(`Commit: ${selection.feature.commit}`);
+		lines.push(`Description: ${selection.feature.description}`);
+	}
+	if (run) lines.push("", "Run context", `${run.label}: ${run.runId}`, `Item: ${run.kind} ${run.itemId} — ${run.itemTitle}`, `Artifacts: ${run.runDir}`);
+	if (block) lines.push("", "Block context", describeBlock(block), `Run dir: ${block.runDir}`, ...block.artifactPaths.map((artifact) => `Artifact: ${artifact}`));
+	return lines;
+}
+
+function eventTimelineLines(mission: MissionState): string[] {
+	const events = readMissionEvents(mission);
+	const lines = ["Event timeline"];
+	if (events.length === 0) return [...lines, "(no events recorded)"];
+	for (const event of events) {
+		const stamp = event.ts ? event.ts.replace(/^\d{4}-/, "").replace(/\.\d{3}Z$/, "Z") : "unknown time";
+		lines.push(`${stamp}  ${event.type}${eventDataSummary(event.data)}`);
+	}
+	return lines;
+}
+
+function columnLines(left: string[], right: string[], width: number): string[] {
+	if (width < 80) return [...left, "", ...right].map((line) => clipLine(line, width));
+	const gap = "  ";
+	const leftWidth = Math.max(28, Math.floor((width - gap.length) * 0.42));
+	const rightWidth = Math.max(20, width - leftWidth - gap.length);
+	const rows = Math.max(left.length, right.length);
+	const lines: string[] = [];
+	for (let i = 0; i < rows; i += 1) {
+		const leftText = clipLine(left[i] ?? "", leftWidth).padEnd(leftWidth, " ");
+		lines.push(`${leftText}${gap}${clipLine(right[i] ?? "", rightWidth)}`);
+	}
+	return lines;
+}
+
 function missionControlLines(cwd: string, state: MissionOrchestratorSessionState | undefined, width: number): string[] {
 	const active = activeMissionFromState(cwd, state);
 	const missions = active ? [active] : visibleMissions(cwd).slice(0, 10);
-	const lines: string[] = [
-		"Mission Control (read-only)",
-		"q / esc: close",
-		"",
-	];
+	const safeWidth = Math.max(20, width);
 	if (active) {
+		const selection = currentSelection(active);
 		const run = currentOrLastRunContext(active);
 		const block = latestBlockFromArtifacts(active);
-		lines.push(`Active mission: ${active.title}`);
-		lines.push(`ID: ${active.id}`);
-		lines.push(`Status: ${active.status}  Progress: ${progressText(active)}`);
-		if (run) lines.push(`${run.label}: ${run.runId} (${run.kind} ${run.itemId})`);
-		if (run) lines.push(`Artifacts: ${run.runDir}`);
-		if (block) lines.push(`Block: ${describeBlock(block)}`);
-		lines.push("");
-		for (const milestone of active.milestones.slice(0, 6)) {
-			lines.push(`${mark(milestone.status)} ${milestone.id} ${milestone.title}`);
-			for (const feature of milestone.features.slice(0, 5)) lines.push(`  ${mark(feature.status)} ${feature.id} ${feature.title}`);
-			if (milestone.features.length > 5) lines.push(`  … ${milestone.features.length - 5} more features`);
-		}
-		if (active.milestones.length > 6) lines.push(`… ${active.milestones.length - 6} more milestones`);
-	} else if (missions.length > 0) {
-		lines.push("No active mission. Recent visible missions:");
-		lines.push("");
+		return [
+			...missionControlHeader(active, safeWidth),
+			"",
+			...columnLines(missionTreeLines(active, selection), missionDetailsLines(selection, run, block), safeWidth),
+			"",
+			...eventTimelineLines(active).map((line) => clipLine(line, safeWidth)),
+			"",
+			clipLine("q/esc close · ↑/↓/j/k move selection · r refresh · ? help (navigation arrives in F4)", safeWidth),
+		];
+	}
+	const lines = ["Mission Control (read-only)", "", "No active mission.", ""];
+	if (missions.length > 0) {
+		lines.push("Recent visible missions:");
 		for (const mission of missions) lines.push(`${mission.id}  ${mission.status}  ${progressText(mission)}  ${mission.title}`);
 	} else {
-		lines.push("No active or visible missions found.");
-		lines.push("Start one with /missions [goal].");
+		lines.push("No active or visible missions found.", "Start one with /missions [goal].");
 	}
-	return lines.map((line) => clipLine(line, width));
+	lines.push("", "q/esc close");
+	return lines.map((line) => clipLine(line, safeWidth));
 }
 
 async function openMissionControl(ctx: ExtensionCommandContext, state?: MissionOrchestratorSessionState): Promise<MissionCommandResult> {
