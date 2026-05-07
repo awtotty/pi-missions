@@ -1706,6 +1706,7 @@ function missionControlHelpLines(): string[] {
 		"r: refresh mission artifacts",
 		"p: request pause-after-current (does not kill current worker/validator)",
 		"s: start/resume mission execution (confirmation required)",
+		"c: clear completed missions from default visibility (confirmation required; artifacts are not deleted)",
 		"?: toggle this help",
 		"q/esc: close Mission Control only",
 		"Mutating Mission Control actions use explicit shortcuts, audit events, notifications, and confirmation when required.",
@@ -1714,9 +1715,13 @@ function missionControlHelpLines(): string[] {
 
 function missionControlFooter(width: number): string {
 	const mode = missionControlLayoutMode(width);
-	if (mode === "compact") return "q close · ↑/↓ move · p pause · s start · r refresh · ? help";
-	if (mode === "narrow") return "q/esc close · ↑/↓ move · p pause · s start/resume · r refresh · ? help";
-	return `q/esc close · ↑/↓/j/k move selection · tab focus · p pause-after-current · s start/resume · r refresh · ? help · confirmed actions only · auto-refresh ${MISSION_CONTROL_POLL_MS / 1000}s`;
+	if (mode === "compact") return "q close · ↑/↓ move · p pause · s start · c clear · r refresh · ? help";
+	if (mode === "narrow") return "q/esc close · ↑/↓ move · p pause · s start/resume · c clear done · r refresh · ? help";
+	return `q/esc close · ↑/↓/j/k move selection · tab focus · p pause-after-current · s start/resume · c clear completed · r refresh · ? help · confirmed actions only · auto-refresh ${MISSION_CONTROL_POLL_MS / 1000}s`;
+}
+
+function visibleCompletedMissionsToClear(cwd: string): MissionState[] {
+	return listMissions(cwd).filter((mission) => mission.status === "complete" && !isMissionCleared(cwd, mission.id));
 }
 
 function missionControlAvailableActions(context: MissionControlActionContext): MissionControlAction[] {
@@ -1749,6 +1754,28 @@ function missionControlAvailableActions(context: MissionControlActionContext): M
 				if (!mission) return { ok: false, text: "No mission is selected." };
 				await runMission(mission.id, ctx, pi);
 				return { ok: true, text: `Start/resume requested for ${mission.id}.` };
+			},
+		},
+		{
+			id: "clear-completed",
+			key: "c",
+			label: "Clear completed missions",
+			description: "Hide completed missions from default Mission Control visibility using the same backing behavior as /missions clear. Mission artifacts are not deleted and mission statuses stay complete.",
+			kind: "mutation",
+			severity: "destructive",
+			requiresConfirmation: true,
+			confirmation: ({ ctx }) => {
+				const count = visibleCompletedMissionsToClear(ctx.cwd).length;
+				return {
+					title: "Clear completed missions?",
+					message: `This will hide ${count} completed mission${count === 1 ? "" : "s"} from default Mission Control visibility. Artifacts will not be deleted and statuses will remain complete.`,
+				};
+			},
+			isAvailable: ({ ctx }) => visibleCompletedMissionsToClear(ctx.cwd).length > 0,
+			run: ({ ctx, state }) => {
+				const result = clearCompletedMissions(ctx.cwd);
+				updateWidget(ctx, activeMissionFromState(ctx.cwd, state) ?? latestVisibleMission(ctx.cwd));
+				return { ok: true, text: result.text, details: result };
 			},
 		},
 	];
@@ -1856,7 +1883,7 @@ function missionControlLines(cwd: string, state: MissionOrchestratorSessionState
 		lines.push("No active or visible missions found.", "Start one with /missions [goal].");
 	}
 	if (view.showHelp) lines.push("", ...missionControlHelpLines());
-	lines.push("", "q/esc close · ↑/↓/j/k move recent mission · r refresh · ? help");
+	lines.push("", "q/esc close · ↑/↓/j/k move recent mission · c clear completed · r refresh · ? help");
 	return lines.map((line) => clipLine(line, safeWidth));
 }
 
