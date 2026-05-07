@@ -1125,8 +1125,18 @@ function missionControlHelpLines(): string[] {
 	];
 }
 
-function missionControlLines(cwd: string, state: MissionOrchestratorSessionState | undefined, width: number, view: MissionControlViewState): string[] {
-	const active = activeMissionFromState(cwd, state);
+function missionControlTarget(cwd: string, state: MissionOrchestratorSessionState | undefined, targetMissionId?: string): MissionState | undefined {
+	if (targetMissionId) return loadMission(cwd, targetMissionId);
+	return activeMissionFromState(cwd, state);
+}
+
+function missionControlLines(cwd: string, state: MissionOrchestratorSessionState | undefined, width: number, view: MissionControlViewState, targetMissionId?: string): string[] {
+	let active: MissionState | undefined;
+	try {
+		active = missionControlTarget(cwd, state, targetMissionId);
+	} catch {
+		return ["Mission Control (read-only)", "", `Mission not found: ${targetMissionId}`, "", "q/esc close"].map((line) => clipLine(line, Math.max(20, width)));
+	}
 	const missions = active ? [active] : visibleMissions(cwd).slice(0, 10);
 	const safeWidth = Math.max(20, width);
 	if (active) {
@@ -1177,11 +1187,20 @@ function missionControlMoveRecentMission(cwd: string, selectedId: string | undef
 	return missions[nextIndex]?.id;
 }
 
-async function openMissionControl(ctx: ExtensionContext, state?: MissionOrchestratorSessionState): Promise<MissionCommandResult> {
+async function openMissionControl(ctx: ExtensionContext, state?: MissionOrchestratorSessionState, targetMissionId?: string): Promise<MissionCommandResult> {
 	if (!ctx.hasUI) {
 		const text = "Mission Control requires an interactive UI.";
 		ctx.ui.notify(text, "warning");
 		return { ok: false, text };
+	}
+	if (targetMissionId) {
+		try {
+			loadMission(ctx.cwd, targetMissionId);
+		} catch {
+			const text = `Mission not found: ${targetMissionId}`;
+			ctx.ui.notify(text, "warning");
+			return { ok: false, text };
+		}
 	}
 	const view: MissionControlViewState = { showHelp: false, focus: "tree" };
 	await ctx.ui.custom((tui, _theme, _keybindings, done) => {
@@ -1195,14 +1214,19 @@ async function openMissionControl(ctx: ExtensionContext, state?: MissionOrchestr
 			done(undefined);
 		};
 		return {
-			render: (width: number) => missionControlLines(ctx.cwd, state, width, view),
+			render: (width: number) => missionControlLines(ctx.cwd, state, width, view, targetMissionId),
 			invalidate: () => undefined,
 			dispose: () => {
 				closed = true;
 				clearInterval(poll);
 			},
 			handleInput: (data: string) => {
-				const active = activeMissionFromState(ctx.cwd, state);
+				let active: MissionState | undefined;
+				try {
+					active = missionControlTarget(ctx.cwd, state, targetMissionId);
+				} catch {
+					active = undefined;
+				}
 				const moveBy = data === "k" || matchesKey(data, "up") || data === "\u001b[A" ? -1 : data === "j" || matchesKey(data, "down") || data === "\u001b[B" ? 1 : 0;
 				if (data === "q" || matchesKey(data, "escape")) {
 					close();
@@ -1850,7 +1874,10 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 
 	pi.registerCommand("mission-control", {
 		description: "Open read-only interactive Mission Control",
-		handler: async (_args, ctx) => { await openMissionControl(ctx, orchestratorState); },
+		handler: async (args, ctx) => {
+			const targetMissionId = args.trim() || undefined;
+			await openMissionControl(ctx, orchestratorState, targetMissionId);
+		},
 	});
 
 	pi.registerCommand("mission", {
