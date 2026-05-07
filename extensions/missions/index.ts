@@ -950,6 +950,32 @@ function eventDataSummary(data: unknown): string {
 	return parts.length ? ` (${parts.join(" · ")})` : "";
 }
 
+function runArtifactSummaryLines(run: MissionRunContext): string[] {
+	const jsonFile = path.join(run.runDir, run.kind === "worker" ? "handoff.json" : "validation-report.json");
+	const mdFile = path.join(run.runDir, run.kind === "worker" ? "handoff.md" : "validation-report.md");
+	const transcriptFile = path.join(run.runDir, "transcript.jsonl");
+	const stderrFile = path.join(run.runDir, "stderr.txt");
+	const lines = [
+		`${path.basename(jsonFile)}: ${fs.existsSync(jsonFile) ? jsonFile : "not available"}`,
+		`${path.basename(mdFile)}: ${fs.existsSync(mdFile) ? mdFile : "not available"}`,
+	];
+	if (fs.existsSync(transcriptFile)) lines.push(`transcript: ${transcriptFile}`);
+	if (fs.existsSync(stderrFile)) lines.push(`stderr: ${stderrFile}`);
+	if (fs.existsSync(jsonFile)) {
+		try {
+			const artifact = readJson<Record<string, unknown>>(jsonFile);
+			const status = typeof artifact.status === "string" ? artifact.status : undefined;
+			const commit = typeof artifact.commit === "string" ? artifact.commit : undefined;
+			const summary = typeof artifact.summary === "string" ? artifact.summary : undefined;
+			if (status || commit) lines.push(`Artifact status: ${[status, commit ? `commit ${commit}` : undefined].filter(Boolean).join(" · ")}`);
+			if (summary) lines.push(`Artifact summary: ${summary}`);
+		} catch {
+			lines.push(`Artifact summary: ${jsonFile} could not be parsed`);
+		}
+	}
+	return lines;
+}
+
 function currentSelection(mission: MissionState): MissionControlSelection {
 	const currentMilestone = mission.milestones.find((m) => m.id === mission.currentMilestoneId) ?? mission.milestones.find((m) => m.status === "running") ?? mission.milestones[0];
 	if (!currentMilestone) return { kind: "mission", mission };
@@ -1027,7 +1053,7 @@ function missionDetailsLines(selection: MissionControlSelection, run?: MissionRu
 		if (selection.feature.commit) lines.push(`Commit: ${selection.feature.commit}`);
 		lines.push(`Description: ${selection.feature.description}`);
 	}
-	if (run) lines.push("", "Run context", `${run.label}: ${run.runId}`, `Item: ${run.kind} ${run.itemId} — ${run.itemTitle}`, `Artifacts: ${run.runDir}`);
+	if (run) lines.push("", "Run context", `${run.label}: ${run.runId}`, `Item: ${run.kind} ${run.itemId} — ${run.itemTitle}`, `Artifacts: ${run.runDir}`, ...runArtifactSummaryLines(run));
 	if (block) lines.push("", "Block context", describeBlock(block), `Run dir: ${block.runDir}`, ...block.artifactPaths.map((artifact) => `Artifact: ${artifact}`));
 	return lines;
 }
@@ -1064,6 +1090,8 @@ interface MissionControlViewState {
 	focus: "tree" | "timeline";
 }
 
+const MISSION_CONTROL_POLL_MS = 1500;
+
 function missionControlHelpLines(): string[] {
 	return [
 		"Help",
@@ -1096,7 +1124,7 @@ function missionControlLines(cwd: string, state: MissionOrchestratorSessionState
 			...eventTimelineLines(active).map((line) => clipLine(line, safeWidth)),
 			...(view.showHelp ? ["", ...missionControlHelpLines().map((line) => clipLine(line, safeWidth))] : []),
 			"",
-			clipLine("q/esc close · ↑/↓/j/k move selection · tab focus · r refresh · ? help", safeWidth),
+			clipLine(`q/esc close · ↑/↓/j/k move selection · tab focus · r refresh · ? help · auto-refresh ${MISSION_CONTROL_POLL_MS / 1000}s`, safeWidth),
 		];
 	}
 	const lines = ["Mission Control (read-only)", "", "No active mission.", ""];
@@ -1127,37 +1155,52 @@ async function openMissionControl(ctx: ExtensionCommandContext, state?: MissionO
 		return { ok: false, text };
 	}
 	const view: MissionControlViewState = { showHelp: false, focus: "tree" };
-	await ctx.ui.custom((tui, _theme, _keybindings, done) => ({
-		render: (width: number) => missionControlLines(ctx.cwd, state, width, view),
-		invalidate: () => undefined,
-		handleInput: (data: string) => {
-			const active = activeMissionFromState(ctx.cwd, state);
-			const moveBy = data === "k" || matchesKey(data, "up") || data === "\u001b[A" ? -1 : data === "j" || matchesKey(data, "down") || data === "\u001b[B" ? 1 : 0;
-			if (data === "q" || matchesKey(data, "escape")) {
-				done(undefined);
-				return;
-			}
-			if (moveBy !== 0) {
-				if (active) view.selectedId = moveMissionControlSelection(active, view.selectedId, moveBy);
-				else view.selectedRecentMissionId = missionControlMoveRecentMission(ctx.cwd, view.selectedRecentMissionId, moveBy);
-				tui.requestRender();
-				return;
-			}
-			if (data === "\t" || matchesKey(data, "tab")) {
-				view.focus = view.focus === "tree" ? "timeline" : "tree";
-				tui.requestRender();
-				return;
-			}
-			if (data === "r") {
-				tui.requestRender();
-				return;
-			}
-			if (data === "?") {
-				view.showHelp = !view.showHelp;
-				tui.requestRender();
-			}
-		},
-	}));
+	await ctx.ui.custom((tui, _theme, _keybindings, done) => {
+		let closed = false;
+		const poll = setInterval(() => {
+			if (!closed) tui.requestRender();
+		}, MISSION_CONTROL_POLL_MS);
+		const close = () => {
+			closed = true;
+			clearInterval(poll);
+			done(undefined);
+		};
+		return {
+			render: (width: number) => missionControlLines(ctx.cwd, state, width, view),
+			invalidate: () => undefined,
+			dispose: () => {
+				closed = true;
+				clearInterval(poll);
+			},
+			handleInput: (data: string) => {
+				const active = activeMissionFromState(ctx.cwd, state);
+				const moveBy = data === "k" || matchesKey(data, "up") || data === "\u001b[A" ? -1 : data === "j" || matchesKey(data, "down") || data === "\u001b[B" ? 1 : 0;
+				if (data === "q" || matchesKey(data, "escape")) {
+					close();
+					return;
+				}
+				if (moveBy !== 0) {
+					if (active) view.selectedId = moveMissionControlSelection(active, view.selectedId, moveBy);
+					else view.selectedRecentMissionId = missionControlMoveRecentMission(ctx.cwd, view.selectedRecentMissionId, moveBy);
+					tui.requestRender();
+					return;
+				}
+				if (data === "\t" || matchesKey(data, "tab")) {
+					view.focus = view.focus === "tree" ? "timeline" : "tree";
+					tui.requestRender();
+					return;
+				}
+				if (data === "r") {
+					tui.requestRender();
+					return;
+				}
+				if (data === "?") {
+					view.showHelp = !view.showHelp;
+					tui.requestRender();
+				}
+			},
+		};
+	});
 	return { ok: true, text: "Mission Control closed." };
 }
 
