@@ -208,8 +208,22 @@ function appendEvent(dir: string, type: string, data: unknown): void {
 	fs.appendFileSync(path.join(dir, "event-log.jsonl"), `${JSON.stringify({ ts: nowIso(), type, data })}\n`);
 }
 
+function hasRunnablePersistedPlan(cwd: string, mission: MissionState): boolean {
+	try {
+		const hasFeature = Array.isArray(mission.milestones) && mission.milestones.some((milestone) => Array.isArray(milestone.features) && milestone.features.length > 0);
+		return hasFeature && fs.existsSync(path.join(missionDir(cwd, mission.id), "plan/validation-contract.json"));
+	} catch {
+		return false;
+	}
+}
+
+function normalizeMissionForRuntime(cwd: string, mission: MissionState): MissionState {
+	if (mission.status === "planning" && hasRunnablePersistedPlan(cwd, mission)) return { ...mission, status: "planned" };
+	return mission;
+}
+
 function loadMission(cwd: string, id: string): MissionState {
-	return readJson<MissionState>(path.join(missionDir(cwd, id), "mission.json"));
+	return normalizeMissionForRuntime(cwd, readJson<MissionState>(path.join(missionDir(cwd, id), "mission.json")));
 }
 
 function saveMission(cwd: string, mission: MissionState): void {
@@ -224,7 +238,7 @@ function listMissions(cwd: string): MissionState[] {
 		.readdirSync(root)
 		.map((name) => path.join(root, name, "mission.json"))
 		.filter((file) => fs.existsSync(file))
-		.map((file) => readJson<MissionState>(file))
+		.map((file) => normalizeMissionForRuntime(cwd, readJson<MissionState>(file)))
 		.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
@@ -1277,6 +1291,13 @@ async function startMissionOrchestrator(args: string, ctx: ExtensionCommandConte
 	}, { triggerTurn: true });
 }
 
+function persistedPlanStatus(incomingStatus: Status | undefined, existingMission?: MissionState): Status {
+	const existingIsStartedOrTerminal = existingMission && existingMission.status !== "planning" && existingMission.status !== "planned";
+	if (!existingIsStartedOrTerminal) return "planned";
+	if (!incomingStatus || incomingStatus === "planning" || incomingStatus === "planned") return existingMission.status;
+	return incomingStatus;
+}
+
 function createPlanningMission(cwd: string, requestedId?: string): MissionState {
 	const id = requestedId || `mission-${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
 	return {
@@ -1616,7 +1637,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			mission.id = missionId;
 			mission.cwd = ctx.cwd;
 			mission.schemaVersion = 1;
-			mission.status = existingMission && existingMission.status !== "planning" && mission.status === "planning" ? existingMission.status : mission.status || seedMission.status;
+			mission.status = persistedPlanStatus(mission.status, existingMission);
 			mission.updatedAt = nowIso();
 			if (!mission.createdAt) mission.createdAt = seedMission.createdAt;
 			mission.models = normalizeRoleModels(mission.models ?? seedMission.models);
