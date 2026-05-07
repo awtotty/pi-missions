@@ -958,10 +958,36 @@ function currentSelection(mission: MissionState): MissionControlSelection {
 	return { kind: "milestone", mission, milestone: currentMilestone };
 }
 
+function missionControlSelectableItems(mission: MissionState): MissionControlSelection[] {
+	const items: MissionControlSelection[] = [{ kind: "mission", mission }];
+	for (const milestone of mission.milestones) {
+		items.push({ kind: "milestone", mission, milestone });
+		for (const feature of milestone.features) items.push({ kind: "feature", mission, milestone, feature });
+	}
+	return items;
+}
+
 function selectionId(selection: MissionControlSelection): string {
 	if (selection.kind === "feature") return selection.feature.id;
 	if (selection.kind === "milestone") return selection.milestone.id;
 	return selection.mission.id;
+}
+
+function missionControlSelectionById(mission: MissionState, selectedId?: string): MissionControlSelection {
+	if (selectedId) {
+		const match = missionControlSelectableItems(mission).find((item) => selectionId(item) === selectedId);
+		if (match) return match;
+	}
+	return currentSelection(mission);
+}
+
+function moveMissionControlSelection(mission: MissionState, selectedId: string | undefined, delta: number): string {
+	const items = missionControlSelectableItems(mission);
+	if (items.length === 0) return mission.id;
+	const fallbackId = selectionId(currentSelection(mission));
+	const currentIndex = Math.max(0, items.findIndex((item) => selectionId(item) === (selectedId ?? fallbackId)));
+	const nextIndex = Math.min(items.length - 1, Math.max(0, currentIndex + delta));
+	return selectionId(items[nextIndex]);
 }
 
 function missionControlHeader(mission: MissionState, width: number): string[] {
@@ -1031,33 +1057,67 @@ function columnLines(left: string[], right: string[], width: number): string[] {
 	return lines;
 }
 
-function missionControlLines(cwd: string, state: MissionOrchestratorSessionState | undefined, width: number): string[] {
+interface MissionControlViewState {
+	selectedId?: string;
+	selectedRecentMissionId?: string;
+	showHelp: boolean;
+	focus: "tree" | "timeline";
+}
+
+function missionControlHelpLines(): string[] {
+	return [
+		"Help",
+		"↑/k: select previous mission tree item",
+		"↓/j: select next mission tree item",
+		"tab: cycle focus hint between tree and timeline",
+		"r: refresh mission artifacts",
+		"?: toggle this help",
+		"q/esc: close Mission Control",
+		"Mission Control is read-only; no mission state is changed by these keys.",
+	];
+}
+
+function missionControlLines(cwd: string, state: MissionOrchestratorSessionState | undefined, width: number, view: MissionControlViewState): string[] {
 	const active = activeMissionFromState(cwd, state);
 	const missions = active ? [active] : visibleMissions(cwd).slice(0, 10);
 	const safeWidth = Math.max(20, width);
 	if (active) {
-		const selection = currentSelection(active);
+		const selection = missionControlSelectionById(active, view.selectedId);
+		view.selectedId = selectionId(selection);
 		const run = currentOrLastRunContext(active);
 		const block = latestBlockFromArtifacts(active);
+		const focusText = view.focus === "tree" ? "Focus: mission tree" : "Focus: event timeline";
 		return [
 			...missionControlHeader(active, safeWidth),
+			focusText,
 			"",
 			...columnLines(missionTreeLines(active, selection), missionDetailsLines(selection, run, block), safeWidth),
 			"",
 			...eventTimelineLines(active).map((line) => clipLine(line, safeWidth)),
+			...(view.showHelp ? ["", ...missionControlHelpLines().map((line) => clipLine(line, safeWidth))] : []),
 			"",
-			clipLine("q/esc close · ↑/↓/j/k move selection · r refresh · ? help (navigation arrives in F4)", safeWidth),
+			clipLine("q/esc close · ↑/↓/j/k move selection · tab focus · r refresh · ? help", safeWidth),
 		];
 	}
 	const lines = ["Mission Control (read-only)", "", "No active mission.", ""];
 	if (missions.length > 0) {
+		if (!view.selectedRecentMissionId || !missions.some((mission) => mission.id === view.selectedRecentMissionId)) view.selectedRecentMissionId = missions[0]?.id;
 		lines.push("Recent visible missions:");
-		for (const mission of missions) lines.push(`${mission.id}  ${mission.status}  ${progressText(mission)}  ${mission.title}`);
+		for (const mission of missions) lines.push(`${mission.id === view.selectedRecentMissionId ? ">" : " "} ${mission.id}  ${mission.status}  ${progressText(mission)}  ${mission.title}`);
 	} else {
 		lines.push("No active or visible missions found.", "Start one with /missions [goal].");
 	}
-	lines.push("", "q/esc close");
+	if (view.showHelp) lines.push("", ...missionControlHelpLines());
+	lines.push("", "q/esc close · ↑/↓/j/k move recent mission · r refresh · ? help");
 	return lines.map((line) => clipLine(line, safeWidth));
+}
+
+function missionControlMoveRecentMission(cwd: string, selectedId: string | undefined, delta: number): string | undefined {
+	const missions = visibleMissions(cwd).slice(0, 10);
+	if (missions.length === 0) return undefined;
+	const currentIndex = Math.max(0, missions.findIndex((mission) => mission.id === selectedId));
+	const nextIndex = Math.min(missions.length - 1, Math.max(0, currentIndex + delta));
+	return missions[nextIndex]?.id;
 }
 
 async function openMissionControl(ctx: ExtensionCommandContext, state?: MissionOrchestratorSessionState): Promise<MissionCommandResult> {
@@ -1066,11 +1126,36 @@ async function openMissionControl(ctx: ExtensionCommandContext, state?: MissionO
 		ctx.ui.notify(text, "warning");
 		return { ok: false, text };
 	}
-	await ctx.ui.custom((_tui, _theme, _keybindings, done) => ({
-		render: (width: number) => missionControlLines(ctx.cwd, state, width),
+	const view: MissionControlViewState = { showHelp: false, focus: "tree" };
+	await ctx.ui.custom((tui, _theme, _keybindings, done) => ({
+		render: (width: number) => missionControlLines(ctx.cwd, state, width, view),
 		invalidate: () => undefined,
 		handleInput: (data: string) => {
-			if (data === "q" || matchesKey(data, "escape")) done(undefined);
+			const active = activeMissionFromState(ctx.cwd, state);
+			const moveBy = data === "k" || matchesKey(data, "up") || data === "\u001b[A" ? -1 : data === "j" || matchesKey(data, "down") || data === "\u001b[B" ? 1 : 0;
+			if (data === "q" || matchesKey(data, "escape")) {
+				done(undefined);
+				return;
+			}
+			if (moveBy !== 0) {
+				if (active) view.selectedId = moveMissionControlSelection(active, view.selectedId, moveBy);
+				else view.selectedRecentMissionId = missionControlMoveRecentMission(ctx.cwd, view.selectedRecentMissionId, moveBy);
+				tui.requestRender();
+				return;
+			}
+			if (data === "\t" || matchesKey(data, "tab")) {
+				view.focus = view.focus === "tree" ? "timeline" : "tree";
+				tui.requestRender();
+				return;
+			}
+			if (data === "r") {
+				tui.requestRender();
+				return;
+			}
+			if (data === "?") {
+				view.showHelp = !view.showHelp;
+				tui.requestRender();
+			}
 		},
 	}));
 	return { ok: true, text: "Mission Control closed." };
