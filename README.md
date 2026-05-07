@@ -7,8 +7,9 @@ This is an early prototype inspired by Factory Missions, with a different design
 ## Current scope
 
 - `/missions` and `/mission` commands that load the orchestrator into the current conversation
-- interactive planning in the current pi session
-- lazy `mission_write_plan` persistence when the orchestrator judges a draft is ready
+- chat-first brainstorming and plan refinement in the current pi session
+- lazy `mission_write_plan` persistence after the orchestrator shows a reviewable plan in chat
+- persisted plans are echoed as bounded, reviewable summaries instead of hidden-only artifact writes
 - `mission_approve_plan` and `mission_start_execution` tools with explicit user confirmation
 - mission artifacts under `.pi/missions/<mission-id>/`
 - generated validation contract and mission-specific skills
@@ -51,6 +52,8 @@ npm run typecheck
 /missions list             List missions
 /mission ...               Alias for /missions
 ```
+
+`/missions` is a chat-first workflow: it loads the mission orchestrator skill into the current conversation, then brainstorming, scoping, assumptions, milestones, features, and validation planning happen in chat. When a plan is persisted, the assistant should show the plan content for review and `mission_write_plan` returns a concise visible summary with artifact locations, so users are not asked to approve an unseen hidden file write.
 
 ## Artifact layout
 
