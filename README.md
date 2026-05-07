@@ -17,7 +17,8 @@ This is an early prototype inspired by Factory Missions, with a different design
 - required worker handoff files
 - required git commit per completed feature
 - milestone validator child process
-- status widget and `/missions status`
+- dedicated read-only Mission Control TUI (`/mission-control`) and `/missions status`
+- compact mission footer/status indicator via `ctx.ui.setStatus("missions", ...)` instead of the old rich always-on widget
 
 Parallel write agents are intentionally out of scope. Future read-only reviewer/validator fanout can be added safely later.
 
@@ -83,6 +84,7 @@ Use these scenarios for release-style checks of mission flows. They complement, 
 /missions approve [id]     Approve the persisted plan and unlock execution
 /missions run [id]         Run or resume a mission sequentially
 /missions status [id]      Show mission status
+/mission-control [id]      Open the read-only Mission Control TUI
 /missions list             List missions
 /missions models           Inspect global role model defaults
 /missions models <role> <model>
@@ -91,6 +93,26 @@ Use these scenarios for release-style checks of mission flows. They complement, 
 ```
 
 `/missions` is a chat-first workflow: it loads the mission orchestrator skill into the current conversation, then brainstorming, scoping, assumptions, milestones, features, and validation planning happen in chat. When a plan is persisted, the assistant should show the plan content for review and `mission_write_plan` returns a concise visible summary with artifact locations, so users are not asked to approve an unseen hidden file write.
+
+## Mission Control
+
+`/mission-control [mission-id]` opens a dedicated Mission Control dashboard in interactive pi sessions. Mission Control v1 is read-only: it monitors mission artifacts and run state, but does not pause, resume, redirect, approve, clear, or otherwise mutate missions. In non-interactive/RPC/headless contexts, use `/missions status` or the `mission_status` tool instead.
+
+When opened without an id, Mission Control prefers the active mission. If there is no active mission, it shows recent visible missions or an empty state. The dashboard includes mission progress, milestone/feature tree, selected item details, an event timeline, and block-focus details with artifact paths and suggested inspection steps when a mission is blocked.
+
+Mission execution auto-opens Mission Control in interactive mode when started or resumed through `/missions run` or `mission_start_execution`. Closing Mission Control with `q` or `esc` only closes the UI and returns to the normal session; it does not stop worker/validator execution or change mission state.
+
+Keyboard controls:
+
+```text
+q / esc        Close Mission Control
+↑ / ↓ or j / k Move selection
+tab            Cycle focus when multiple panes are focusable
+r              Refresh from mission artifacts
+?              Toggle help
+```
+
+Mission Control replaces the old rich always-on active mission widget. The extension still keeps a minimal `ctx.ui.setStatus("missions", ...)` footer/status output for compact visibility, but no longer renders a persistent rich mission widget in every session.
 
 ## Artifact layout
 
