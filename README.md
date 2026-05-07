@@ -17,7 +17,7 @@ This is an early prototype inspired by Factory Missions, with a different design
 - required worker handoff files
 - required git commit per completed feature
 - milestone validator child process
-- dedicated read-only Mission Control TUI (`/mission-control`) and `/missions status`
+- dedicated Mission Control dashboard/control TUI (`/mission-control`) and `/missions status`
 - compact mission footer/status indicator via `ctx.ui.setStatus("missions", ...)` instead of the old rich always-on widget
 
 Parallel write agents are intentionally out of scope. Future read-only reviewer/validator fanout can be added safely later.
@@ -83,7 +83,7 @@ Use these scenarios for release-style checks of mission flows. They complement, 
 /missions new [goal]       Alias for /missions [goal]
 /missions run [id]         Start or resume a persisted mission sequentially
 /missions status [id]      Show mission status
-/mission-control [id]      Open the read-only Mission Control TUI
+/mission-control [id]      Open the Mission Control dashboard and controls
 /missions list             List missions
 /missions models           Inspect global role model defaults
 /missions models <role> <model>
@@ -95,21 +95,33 @@ Use these scenarios for release-style checks of mission flows. They complement, 
 
 ## Mission Control
 
-`/mission-control [mission-id]` opens a dedicated Mission Control dashboard in interactive pi sessions. Mission Control v1 is read-only: it monitors mission artifacts and run state, but does not pause, resume, redirect, clear, or otherwise mutate missions. In non-interactive/RPC/headless contexts, use `/missions status` or the `mission_status` tool instead.
+`/mission-control [mission-id]` opens a dedicated Mission Control dashboard in interactive pi sessions. It monitors mission artifacts and also offers a small, explicit control surface for safe mission operations. In non-interactive/RPC/headless contexts, use `/missions status` or the `mission_status` tool instead.
 
-When opened without an id, Mission Control prefers the active mission. If there is no active mission, it shows recent visible missions or an empty state. The dashboard includes mission progress, milestone/feature tree, selected item details, an event timeline, and block-focus details with artifact paths and suggested inspection steps when a mission is blocked.
+When opened without an id, Mission Control prefers the active mission. If there is no active mission, it shows recent visible missions or an empty state. The dashboard includes a mission header, progress bar, current-work panel, milestone-grouped feature panel, progress log, child output panel, and footer controls. The child output panel shows bounded tails from the current or most recent run's `transcript.jsonl` and `stderr.txt`; it never depends on reading an unbounded transcript into memory.
+
+The layout is responsive. Wide terminals show side-by-side dashboard panels, medium and narrow terminals stack sections in priority order, and very narrow terminals use compact status/footer text. Rendering uses width-aware clipping/truncation so dashboard lines remain within terminal width.
 
 Mission execution auto-opens Mission Control in interactive mode when started or resumed through `/missions run` or `mission_start_execution`. Closing Mission Control with `q` or `esc` only closes the UI and returns to the normal session; it does not stop worker/validator execution or change mission state.
 
 Keyboard controls:
 
 ```text
-q / esc        Close Mission Control
+q / esc        Close Mission Control only; execution continues
 ↑ / ↓ or j / k Move selection
-tab            Cycle focus when multiple panes are focusable
+tab            Cycle focus hint between features and progress log
 r              Refresh from mission artifacts
+p              Request pause-after-current; does not kill the active worker/validator
+s              Start or resume mission execution when safe; confirmation required
+c              Hide completed missions from default visibility; confirmation required
 ?              Toggle help
 ```
+
+Safety boundaries:
+
+- Mutating actions use explicit shortcuts, notifications, and audit events; execution-starting or destructive visibility actions require confirmation.
+- Pause is pause-after-current: it records a durable request while the mission keeps running until the current worker/validator exits, then the run loop transitions the mission to paused before launching another unit.
+- Start/resume is refused while a mission is already running or while a pause request is pending for an in-flight run, preventing overlapping execution loops for the same mission.
+- Clear completed missions hides them from default Mission Control visibility without deleting artifacts or changing their completed status.
 
 Mission Control replaces the old rich always-on active mission widget. The extension still keeps a minimal `ctx.ui.setStatus("missions", ...)` footer/status output for compact visibility, but no longer renders a persistent rich mission widget in every session.
 
@@ -183,7 +195,8 @@ The chosen architecture is therefore:
 
 1. Keep `runMission()` as the durable execution owner for sequential worker and validator child processes.
 2. Auto-open Mission Control from execution entrypoints in interactive mode with a fire-and-forget call.
-3. Make Mission Control read mission artifacts (`mission.json`, `event-log.jsonl`, run handoffs/reports) and poll/refresh independently.
-4. Treat `q`/`esc` as UI disposal only; closing Mission Control must not abort `ctx.signal`, kill child processes, or alter mission state.
+3. Make Mission Control read mission artifacts (`mission.json`, `event-log.jsonl`, run handoffs/reports, bounded transcript/stderr tails) and poll/refresh independently.
+4. Keep Mission Control actions explicit and routed through audited command handlers; confirmation gates are required for starting/resuming execution and clearing completed-mission visibility.
+5. Treat `q`/`esc` as UI disposal only; closing Mission Control must not abort `ctx.signal`, kill child processes, or alter mission state.
 
-This preserves chat-first planning, keeps Mission Control read-only for v1, and ensures closing the dashboard does not stop execution.
+This preserves chat-first planning, lets Mission Control provide safe operational controls, and ensures closing the dashboard does not stop execution.

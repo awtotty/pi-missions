@@ -1708,6 +1708,8 @@ const MISSION_CONTROL_POLL_MS = 1500;
 function missionControlHelpLines(): string[] {
 	return [
 		"Help",
+		"Dashboard: header/progress, current work, grouped features, progress log, bounded child output",
+		"Layout: panels collapse responsively; rendered lines are width-clipped",
 		"↑/k: select previous mission/milestone/feature item",
 		"↓/j: select next mission/milestone/feature item",
 		"tab: cycle focus hint between features and progress log",
@@ -2281,12 +2283,14 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 	return block;
 }
 
-// Mission Control concurrency decision (F1/F7): ctx.ui.custom() returns a Promise
-// that settles only when the custom component calls done()/closes, so awaiting it
-// before or during runMission would make mission execution wait for the user to
-// close the UI. Auto-open Mission Control fire-and-forget and keep runMission as
-// the durable execution owner. Closing Mission Control only disposes the UI; it
-// does not abort ctx.signal or any child worker/validator process.
+// Mission Control concurrency/control decision (F1/F7/F11): ctx.ui.custom()
+// returns a Promise that settles only when the custom component calls
+// done()/closes, so awaiting it before or during runMission would make mission
+// execution wait for the user to close the UI. Auto-open Mission Control
+// fire-and-forget and keep runMission as the durable execution owner. Closing
+// Mission Control only disposes the UI; it does not abort ctx.signal or any
+// child worker/validator process. Mutating controls are explicit action-dispatcher
+// calls; pause is a durable pause-after-current request, not a child-process kill.
 function autoOpenMissionControl(ctx: ExtensionContext, mission: MissionState, pi: ExtensionAPI): void {
 	if (!ctx.hasUI) return;
 	const state = buildOrchestratorState(ctx.cwd, mission, {
