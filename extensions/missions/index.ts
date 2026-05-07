@@ -1346,10 +1346,27 @@ function createPlanningMission(cwd: string, requestedId?: string): MissionState 
 	};
 }
 
-function findNextFeature(mission: MissionState): { milestone: MissionMilestone; feature: MissionFeature } | undefined {
+function featureStatusById(mission: MissionState): Map<string, ItemStatus> {
+	const statuses = new Map<string, ItemStatus>();
 	for (const milestone of mission.milestones) {
+		for (const feature of milestone.features) statuses.set(feature.id, feature.status);
+	}
+	return statuses;
+}
+
+function areFeatureDependenciesSatisfied(feature: MissionFeature, statuses: Map<string, ItemStatus>): boolean {
+	return (feature.dependencies ?? []).every((dependencyId) => {
+		const dependencyStatus = statuses.get(dependencyId);
+		return dependencyStatus === "complete" || dependencyStatus === "skipped";
+	});
+}
+
+function findNextFeature(mission: MissionState): { milestone: MissionMilestone; feature: MissionFeature } | undefined {
+	const statuses = featureStatusById(mission);
+	for (const milestone of mission.milestones) {
+		if (milestone.status === "complete" || milestone.status === "failed" || milestone.status === "skipped") continue;
 		for (const feature of milestone.features) {
-			if (feature.status === "pending") return { milestone, feature };
+			if (feature.status === "pending" && areFeatureDependenciesSatisfied(feature, statuses)) return { milestone, feature };
 		}
 	}
 	return undefined;
@@ -1358,6 +1375,8 @@ function findNextFeature(mission: MissionState): { milestone: MissionMilestone; 
 function shouldAutoResumeAfterPlanRevision(cwd: string, existingMission: MissionState | undefined, revisedMission: MissionState): boolean {
 	if (!existingMission || existingMission.status !== "blocked") return false;
 	if (!hasMissionExecutionStarted(cwd, existingMission)) return false;
+	if (revisedMission.status === "planning" || revisedMission.status === "planned" || revisedMission.status === "complete" || revisedMission.status === "failed") return false;
+	if (revisedMission.status === "paused") return false;
 	return Boolean(findNextFeature(revisedMission));
 }
 
