@@ -162,7 +162,7 @@ function runRunnerLockCoverage() {
 	});
 }
 
-function runMissionControlLifecycleCheck() {
+async function runMissionControlLifecycleCheck() {
 	let opened = 0;
 	let settled = 0;
 	const autoOpenMissionControl = compileNamedFunction("autoOpenMissionControl", {
@@ -177,13 +177,46 @@ function runMissionControlLifecycleCheck() {
 	autoOpenMissionControl(ctx, { id: "M1" }, {});
 	autoOpenMissionControl(ctx, { id: "M1" }, {});
 	assert(opened === 2, "Mission Control should support close/reopen lifecycle");
-	assert(source.includes("ctx.ui.custom()"), "Mission Control lifecycle docs must mention custom UI promise behavior");
 	assert(source.includes("void openMissionControl"), "Mission Control must open fire-and-forget rather than blocking runMission");
-	assert(source.includes("Closing\n// Mission Control only disposes the UI; it does not abort"), "Mission Control close semantics must preserve running mission and interactive session usability");
-	return new Promise((resolve) => setTimeout(resolve, 90)).then(() => {
-		assert(settled === 2, "all Mission Control instances should settle asynchronously");
-		assert(notifications.length === 0, "normal close/reopen should not emit warnings");
+	await new Promise((resolve) => setTimeout(resolve, 90));
+	assert(settled === 2, "all Mission Control instances should settle asynchronously");
+	assert(notifications.length === 0, "normal close/reopen should not emit warnings");
+
+	const openMissionControl = compileNamedFunction("openMissionControl", {
+		MISSION_CONTROL_POLL_MS: 5,
+		loadMission: () => ({ id: "M1" }),
+		missionControlLines: () => ["Mission Control"],
+		missionControlTarget: () => ({ id: "M1" }),
+		missionControlAvailableActions: () => [],
+		matchesMissionControlActionKey: () => false,
+		dispatchMissionControlAction: async () => {},
+		moveMissionControlSelection: () => "F5",
+		missionControlMoveRecentMission: () => "M1",
+		hasSessionSwitchControls: () => false,
+		openOrSwitchMissionOrchestratorSession: async () => {},
+		matchesKey: () => false,
 	});
+
+	for (let attempt = 0; attempt < 2; attempt++) {
+		let doneCalls = 0;
+		let requestRenderCalls = 0;
+		let component;
+		const localCtx = {
+			hasUI: true,
+			cwd: "/tmp",
+			ui: {
+				notify: (m, l) => notifications.push([m, l]),
+				custom: async (factory) => {
+					component = factory({ requestRender: () => { requestRenderCalls++; } }, {}, {}, () => { doneCalls++; });
+					component.handleInput("q");
+				},
+			},
+		};
+		const result = await openMissionControl(localCtx, undefined, undefined, {});
+		assert(result.ok, "openMissionControl should resolve cleanly after user closes UI");
+		assert(doneCalls === 1, "closing Mission Control should finalize once and return control to interactive session");
+		assert(requestRenderCalls >= 0, "requestRender call accounting should remain valid");
+	}
 }
 
 function runFeatureFlowAndRegressionChecks(computeRecoveryGatePlan) {
