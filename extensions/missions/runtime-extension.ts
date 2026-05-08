@@ -2030,16 +2030,20 @@ function currentItemLines(selection: MissionControlSelection, run?: MissionRunCo
 
 function groupedFeatureLines(mission: MissionState, selection: MissionControlSelection, block?: MissionBlockMetadata): string[] {
 	const selectedId = selectionId(selection);
-	const lines = [`${selectedId === mission.id ? ">" : " "} ${mark(mission.status)} ${mission.id}`];
-	if (block) lines.push(`${selectedId === blockSelectionId(block) ? ">" : " "} ! Block ${block.reasonCategory} on ${block.failedItemId}`);
+	const row = (id: string, status: string, label: string, indent = ""): string => {
+		const selected = selectedId === id;
+		return `${selected ? "▸" : " "} ${indent}${mark(status)} ${label}${selected ? " ◂" : ""}`;
+	};
+	const lines = [row(mission.id, mission.status, mission.id)];
+	if (block) lines.push(`${selectedId === blockSelectionId(block) ? "▸" : " "} ! Block ${block.reasonCategory} on ${block.failedItemId}${selectedId === blockSelectionId(block) ? " ◂" : ""}`);
 	if (isFeatureOnlyMission(mission)) {
-		for (const feature of missionFeatureList(mission)) lines.push(`${selectedId === feature.id ? ">" : " "} ${mark(feature.status)} ${feature.id} ${feature.title}`);
+		for (const feature of missionFeatureList(mission)) lines.push(row(feature.id, feature.status, `${feature.id} ${feature.title}`));
 		return lines;
 	}
 	for (const milestone of missionMilestones(mission)) {
 		const done = milestone.features.filter((f) => f.status === "complete" || f.status === "skipped").length;
-		lines.push(`${selectedId === milestone.id ? ">" : " "} ${mark(milestone.status)} ${milestone.id} ${milestone.title} (${done}/${milestone.features.length})`);
-		for (const feature of milestone.features) lines.push(`${selectedId === feature.id ? ">" : " "}   ${mark(feature.status)} ${feature.id} ${feature.title}`);
+		lines.push(row(milestone.id, milestone.status, `${milestone.id} ${milestone.title} (${done}/${milestone.features.length})`));
+		for (const feature of milestone.features) lines.push(row(feature.id, feature.status, `${feature.id} ${feature.title}`, "  "));
 	}
 	return lines;
 }
@@ -2197,16 +2201,17 @@ function compactMissionControlHeader(mission: MissionState, width: number): stri
 
 function compactGroupedFeatureLines(mission: MissionState, selection: MissionControlSelection, block?: MissionBlockMetadata): string[] {
 	const selectedId = selectionId(selection);
+	const row = (id: string, status: string, label: string): string => `${selectedId === id ? "▸" : " "} ${mark(status)} ${label}${selectedId === id ? " ◂" : ""}`;
 	const lines: string[] = [];
-	if (block) lines.push(`${selectedId === blockSelectionId(block) ? ">" : " "} ! ${block.failedItemId}: ${block.reasonCategory}`);
+	if (block) lines.push(`${selectedId === blockSelectionId(block) ? "▸" : " "} ! ${block.failedItemId}: ${block.reasonCategory}${selectedId === blockSelectionId(block) ? " ◂" : ""}`);
 	if (isFeatureOnlyMission(mission)) {
-		for (const feature of missionFeatureList(mission)) lines.push(`${selectedId === feature.id ? ">" : " "} ${mark(feature.status)} ${feature.id} ${feature.title}`);
+		for (const feature of missionFeatureList(mission)) lines.push(row(feature.id, feature.status, `${feature.id} ${feature.title}`));
 		return lines;
 	}
 	for (const milestone of missionMilestones(mission)) {
 		const done = milestone.features.filter((f) => f.status === "complete" || f.status === "skipped").length;
-		lines.push(`${selectedId === milestone.id ? ">" : " "} ${mark(milestone.status)} ${milestone.id} (${done}/${milestone.features.length})`);
-		for (const feature of milestone.features) lines.push(`${selectedId === feature.id ? ">" : " "} ${mark(feature.status)} ${feature.id} ${feature.title}`);
+		lines.push(row(milestone.id, milestone.status, `${milestone.id} (${done}/${milestone.features.length})`));
+		for (const feature of milestone.features) lines.push(row(feature.id, feature.status, `${feature.id} ${feature.title}`));
 	}
 	return lines;
 }
@@ -2224,7 +2229,7 @@ function missionControlDashboardLines(mission: MissionState, selection: MissionC
 		...header,
 		"",
 		...(mode === "wide"
-			? [...columnLines(currentPanel, featuresPanel, width), "", ...columnLines(controlPlanePanel, progressPanel, width), "", ...childPanel]
+			? [...columnLines([...currentPanel, "", ...controlPlanePanel], [...featuresPanel, "", ...progressPanel], width), "", ...childPanel]
 			: mode === "medium"
 				? [...currentPanel, "", ...featuresPanel, "", ...controlPlanePanel, "", ...columnLines(progressPanel, childPanel, width)]
 				: mode === "narrow"
