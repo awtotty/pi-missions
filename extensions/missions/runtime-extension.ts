@@ -2223,14 +2223,16 @@ function compactGroupedFeatureLines(mission: MissionState, selection: MissionCon
 	return lines;
 }
 
-function missionControlDashboardLines(mission: MissionState, selection: MissionControlSelection, width: number, block?: MissionBlockMetadata): string[] {
+function missionControlDashboardLines(mission: MissionState, selection: MissionControlSelection, width: number, focus: MissionControlViewState["focus"], block?: MissionBlockMetadata): string[] {
 	const mode = missionControlLayoutMode(width);
 	const run = currentOrLastRunContext(mission);
 	const header = mode === "compact" ? compactMissionControlHeader(mission, width) : missionControlHeader(mission, width);
 	const currentPanel = panelLines("Current Item", currentItemLines(selection, run, block), width);
-	const featuresPanel = panelLines("Features", mode === "compact" ? compactGroupedFeatureLines(mission, selection, block) : groupedFeatureLines(mission, selection, block), width);
+	const featuresTitle = focus === "tree" ? "Features [active]" : "Features";
+	const progressTitle = focus === "timeline" ? "Progress Log [active]" : "Progress Log";
+	const featuresPanel = panelLines(featuresTitle, mode === "compact" ? compactGroupedFeatureLines(mission, selection, block) : groupedFeatureLines(mission, selection, block), width);
 	const controlPlanePanel = panelLines("Runner & Orchestrator", missionControlPlaneLines(mission), width);
-	const progressPanel = panelLines("Progress Log", progressLogLines(mission), width);
+	const progressPanel = panelLines(progressTitle, progressLogLines(mission), width);
 	const childPanel = limitLines(panelLines("Child Output", childOutputLines(run), width), CHILD_OUTPUT_MAX_PANEL_LINES + 1, width);
 	const lines = [
 		...header,
@@ -2305,7 +2307,7 @@ function missionControlHelpLines(): string[] {
 		"Layout: panels collapse responsively; rendered lines are width-clipped",
 		"↑/k: select previous mission/milestone/feature item",
 		"↓/j: select next mission/milestone/feature item",
-		"tab: cycle focus hint between features and progress log",
+		"tab: switch active view focus (Features ⇄ Progress Log)",
 		"r: refresh mission artifacts",
 		"p: request pause-after-current (does not kill current worker/validator)",
 		"s: start/resume mission execution (confirmation required)",
@@ -2319,9 +2321,9 @@ function missionControlHelpLines(): string[] {
 
 function missionControlFooter(width: number): string {
 	const mode = missionControlLayoutMode(width);
-	if (mode === "compact") return "q close · ↑/↓ move · p pause · s start · x cancel · c clear · r refresh · ? help";
-	if (mode === "narrow") return "q/esc close · ↑/↓ move · p pause · s start/resume · x cancel child · c clear done · r refresh · ? help";
-	return `q/esc close · ↑/↓/j/k move selection · tab focus · p pause-after-current · s start/resume · x cancel current child · c clear completed · r refresh · ? help · confirmed actions only · auto-refresh ${MISSION_CONTROL_POLL_MS / 1000}s`;
+	if (mode === "compact") return "q close · tab view · ↑/↓ move · p pause · s start · x cancel · c clear · r refresh · ?";
+	if (mode === "narrow") return "q/esc close · tab view · ↑/↓ move · p pause · s start/resume · x cancel · c clear · r · ?";
+	return `q/esc close · tab view · ↑/↓/j/k move · p pause · s start/resume · x cancel child · c clear done · r refresh · ? help · ${MISSION_CONTROL_POLL_MS / 1000}s poll`;
 }
 
 function visibleCompletedMissionsToClear(cwd: string): MissionState[] {
@@ -2495,9 +2497,9 @@ function missionControlLines(cwd: string, state: MissionOrchestratorSessionState
 		}
 		const selection = missionControlSelectionById(active, view.selectedId, block);
 		view.selectedId = selectionId(selection);
-		const focusText = view.focus === "tree" ? "Focus: milestone features" : "Focus: progress log";
+		const focusText = view.focus === "tree" ? "View: Features (tab → Progress Log)" : "View: Progress Log (tab → Features)";
 		return fitToViewport([
-			...missionControlDashboardLines(active, selection, safeWidth, block),
+			...missionControlDashboardLines(active, selection, safeWidth, view.focus, block),
 			focusText,
 			...(view.showHelp ? ["", ...missionControlHelpLines()] : []),
 			"",
