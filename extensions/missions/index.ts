@@ -2982,13 +2982,14 @@ function repairMissionExecutionGateState(_cwd: string, mission: MissionState): {
 		reasons.push(`set currentMilestoneId to ${gateMilestone.id}`);
 	}
 	if (mission.activeRun) {
-		const activeItemId = mission.activeRun.kind === "worker" ? mission.activeRun.itemId : mission.currentFeatureId;
+		const staleRunId = mission.activeRun.runId;
+		const activeItemId = mission.activeRun.itemId;
 		const activeIdx = activeItemId ? indexById.get(activeItemId) : undefined;
 		const gateIdx = indexById.get(gateFeature.id);
 		if (activeIdx !== undefined && gateIdx !== undefined && activeIdx > gateIdx) {
 			clearActiveRunOwnership(mission);
 			changed = true;
-			reasons.push(`cleared stale activeRun ${mission.activeRun?.runId} beyond gate feature ${gateFeature.id}`);
+			reasons.push(`cleared stale activeRun ${staleRunId} beyond gate feature ${gateFeature.id}`);
 		}
 	}
 	if (mission.status === "running" || mission.status === "paused") {
