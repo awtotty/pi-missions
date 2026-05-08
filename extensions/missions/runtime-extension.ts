@@ -1421,7 +1421,7 @@ function summarizeMission(mission: MissionState): string {
 		"",
 		...missionMilestones(mission).flatMap((m) => [
 			`${mark(m.status)} ${m.id}: ${m.title}${m.validationRunId ? ` [validator ${m.validationRunId}]` : ""}`,
-			...m.features.map((f) => `  ${mark(f.status)} ${f.id}: ${f.title}${f.runId ? ` [run ${f.runId}]` : ""}${f.commit ? ` (${f.commit})` : ""}`),
+			...m.features.map((f) => `  ${mark(f.status)} ${f.id}: ${f.title}${f.runId ? ` [run ${f.runId}]` : ""}${f.userTestingPending ? " [awaiting user-testing]" : ""}${f.commit ? ` (${f.commit})` : ""}`),
 		]),
 	].filter((line): line is string => line !== undefined).join("\n");
 }
@@ -2687,6 +2687,29 @@ function featureAwaitingValidation(mission: MissionState, feature: MissionFeatur
 	return feature.status === "pending" && Boolean(feature.commit) && !feature.validationRunId;
 }
 
+function featureAwaitingUserTesting(feature: MissionFeature): boolean {
+	if (!isFeatureUserTestingRequired(feature)) return false;
+	if (feature.status !== "running") return false;
+	if (!feature.validationRunId || feature.userTestingRunId) return false;
+	// Backward compatibility for already-persisted F2 states before userTestingPending
+	// existed: if a required feature is running with passed scrutiny and no user-testing
+	// run yet, resume user-testing.
+	return feature.userTestingPending !== false;
+}
+
+function findFeatureAwaitingUserTesting(mission: MissionState): { milestone: MissionMilestone; feature: MissionFeature } | undefined {
+	const statuses = featureStatusById(mission);
+	for (const feature of missionFeatureList(mission)) {
+		if (feature.status === "complete" || feature.status === "skipped") continue;
+		if (!areFeatureDependenciesSatisfied(feature, statuses)) return undefined;
+		if (featureAwaitingUserTesting(feature)) return { milestone: milestoneForFeature(mission, feature.id), feature };
+		if (featureAwaitingValidation(mission, feature)) return undefined;
+		if (feature.status === "pending") return undefined;
+		return undefined;
+	}
+	return undefined;
+}
+
 function findFeatureAwaitingValidation(mission: MissionState): { milestone: MissionMilestone; feature: MissionFeature } | undefined {
 	const statuses = featureStatusById(mission);
 	for (const feature of missionFeatureList(mission)) {
@@ -2720,6 +2743,7 @@ function normalizeBlockedFeatureForRetry(mission: MissionState, feature: Mission
 		feature.status = "pending";
 		feature.validationRunId = undefined;
 		feature.userTestingRunId = undefined;
+		feature.userTestingPending = false;
 		return true;
 	}
 	return false;
@@ -2803,17 +2827,20 @@ function featureUserTestingInstructions(feature: MissionFeature): string | undef
 
 function transitionValidatorPassToFeatureComplete(mission: MissionState, milestone: MissionMilestone, feature: MissionFeature): void {
 	feature.status = "complete";
+	feature.userTestingPending = false;
 	milestone.status = milestone.features.every((item) => item.status === "complete" || item.status === "skipped") ? "complete" : "pending";
 	mission.status = "running";
 }
 
 function transitionValidatorFailToFeaturePendingForRetry(mission: MissionState, feature: MissionFeature): void {
 	feature.status = "pending";
+	feature.userTestingPending = false;
 	mission.status = "running";
 }
 
 function transitionFeatureToUserTestingRunning(mission: MissionState, milestone: MissionMilestone, feature: MissionFeature, runId: string): void {
 	feature.userTestingRunId = runId;
+	feature.userTestingPending = false;
 	feature.status = "running";
 	mission.status = "running";
 	mission.currentMilestoneId = milestone.id;
@@ -2823,6 +2850,7 @@ function transitionFeatureToUserTestingRunning(mission: MissionState, milestone:
 
 function transitionUserTestingFailToFeaturePendingAndMissionBlocked(mission: MissionState, feature: MissionFeature): void {
 	feature.status = "pending";
+	feature.userTestingPending = false;
 	mission.status = "blocked";
 }
 
@@ -3132,6 +3160,7 @@ Do not stop after stating that you will validate. Use tools to complete the vali
 		if (targetFeature) {
 			if (isFeatureUserTestingRequired(targetFeature)) {
 				targetFeature.status = "running";
+				targetFeature.userTestingPending = true;
 				mission.status = "running";
 			} else transitionValidatorPassToFeatureComplete(mission, milestone, targetFeature);
 		} else {
@@ -3308,7 +3337,10 @@ function transitionInterruptedOrStaleRunToPausedForResume(mission: MissionState,
 		for (const feature of milestone.features) {
 			if (run?.kind === "worker" && feature.id === run.itemId && feature.status === "running") feature.status = "pending";
 			if (run?.kind === "validator" && feature.validationRunId === run.runId && feature.status === "running") feature.status = "pending";
-			if (run?.kind === "user-testing-validator" && feature.userTestingRunId === run.runId && feature.status === "running") feature.status = "pending";
+			if (run?.kind === "user-testing-validator" && feature.userTestingRunId === run.runId && feature.status === "running") {
+				feature.userTestingPending = true;
+				feature.userTestingRunId = undefined;
+			}
 		}
 		if (milestone.status === "running" && !milestone.features.some((feature) => feature.status === "running")) milestone.status = "pending";
 	}
@@ -3397,6 +3429,7 @@ function executeRunnerCommand(input: RunnerCommandInput, ctx: ExtensionContext, 
 		feature.runId = undefined;
 		feature.validationRunId = undefined;
 		feature.userTestingRunId = undefined;
+		feature.userTestingPending = false;
 		mission.status = "blocked";
 		mission.updatedAt = nowIso();
 		saveMission(ctx.cwd, mission);
@@ -3435,6 +3468,19 @@ class MissionExecutionRunner {
 	async run(): Promise<void> {
 		while (true) {
 			let mission = loadMission(this.ctx.cwd, this.missionId);
+			const awaitingUserTesting = findFeatureAwaitingUserTesting(mission);
+			if (awaitingUserTesting) {
+				const userTestingBlock = await runUserTestingValidator(this.ctx, mission, awaitingUserTesting.milestone, awaitingUserTesting.feature, this.childSignal);
+				mission = loadMission(this.ctx.cwd, this.missionId);
+				if (mission.status === "blocked" || mission.status === "failed") {
+					if (userTestingBlock) emitMissionBlockMessage(this.pi, userTestingBlock);
+					this.ctx.ui.notify(`User testing blocked mission. See ${this.dir}`, "error");
+					clearMissionRunStatus(this.ctx);
+					return;
+				}
+				if (applyPauseAfterCurrentIfRequested(this.ctx, this.missionId, `user-testing:${awaitingUserTesting.feature.id}`)) return;
+				continue;
+			}
 			const awaitingValidation = findFeatureAwaitingValidation(mission);
 			if (awaitingValidation) {
 				const validatorBlock = await runValidator(this.ctx, mission, awaitingValidation.milestone, this.childSignal, awaitingValidation.feature);

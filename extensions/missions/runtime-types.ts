@@ -17,6 +17,7 @@ export interface MissionFeature {
 		required?: boolean;
 		instructions?: string;
 	};
+	userTestingPending?: boolean;
 }
 
 export interface MissionMilestone {
