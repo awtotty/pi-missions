@@ -2351,12 +2351,13 @@ function transitionWorkerSuccessToValidatorRunning(mission: MissionState, milest
 	milestone.status = "running";
 }
 
-function transitionValidatorPassToFeatureComplete(milestone: MissionMilestone, feature: MissionFeature): void {
+function transitionValidatorPassToFeatureComplete(mission: MissionState, milestone: MissionMilestone, feature: MissionFeature): void {
 	feature.status = "complete";
 	milestone.status = milestone.features.every((item) => item.status === "complete" || item.status === "skipped") ? "complete" : "pending";
+	mission.status = "running";
 }
 
-function transitionValidatorFailToFeaturePending(mission: MissionState, feature: MissionFeature): void {
+function transitionValidatorFailToFeaturePendingAndMissionBlocked(mission: MissionState, feature: MissionFeature): void {
 	feature.status = "pending";
 	mission.status = "blocked";
 }
@@ -2364,6 +2365,22 @@ function transitionValidatorFailToFeaturePending(mission: MissionState, feature:
 function transitionMissionPauseAfterCurrent(mission: MissionState, requestedAt: string): void {
 	mission.status = "paused";
 	mission.pauseRequestedAt = requestedAt;
+}
+
+function transitionMissionResumeFromPause(mission: MissionState): void {
+	mission.status = "running";
+	mission.pauseRequestedAt = undefined;
+}
+
+function transitionMissionNoRunnablePendingWorkToBlocked(mission: MissionState): void {
+	mission.status = "blocked";
+}
+
+function transitionMissionToComplete(mission: MissionState): void {
+	mission.status = "complete";
+	for (const milestone of missionMilestones(mission)) {
+		if (milestone.status !== "complete") milestone.status = "complete";
+	}
 }
 
 function evaluateMissionLifecycleTransition(mission: MissionState, lifecycle: MissionRunLifecycleClassification): MissionLifecycleEvaluation {
@@ -2588,12 +2605,12 @@ Do not stop after stating that you will validate. Use tools to complete the vali
 	let block: MissionBlockSummary | undefined;
 	if (result.exitCode === 0 && report?.status === "pass") {
 		if (targetFeature) {
-			transitionValidatorPassToFeatureComplete(milestone, targetFeature);
+			transitionValidatorPassToFeatureComplete(mission, milestone, targetFeature);
 		} else {
 			milestone.status = "complete";
 		}
 	} else {
-		if (targetFeature) transitionValidatorFailToFeaturePending(mission, targetFeature);
+		if (targetFeature) transitionValidatorFailToFeaturePendingAndMissionBlocked(mission, targetFeature);
 		else {
 			milestone.status = "failed";
 			mission.status = "blocked";
@@ -2641,6 +2658,19 @@ function autoOpenMissionControl(ctx: ExtensionContext, mission: MissionState, pi
 	});
 }
 
+function transitionInterruptedOrStaleRunToPausedForResume(mission: MissionState, run?: MissionRunContext): void {
+	for (const milestone of missionMilestones(mission)) {
+		if (run?.kind === "validator" && milestone.id === run.itemId && milestone.status === "running") milestone.status = "pending";
+		for (const feature of milestone.features) {
+			if (run?.kind === "worker" && feature.id === run.itemId && feature.status === "running") feature.status = "pending";
+			if (run?.kind === "validator" && feature.validationRunId === run.runId && feature.status === "running") feature.status = "pending";
+		}
+		if (milestone.status === "running" && !milestone.features.some((feature) => feature.status === "running")) milestone.status = "pending";
+	}
+	mission.status = "paused";
+	clearActiveRunOwnership(mission);
+}
+
 function resetInterruptedRunForResume(ctx: ExtensionContext, mission: MissionState, lifecycle: MissionRunLifecycleClassification): MissionState {
 	const dir = missionDir(ctx.cwd, mission.id);
 	const run = lifecycle.run;
@@ -2654,16 +2684,7 @@ function resetInterruptedRunForResume(ctx: ExtensionContext, mission: MissionSta
 		runItemId: run?.itemId,
 		reason: lifecycle.reason,
 	};
-	for (const milestone of missionMilestones(mission)) {
-		if (run?.kind === "validator" && milestone.id === run.itemId && milestone.status === "running") milestone.status = "pending";
-		for (const feature of milestone.features) {
-			if (run?.kind === "worker" && feature.id === run.itemId && feature.status === "running") feature.status = "pending";
-			if (run?.kind === "validator" && feature.validationRunId === run.runId && feature.status === "running") feature.status = "pending";
-		}
-		if (milestone.status === "running" && !milestone.features.some((feature) => feature.status === "running")) milestone.status = "pending";
-	}
-	mission.status = "paused";
-	clearActiveRunOwnership(mission);
+	transitionInterruptedOrStaleRunToPausedForResume(mission, run);
 	mission.updatedAt = nowIso();
 	appendEvent(dir, "mission_interrupted_run_reset_for_resume", { missionId: mission.id, before });
 	clearMissionRunStatus(ctx);
@@ -2745,8 +2766,7 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 			appendEvent(dir, "mission_resume_requested", { missionId: mission.id, source: "runMission" });
 		}
 		if (mission.status === "paused") {
-			mission.status = "running";
-			mission.pauseRequestedAt = undefined;
+			transitionMissionResumeFromPause(mission);
 			saveMission(ctx.cwd, mission);
 		}
 		autoOpenMissionControl(ctx, mission, pi);
@@ -2780,7 +2800,7 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 		mission = loadMission(ctx.cwd, id);
 		const pending = incompleteFeatures(mission);
 		if (pending.length > 0) {
-			mission.status = "blocked";
+			transitionMissionNoRunnablePendingWorkToBlocked(mission);
 			const runId = `${String(Date.now())}-blocked-no-runnable-pending-work`;
 			const runDir = path.join(dir, "runs", runId);
 			const block = writeNoRunnablePendingWorkReport(runDir, mission, pending);
@@ -2792,8 +2812,7 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 			clearMissionRunStatus(ctx);
 			return;
 		}
-		mission.status = "complete";
-		for (const m of missionMilestones(mission)) if (m.status !== "complete") m.status = "complete";
+		transitionMissionToComplete(mission);
 		saveMission(ctx.cwd, mission);
 		appendEvent(dir, "mission_complete", {});
 		updateWidget(ctx, mission);
