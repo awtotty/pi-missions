@@ -1,6 +1,6 @@
 ---
 name: mission-orchestrator
-description: Plans and manages long-running pi missions. Use for creating feature/milestone plans, validation contracts, mission-specific worker skills, and re-planning from worker/validator handoffs.
+description: Plans and manages long-running pi missions. Use for creating feature-only plans, validation contracts, mission-specific worker skills, and re-planning from worker/validator handoffs.
 ---
 
 # Mission Orchestrator
@@ -20,15 +20,15 @@ You are the mission orchestrator: a project manager for long-running agent work.
 
 Planning is collaborative and happens in the normal current session conversation. Do not treat the first user goal or `/missions` invocation as enough. Ask clarifying questions, push back on unclear scope, propose tradeoffs, brainstorm alternatives, and iterate until the plan is solid.
 
-Do not call `mission_write_plan` immediately just because mission planning has started. Persist a plan only when you judge the objective, milestones/features, and validation contract are mature enough to save, or when the user explicitly asks you to save the draft.
+Do not call `mission_write_plan` immediately just because mission planning has started. Persist a plan only when you judge the objective, ordered feature list, and validation contract are mature enough to save, or when the user explicitly asks you to save the draft.
 
-Before calling `mission_write_plan`, present a visible, reviewable plan draft in chat. This review must include the objective, the milestone/feature outline, important assumptions and non-goals, and a bounded validation-contract summary. Do not dump huge validation contracts inline; summarize categories, counts, and representative/high-risk assertions. The only exception is when the user explicitly asks you to save a draft whose required review content is already visible in the current chat.
+Before calling `mission_write_plan`, present a visible, reviewable plan draft in chat. This review must include the objective, the ordered feature outline, important assumptions and non-goals, and a bounded validation-contract summary. Do not dump huge validation contracts inline; summarize categories, counts, and representative/high-risk assertions. The only exception is when the user explicitly asks you to save a draft whose required review content is already visible in the current chat.
 
 When ready, persist drafts with the `mission_write_plan` tool. This writes these artifacts into the mission directory but does not start or run the mission:
 
 - `mission.json`: machine-readable mission state.
 - `plan/objective.md`: user goal, constraints, non-goals, assumptions.
-- `plan/features.json`: ordered features grouped by milestone.
+- `plan/features.json`: ordered feature list.
 - `plan/validation-contract.json`: assertions created before code is written.
 - `plan/validation-contract.md`: human-readable version of the contract.
 - `skills/worker/SKILL.md`: mission-specific worker procedure.
@@ -55,30 +55,20 @@ Use this shape:
     "worker": "default",
     "validator": "default"
   },
-  "currentMilestoneId": "M1",
   "currentFeatureId": "F1",
-  "milestones": [
+  "features": [
     {
-      "id": "M1",
-      "title": "Milestone title",
-      "objective": "Meaningful checkpoint",
-      "validation": "What must be true at the end",
-      "status": "pending",
-      "features": [
-        {
-          "id": "F1",
-          "title": "Feature title",
-          "description": "Concrete implementation task",
-          "dependencies": [],
-          "status": "pending"
-        }
-      ]
+      "id": "F1",
+      "title": "Feature title",
+      "description": "Concrete implementation task",
+      "dependencies": [],
+      "status": "pending"
     }
   ]
 }
 ```
 
-Statuses: `planned`, `running`, `paused`, `blocked`, `complete`, `failed` for missions; `pending`, `running`, `complete`, `failed`, `skipped` for milestones/features.
+Statuses: `planned`, `running`, `paused`, `blocked`, `complete`, `failed` for missions; `pending`, `running`, `complete`, `failed`, `skipped` for features. Features are complete only after worker handoff and feature-level validation both pass.
 
 ## Validation contract
 
@@ -112,7 +102,7 @@ When the user reports a block, or mission context shows `status: blocked`, first
 
 Classify the block before acting:
 
-- **Implementation defect:** worker completed but tests, validation, or behavior failed. Convert concrete defects into new fix features.
+- **Implementation defect:** worker produced an attempt but tests, validation, or behavior failed. Keep the feature incomplete/pending so the next attempt fixes the same feature rather than appending a duplicate fix feature unless the user explicitly wants new scope.
 - **Validator failure:** preserve completed features unless evidence shows they are wrong; add fix features for each actionable defect; keep the original validation contract stable.
 - **Validator inconclusive:** identify missing environment, credentials, fixtures, or manual QA; ask the user only for the minimum missing information.
 - **Worker blocker:** dependency, ambiguity, missing command, external service, or environment problem. Ask a targeted question or add a setup/unblock feature.
@@ -123,7 +113,7 @@ Recovery policy:
 
 - Preserve completed commits and feature statuses unless there is evidence the work is invalid.
 - Do not discard or rewrite the validation contract just to make validation pass. Only change requirements when the user changes requirements.
-- Turn actionable defects into small, sequential fix features appended after existing work.
+- Prefer retrying the same incomplete feature after validation failures. Add new features only for genuinely new scope or dependencies.
 - Mark failed/incomplete features or milestones back to a resumable state only when the plan makes the next worker action unambiguous.
 - Record why the plan changed in the visible chat summary and in persisted artifacts when revising the plan.
 - Ask the user only for requirement ambiguity, destructive rollback decisions, credentials/secrets, unavailable external systems, or product tradeoffs.

@@ -27,6 +27,7 @@ interface MissionFeature {
 	dependencies?: string[];
 	status: ItemStatus;
 	runId?: string;
+	validationRunId?: string;
 	commit?: string;
 }
 
@@ -73,7 +74,8 @@ interface MissionState {
 	pauseRequestedAt?: string;
 	latestBlock?: MissionBlockMetadata;
 	activeRun?: MissionActiveRunOwnership;
-	milestones: MissionMilestone[];
+	features?: MissionFeature[];
+	milestones?: MissionMilestone[];
 }
 
 interface ClearedMissionsState {
@@ -360,11 +362,23 @@ function markMissionExecutionStarted(mission: MissionState): MissionState {
 
 function hasRunnablePersistedPlan(cwd: string, mission: MissionState): boolean {
 	try {
-		const hasFeature = Array.isArray(mission.milestones) && mission.milestones.some((milestone) => Array.isArray(milestone.features) && milestone.features.length > 0);
+		const hasFeature = Array.isArray(missionMilestones(mission)) && missionMilestones(mission).some((milestone) => Array.isArray(milestone.features) && milestone.features.length > 0);
 		return hasFeature && fs.existsSync(path.join(missionDir(cwd, mission.id), "plan/validation-contract.json"));
 	} catch {
 		return false;
 	}
+}
+
+function missionMilestones(mission: MissionState): MissionMilestone[] {
+	if (Array.isArray(mission.features)) {
+		return [{
+			id: "features",
+			title: "Features",
+			status: mission.features.every((feature) => feature.status === "complete" || feature.status === "skipped") ? "complete" : mission.features.some((feature) => feature.status === "running") ? "running" : "pending",
+			features: mission.features,
+		}];
+	}
+	return Array.isArray(mission.milestones) ? mission.milestones : [];
 }
 
 function normalizeMissionForRuntime(cwd: string, mission: MissionState): MissionState {
@@ -792,7 +806,7 @@ function unfinishedValidatorRunContextsFromEvents(mission: MissionState, recorde
 	return [...starts.entries()]
 		.filter(([runId]) => !recordedRunIds.has(runId))
 		.map(([runId, started]) => {
-			const milestone = mission.milestones.find((m) => m.id === started.milestoneId);
+			const milestone = missionMilestones(mission).find((m) => m.id === started.milestoneId);
 			return {
 				label: "Current validator run",
 				runId,
@@ -808,19 +822,32 @@ function unfinishedValidatorRunContextsFromEvents(mission: MissionState, recorde
 function missionRunContexts(mission: MissionState): MissionRunContext[] {
 	const contexts: MissionRunContext[] = [];
 	const recordedRunIds = new Set<string>();
-	for (const milestone of mission.milestones) {
+	for (const milestone of missionMilestones(mission)) {
 		for (const feature of milestone.features) {
-			if (!feature.runId) continue;
-			recordedRunIds.add(feature.runId);
-			contexts.push({
-				label: `${feature.status === "running" ? "Current" : "Last"} worker run`,
-				runId: feature.runId,
-				runDir: path.join(missionDir(mission.cwd, mission.id), "runs", feature.runId),
-				kind: "worker",
-				itemId: feature.id,
-				itemTitle: feature.title,
-				status: feature.status,
-			});
+			if (feature.runId) {
+				recordedRunIds.add(feature.runId);
+				contexts.push({
+					label: `${feature.status === "running" ? "Current" : "Last"} worker run`,
+					runId: feature.runId,
+					runDir: path.join(missionDir(mission.cwd, mission.id), "runs", feature.runId),
+					kind: "worker",
+					itemId: feature.id,
+					itemTitle: feature.title,
+					status: feature.status,
+				});
+			}
+			if (feature.validationRunId) {
+				recordedRunIds.add(feature.validationRunId);
+				contexts.push({
+					label: `${feature.status === "running" ? "Current" : "Last"} validator run`,
+					runId: feature.validationRunId,
+					runDir: path.join(missionDir(mission.cwd, mission.id), "runs", feature.validationRunId),
+					kind: "validator",
+					itemId: feature.id,
+					itemTitle: feature.title,
+					status: feature.status,
+				});
+			}
 		}
 		if (milestone.validationRunId) {
 			recordedRunIds.add(milestone.validationRunId);
@@ -964,7 +991,7 @@ function updateWidget(ctx: ExtensionContext, mission?: MissionState): void {
 		ctx.ui.setStatus("missions", undefined);
 		return;
 	}
-	const features = mission.milestones.flatMap((m) => m.features);
+	const features = missionMilestones(mission).flatMap((m) => m.features);
 	const done = features.filter((f) => f.status === "complete" || f.status === "skipped").length;
 	const run = currentOrLastRunContext(mission);
 	const lifecycle = classifyMissionRunLifecycle(mission.cwd, mission);
@@ -1003,8 +1030,8 @@ function blockMetadataFromSummary(block: MissionBlockSummary, reasonCategory: Bl
 		timestamp: nowIso(),
 		reasonCategory,
 		kind: block.kind,
-		failedItemId: block.kind === "worker" ? block.featureId ?? block.milestoneId : block.milestoneId,
-		failedItemTitle: block.kind === "worker" ? block.featureTitle ?? block.milestoneTitle : block.milestoneTitle,
+		failedItemId: block.kind === "worker" ? block.featureId ?? block.milestoneId : block.featureId ?? block.milestoneId,
+		failedItemTitle: block.kind === "worker" ? block.featureTitle ?? block.milestoneTitle : block.featureTitle ?? block.milestoneTitle,
 		missionId: block.missionId,
 		milestoneId: block.milestoneId,
 		featureId: block.featureId,
@@ -1071,7 +1098,7 @@ function emitMissionBlockMessage(pi: ExtensionAPI, block: MissionBlockSummary): 
 }
 
 function summarizeMission(mission: MissionState): string {
-	const features = mission.milestones.flatMap((m) => m.features);
+	const features = missionMilestones(mission).flatMap((m) => m.features);
 	const done = features.filter((f) => f.status === "complete" || f.status === "skipped").length;
 	const run = currentOrLastRunContext(mission);
 	const lifecycle = classifyMissionRunLifecycle(mission.cwd, mission);
@@ -1090,7 +1117,7 @@ function summarizeMission(mission: MissionState): string {
 		block?.artifactPaths.length ? `Block artifacts: ${block.artifactPaths.join(", ")}` : undefined,
 		`Next suggested action: ${nextSuggestedAction(mission, lifecycle, run, block)}`,
 		"",
-		...mission.milestones.flatMap((m) => [
+		...missionMilestones(mission).flatMap((m) => [
 			`${mark(m.status)} ${m.id}: ${m.title}${m.validationRunId ? ` [validator ${m.validationRunId}]` : ""}`,
 			...m.features.map((f) => `  ${mark(f.status)} ${f.id}: ${f.title}${f.runId ? ` [run ${f.runId}]` : ""}${f.commit ? ` (${f.commit})` : ""}`),
 		]),
@@ -1116,9 +1143,9 @@ function validationSummary(validationContractJson: unknown): string {
 }
 
 function planOutline(mission: MissionState, maxMilestones = 8, maxFeaturesPerMilestone = 8): string[] {
-	if (!Array.isArray(mission.milestones) || mission.milestones.length === 0) return ["(no milestones provided)"];
+	if (!Array.isArray(missionMilestones(mission)) || missionMilestones(mission).length === 0) return ["(no milestones provided)"];
 	const lines: string[] = [];
-	for (const milestone of mission.milestones.slice(0, maxMilestones)) {
+	for (const milestone of missionMilestones(mission).slice(0, maxMilestones)) {
 		lines.push(`${mark(milestone.status)} ${milestone.id}: ${milestone.title}`);
 		const features = Array.isArray(milestone.features) ? milestone.features : [];
 		for (const feature of features.slice(0, maxFeaturesPerMilestone)) {
@@ -1126,7 +1153,7 @@ function planOutline(mission: MissionState, maxMilestones = 8, maxFeaturesPerMil
 		}
 		if (features.length > maxFeaturesPerMilestone) lines.push(`  … ${features.length - maxFeaturesPerMilestone} more feature${features.length - maxFeaturesPerMilestone === 1 ? "" : "s"}`);
 	}
-	if (mission.milestones.length > maxMilestones) lines.push(`… ${mission.milestones.length - maxMilestones} more milestone${mission.milestones.length - maxMilestones === 1 ? "" : "s"}`);
+	if (missionMilestones(mission).length > maxMilestones) lines.push(`… ${missionMilestones(mission).length - maxMilestones} more milestone${missionMilestones(mission).length - maxMilestones === 1 ? "" : "s"}`);
 	return lines;
 }
 
@@ -1180,7 +1207,7 @@ function padLineToWidth(line: string, width: number): string {
 }
 
 function missionFeatureCounts(mission: MissionState): { done: number; total: number; running: number; failed: number; pending: number } {
-	const features = mission.milestones.flatMap((m) => m.features);
+	const features = missionMilestones(mission).flatMap((m) => m.features);
 	const done = features.filter((f) => f.status === "complete" || f.status === "skipped").length;
 	const running = features.filter((f) => f.status === "running").length;
 	const failed = features.filter((f) => f.status === "failed").length;
@@ -1413,7 +1440,7 @@ function validationContractAssertions(mission: MissionState): ValidationContract
 
 function featureDependencyLines(mission: MissionState, feature: MissionFeature): string[] {
 	if (!feature.dependencies?.length) return ["Preconditions: no feature dependencies recorded"];
-	const features = new Map(mission.milestones.flatMap((milestone) => milestone.features.map((item) => [item.id, item] as const)));
+	const features = new Map(missionMilestones(mission).flatMap((milestone) => milestone.features.map((item) => [item.id, item] as const)));
 	return [`Dependencies: ${feature.dependencies.map((id) => {
 		const dependency = features.get(id);
 		return dependency ? `${id} ${mark(dependency.status)} ${dependency.status}` : `${id} ? unknown`;
@@ -1466,7 +1493,7 @@ function milestoneValidationRunContext(mission: MissionState, milestone: Mission
 }
 
 function currentSelection(mission: MissionState): MissionControlSelection {
-	const currentMilestone = mission.milestones.find((m) => m.id === mission.currentMilestoneId) ?? mission.milestones.find((m) => m.status === "running") ?? mission.milestones[0];
+	const currentMilestone = missionMilestones(mission).find((m) => m.id === mission.currentMilestoneId) ?? missionMilestones(mission).find((m) => m.status === "running") ?? missionMilestones(mission)[0];
 	if (!currentMilestone) return { kind: "mission", mission };
 	const currentFeature = currentMilestone.features.find((f) => f.id === mission.currentFeatureId) ?? currentMilestone.features.find((f) => f.status === "running");
 	if (currentFeature) return { kind: "feature", mission, milestone: currentMilestone, feature: currentFeature };
@@ -1480,7 +1507,7 @@ function blockSelectionId(block: MissionBlockMetadata): string {
 function missionControlSelectableItems(mission: MissionState, block = latestBlockFromArtifacts(mission)): MissionControlSelection[] {
 	const items: MissionControlSelection[] = [{ kind: "mission", mission }];
 	if (block) items.push({ kind: "block", mission, block });
-	for (const milestone of mission.milestones) {
+	for (const milestone of missionMilestones(mission)) {
 		items.push({ kind: "milestone", mission, milestone });
 		for (const feature of milestone.features) items.push({ kind: "feature", mission, milestone, feature });
 	}
@@ -1528,7 +1555,7 @@ function missionTreeLines(mission: MissionState, selection: MissionControlSelect
 	const selectedId = selectionId(selection);
 	const lines = ["Mission tree", `${selectedId === mission.id ? ">" : " "} ${mark(mission.status)} ${mission.id}`];
 	if (block) lines.push(`${selectedId === blockSelectionId(block) ? ">" : " "} ! Block ${block.reasonCategory} on ${block.failedItemId}`);
-	for (const milestone of mission.milestones) {
+	for (const milestone of missionMilestones(mission)) {
 		lines.push(`${selectedId === milestone.id ? ">" : " "} ${mark(milestone.status)} ${milestone.id} ${milestone.title}`);
 		for (const feature of milestone.features) lines.push(`${selectedId === feature.id ? ">" : " "}   ${mark(feature.status)} ${feature.id} ${feature.title}`);
 	}
@@ -1653,7 +1680,7 @@ function groupedFeatureLines(mission: MissionState, selection: MissionControlSel
 	const selectedId = selectionId(selection);
 	const lines = [`${selectedId === mission.id ? ">" : " "} ${mark(mission.status)} ${mission.id}`];
 	if (block) lines.push(`${selectedId === blockSelectionId(block) ? ">" : " "} ! Block ${block.reasonCategory} on ${block.failedItemId}`);
-	for (const milestone of mission.milestones) {
+	for (const milestone of missionMilestones(mission)) {
 		const done = milestone.features.filter((f) => f.status === "complete" || f.status === "skipped").length;
 		lines.push(`${selectedId === milestone.id ? ">" : " "} ${mark(milestone.status)} ${milestone.id} ${milestone.title} (${done}/${milestone.features.length})`);
 		for (const feature of milestone.features) lines.push(`${selectedId === feature.id ? ">" : " "}   ${mark(feature.status)} ${feature.id} ${feature.title}`);
@@ -1663,8 +1690,7 @@ function groupedFeatureLines(mission: MissionState, selection: MissionControlSel
 
 const CHILD_TRANSCRIPT_TAIL_BYTES = 128 * 1024;
 const CHILD_STDERR_TAIL_BYTES = 32 * 1024;
-const CHILD_OUTPUT_MAX_SNIPPETS = 8;
-const CHILD_OUTPUT_MAX_STDERR_LINES = 4;
+const CHILD_OUTPUT_MAX_STDERR_LINES = 12;
 
 interface ChildTailReadResult {
 	text: string;
@@ -1727,32 +1753,34 @@ function transcriptEventSnippet(event: Record<string, unknown>): string | undefi
 	return undefined;
 }
 
+function transcriptStreamLine(event: Record<string, unknown>, fallback: string): string {
+	const type = typeof event.type === "string" ? event.type : "event";
+	const timestamp = typeof (event.message as { timestamp?: unknown } | undefined)?.timestamp === "number" ? new Date((event.message as { timestamp: number }).timestamp).toISOString().slice(11, 19) : "";
+	const prefix = timestamp ? `${timestamp} ${type}` : type;
+	const text = transcriptEventSnippet(event) ?? fallback;
+	return `${prefix}: ${text.replace(/^${type}: /, "")}`;
+}
+
 function transcriptTailLines(file: string): string[] {
 	const tail = safeReadTailText(file, CHILD_TRANSCRIPT_TAIL_BYTES);
 	if (tail.missing) return ["transcript.jsonl: not available yet"];
 	if (tail.error) return [`transcript.jsonl: could not read tail (${tail.error})`];
-	const snippets: string[] = [];
+	const stream: string[] = [];
 	let malformed = 0;
 	for (const rawLine of tail.text.split("\n")) {
 		const line = rawLine.trim();
 		if (!line) continue;
 		try {
 			const parsed = JSON.parse(line) as unknown;
-			if (parsed && typeof parsed === "object") {
-				const snippet = transcriptEventSnippet(parsed as Record<string, unknown>);
-				if (snippet) snippets.push(snippet);
-			} else {
-				malformed += 1;
-			}
+			if (parsed && typeof parsed === "object") stream.push(transcriptStreamLine(parsed as Record<string, unknown>, line));
+			else stream.push(`raw: ${line}`);
 		} catch {
 			malformed += 1;
-			if (snippets.length < CHILD_OUTPUT_MAX_SNIPPETS) snippets.push(`stdout: ${compactSnippetText(line)}`);
+			stream.push(`raw: ${line}`);
 		}
 	}
-	const prefix = tail.truncated ? "transcript tail" : "transcript";
-	const lines = [`${prefix}: ${snippets.length ? `showing ${Math.min(CHILD_OUTPUT_MAX_SNIPPETS, snippets.length)} snippet${Math.min(CHILD_OUTPUT_MAX_SNIPPETS, snippets.length) === 1 ? "" : "s"}` : "no displayable child messages"}${malformed ? ` · ${malformed} malformed/raw` : ""}`];
-	lines.push(...snippets.slice(-CHILD_OUTPUT_MAX_SNIPPETS));
-	return lines;
+	const prefix = tail.truncated ? "transcript stream tail" : "transcript stream";
+	return [`${prefix}: ${stream.length} line${stream.length === 1 ? "" : "s"}${malformed ? ` · ${malformed} raw/malformed` : ""}`, ...stream];
 }
 
 function stderrTailLines(file: string): string[] {
@@ -1807,7 +1835,7 @@ function compactGroupedFeatureLines(mission: MissionState, selection: MissionCon
 	const selectedId = selectionId(selection);
 	const lines: string[] = [];
 	if (block) lines.push(`${selectedId === blockSelectionId(block) ? ">" : " "} ! ${block.failedItemId}: ${block.reasonCategory}`);
-	for (const milestone of mission.milestones) {
+	for (const milestone of missionMilestones(mission)) {
 		const done = milestone.features.filter((f) => f.status === "complete" || f.status === "skipped").length;
 		lines.push(`${selectedId === milestone.id ? ">" : " "} ${mark(milestone.status)} ${milestone.id} (${done}/${milestone.features.length})`);
 		for (const feature of milestone.features) lines.push(`${selectedId === feature.id ? ">" : " "} ${mark(feature.status)} ${feature.id} ${feature.title}`);
@@ -2200,7 +2228,7 @@ function createPlanningMission(cwd: string, requestedId?: string): MissionState 
 
 function featureStatusById(mission: MissionState): Map<string, ItemStatus> {
 	const statuses = new Map<string, ItemStatus>();
-	for (const milestone of mission.milestones) {
+	for (const milestone of missionMilestones(mission)) {
 		for (const feature of milestone.features) statuses.set(feature.id, feature.status);
 	}
 	return statuses;
@@ -2215,7 +2243,7 @@ function areFeatureDependenciesSatisfied(feature: MissionFeature, statuses: Map<
 
 function findNextFeature(mission: MissionState): { milestone: MissionMilestone; feature: MissionFeature } | undefined {
 	const statuses = featureStatusById(mission);
-	for (const milestone of mission.milestones) {
+	for (const milestone of missionMilestones(mission)) {
 		if (milestone.status === "complete" || milestone.status === "failed" || milestone.status === "skipped") continue;
 		for (const feature of milestone.features) {
 			if (feature.status === "pending" && areFeatureDependenciesSatisfied(feature, statuses)) return { milestone, feature };
@@ -2227,7 +2255,7 @@ function findNextFeature(mission: MissionState): { milestone: MissionMilestone; 
 function incompleteFeatures(mission: MissionState): Array<{ milestone: MissionMilestone; feature: MissionFeature; unsatisfiedDependencies: string[] }> {
 	const statuses = featureStatusById(mission);
 	const incomplete: Array<{ milestone: MissionMilestone; feature: MissionFeature; unsatisfiedDependencies: string[] }> = [];
-	for (const milestone of mission.milestones) {
+	for (const milestone of missionMilestones(mission)) {
 		for (const feature of milestone.features) {
 			if (feature.status === "complete" || feature.status === "skipped") continue;
 			const unsatisfiedDependencies = (feature.dependencies ?? []).filter((dependencyId) => {
@@ -2364,7 +2392,9 @@ Do not stop after stating that you will implement. Use tools to complete the wor
 			artifactPaths: existingPaths([handoffFile, path.join(runDir, "handoff.md"), path.join(runDir, "transcript.jsonl"), path.join(runDir, "stderr.txt")]),
 		};
 	} else if (handoff.status === "complete") {
-		feature.status = "complete";
+		// Worker success is an implementation attempt. The feature is marked
+		// complete only after feature-level validation passes.
+		feature.status = "running";
 	} else {
 		feature.status = handoff.status === "blocked" ? "failed" : "failed";
 		mission.status = "blocked";
@@ -2409,23 +2439,27 @@ function completedFeatureReviewContext(dir: string, milestone: MissionMilestone)
 	return lines.join("\n");
 }
 
-async function runValidator(ctx: ExtensionContext, mission: MissionState, milestone: MissionMilestone, signal?: AbortSignal): Promise<MissionBlockSummary | undefined> {
+async function runValidator(ctx: ExtensionContext, mission: MissionState, milestone: MissionMilestone, signal?: AbortSignal, targetFeature?: MissionFeature): Promise<MissionBlockSummary | undefined> {
 	const dir = missionDir(mission.cwd, mission.id);
 	const runId = `${String(Date.now())}-validator-${milestone.id}`;
 	const runDir = path.join(dir, "runs", runId);
 	ensureDir(runDir);
-	milestone.validationRunId = runId;
+	if (targetFeature) targetFeature.validationRunId = runId;
+	else milestone.validationRunId = runId;
 	milestone.status = "running";
+	if (targetFeature) targetFeature.status = "running";
 	mission.status = "running";
 	mission.currentMilestoneId = milestone.id;
-	mission.currentFeatureId = undefined;
-	const ownership = setActiveRunOwnership(mission, { kind: "validator", itemId: milestone.id, runId });
+	mission.currentFeatureId = targetFeature?.id;
+	const ownership = setActiveRunOwnership(mission, { kind: "validator", itemId: targetFeature?.id ?? milestone.id, runId });
 	saveMission(ctx.cwd, mission);
 	persistRunOwnershipArtifact(runDir, ownership);
 	updateWidget(ctx, mission);
-	appendEvent(dir, "validator_started", { milestoneId: milestone.id, runId, ownership });
-	const featureReviewContext = completedFeatureReviewContext(dir, milestone);
-	const prompt = `Use the mission-validator skill and the mission-specific scrutiny validator skill if present. Validate this completed milestone adversarially.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\n\n${featureReviewContext}\n\nPerform a per-feature adversarial code review for each completed feature listed above, using the recorded commits and handoff paths where available. Inspect relevant diffs/handoffs, assess whether tests and procedure were adequate, and report code-review defects or procedure findings. Also check the milestone against the validation contract and mission plan. Run appropriate checks. Write validation-report.json and validation-report.md in the run directory.
+	appendEvent(dir, "validator_started", { milestoneId: milestone.id, featureId: targetFeature?.id, runId, ownership });
+	const featureReviewContext = targetFeature
+		? [`Feature attempt available for validation:`, `- ${targetFeature.id} - ${targetFeature.title}`, `  status: ${targetFeature.status}`, `  commit: ${targetFeature.commit ?? "not recorded"}`, `  worker run: ${targetFeature.runId ?? "not recorded"}`, `  run directory: ${targetFeature.runId ? path.join(dir, "runs", targetFeature.runId) : "not recorded"}`].join("\n")
+		: completedFeatureReviewContext(dir, milestone);
+	const prompt = `Use the mission-validator skill and the mission-specific scrutiny validator skill if present. Validate this ${targetFeature ? "feature implementation attempt" : "completed milestone"} adversarially.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\n${targetFeature ? `Feature: ${targetFeature.id} - ${targetFeature.title}\n\nFeature description:\n${targetFeature.description}\n` : ""}\n${featureReviewContext}\n\nPerform a per-feature adversarial code review for each completed feature listed above, using the recorded commits and handoff paths where available. Inspect relevant diffs/handoffs, assess whether tests and procedure were adequate, and report code-review defects or procedure findings. Also check the feature against the validation contract and mission plan. Run appropriate checks. Write validation-report.json and validation-report.md in the run directory.
 
 Do not stop after stating that you will validate. Use tools to complete the validation before any final response. Your final response is allowed only after validation-report.json and validation-report.md exist.`;
 	const result = await runPiChild({
@@ -2452,9 +2486,15 @@ Do not stop after stating that you will validate. Use tools to complete the vali
 	}
 	let block: MissionBlockSummary | undefined;
 	if (result.exitCode === 0 && report?.status === "pass") {
-		milestone.status = "complete";
+		if (targetFeature) {
+			targetFeature.status = "complete";
+			milestone.status = milestone.features.every((feature) => feature.status === "complete" || feature.status === "skipped") ? "complete" : "pending";
+		} else {
+			milestone.status = "complete";
+		}
 	} else {
-		milestone.status = "failed";
+		if (targetFeature) targetFeature.status = "pending";
+		else milestone.status = "failed";
 		mission.status = "blocked";
 		block = {
 			kind: "validator",
@@ -2462,6 +2502,8 @@ Do not stop after stating that you will validate. Use tools to complete the vali
 			missionTitle: mission.title,
 			milestoneId: milestone.id,
 			milestoneTitle: milestone.title,
+			featureId: targetFeature?.id,
+			featureTitle: targetFeature?.title,
 			runId,
 			runDir,
 			exitCode: result.exitCode,
@@ -2470,7 +2512,7 @@ Do not stop after stating that you will validate. Use tools to complete the vali
 		};
 	}
 	if (block) persistMissionBlock(dir, mission, block, classifyValidatorBlock(result, report));
-	appendEvent(dir, "validator_finished", { milestoneId: milestone.id, runId, exitCode: result.exitCode, status: report?.status });
+	appendEvent(dir, "validator_finished", { milestoneId: milestone.id, featureId: targetFeature?.id, runId, exitCode: result.exitCode, status: report?.status });
 	clearActiveRunOwnership(mission);
 	saveMission(ctx.cwd, mission);
 	updateWidget(ctx, mission);
@@ -2581,18 +2623,17 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 				return;
 			}
 			if (applyPauseAfterCurrentIfRequested(ctx, id, `worker:${next.feature.id}`)) return;
-			const milestone = mission.milestones.find((m) => m.id === next.milestone.id)!;
-			if (milestone.features.every((f) => f.status === "complete" || f.status === "skipped")) {
-				const validatorBlock = await runValidator(ctx, mission, milestone, childSignal);
-				mission = loadMission(ctx.cwd, id);
-				if (mission.status === "blocked" || mission.status === "failed") {
-					if (validatorBlock) emitMissionBlockMessage(pi, validatorBlock);
-					ctx.ui.notify(`Validation blocked mission. See ${dir}`, "error");
-					ctx.ui.setWidget("missions-run", undefined);
-					return;
-				}
-				if (applyPauseAfterCurrentIfRequested(ctx, id, `validator:${milestone.id}`)) return;
+			const milestone = missionMilestones(mission).find((m) => m.id === next.milestone.id)!;
+			const feature = milestone.features.find((f) => f.id === next.feature.id)!;
+			const validatorBlock = await runValidator(ctx, mission, milestone, childSignal, feature);
+			mission = loadMission(ctx.cwd, id);
+			if (mission.status === "blocked" || mission.status === "failed") {
+				if (validatorBlock) emitMissionBlockMessage(pi, validatorBlock);
+				ctx.ui.notify(`Validation blocked mission. See ${dir}`, "error");
+				ctx.ui.setWidget("missions-run", undefined);
+				return;
 			}
+			if (applyPauseAfterCurrentIfRequested(ctx, id, `validator:${next.feature.id}`)) return;
 		}
 		mission = loadMission(ctx.cwd, id);
 		const pending = incompleteFeatures(mission);
@@ -2610,7 +2651,7 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 			return;
 		}
 		mission.status = "complete";
-		for (const m of mission.milestones) if (m.status !== "complete") m.status = "complete";
+		for (const m of missionMilestones(mission)) if (m.status !== "complete") m.status = "complete";
 		saveMission(ctx.cwd, mission);
 		appendEvent(dir, "mission_complete", {});
 		updateWidget(ctx, mission);
@@ -2674,7 +2715,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			missionId: Type.Optional(Type.String()),
 			mission: Type.Any({ description: "Complete mission.json object matching the mission-orchestrator schema." }),
 			objectiveMd: Type.String({ description: "Human-readable objective, constraints, non-goals, and assumptions." }),
-			featuresJson: Type.Any({ description: "Ordered features grouped by milestone. Usually same milestone/feature content as mission.milestones." }),
+			featuresJson: Type.Any({ description: "Ordered feature list. Usually same content as mission.features." }),
 			validationContractJson: Type.Any({ description: "Implementation-independent validation assertions." }),
 			validationContractMd: Type.String({ description: "Human-readable validation contract." }),
 			workerSkillMd: Type.String({ description: "Mission-specific worker SKILL.md content." }),
@@ -2714,7 +2755,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			fs.writeFileSync(path.join(dir, "skills/validator-scrutiny/SKILL.md"), params.validatorScrutinySkillMd);
 			if (params.validatorUserTestingSkillMd) fs.writeFileSync(path.join(dir, "skills/validator-user-testing/SKILL.md"), params.validatorUserTestingSkillMd);
 			const autoResume = shouldAutoResumeAfterPlanRevision(ctx.cwd, existingMission, mission);
-			appendEvent(dir, existingMission ? "interactive_plan_revised" : "interactive_plan_written", { title: mission.title, milestones: mission.milestones?.length ?? 0, status: mission.status, autoResume });
+			appendEvent(dir, existingMission ? "interactive_plan_revised" : "interactive_plan_written", { title: mission.title, features: missionMilestones(mission).flatMap((m) => m.features).length, status: mission.status, autoResume });
 			updateWidget(ctx, mission);
 			persistOrchestratorState(ctx.cwd, mission, {
 				activeMissionId: missionId,
