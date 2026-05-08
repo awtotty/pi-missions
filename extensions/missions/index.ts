@@ -362,11 +362,20 @@ function markMissionExecutionStarted(mission: MissionState): MissionState {
 
 function hasRunnablePersistedPlan(cwd: string, mission: MissionState): boolean {
 	try {
-		const hasFeature = Array.isArray(missionMilestones(mission)) && missionMilestones(mission).some((milestone) => Array.isArray(milestone.features) && milestone.features.length > 0);
+		const hasFeature = missionFeatureList(mission).length > 0;
 		return hasFeature && fs.existsSync(path.join(missionDir(cwd, mission.id), "plan/validation-contract.json"));
 	} catch {
 		return false;
 	}
+}
+
+function isFeatureOnlyMission(mission: MissionState): boolean {
+	return Array.isArray(mission.features);
+}
+
+function missionFeatureList(mission: MissionState): MissionFeature[] {
+	if (Array.isArray(mission.features)) return mission.features;
+	return Array.isArray(mission.milestones) ? mission.milestones.flatMap((milestone) => milestone.features) : [];
 }
 
 function missionMilestones(mission: MissionState): MissionMilestone[] {
@@ -379,6 +388,13 @@ function missionMilestones(mission: MissionState): MissionMilestone[] {
 		}];
 	}
 	return Array.isArray(mission.milestones) ? mission.milestones : [];
+}
+
+function normalizeMissionShape(mission: MissionState): MissionState {
+	if (!Array.isArray(mission.features) && Array.isArray(mission.milestones)) mission.features = mission.milestones.flatMap((milestone) => milestone.features);
+	mission.milestones = undefined;
+	mission.currentMilestoneId = undefined;
+	return mission;
 }
 
 function normalizeMissionForRuntime(cwd: string, mission: MissionState): MissionState {
@@ -488,6 +504,25 @@ function lightweightMissionContext(cwd: string, state?: MissionOrchestratorSessi
 		"Use mission tools when the user asks about this mission; /missions run and mission_start_execution are the confirmation gate before implementation starts.",
 		"This is lightweight context only: answer unrelated user requests normally and do not force the conversation into mission planning unless relevant.",
 	].filter((line): line is string => Boolean(line)).join("\n");
+}
+
+function runningMissionOrchestratorContext(cwd: string, mission: MissionState): string {
+	return [
+		"[RUNNING MISSION ORCHESTRATOR SESSION]",
+		"This is the dedicated orchestrator chat for a running or active mission.",
+		`Mission: ${mission.id} — ${mission.title} [${mission.status}]`,
+		`Mission directory: ${missionDir(cwd, mission.id)}`,
+		`Current feature: ${mission.currentFeatureId ?? "not set"}`,
+		"",
+		"Your role:",
+		"- Coordinate, diagnose, redirect, pause/resume, and revise this mission.",
+		"- Do not implement repository code directly unless the user explicitly asks for manual repair outside mission execution.",
+		"- Use mission status/artifacts first when discussing active execution.",
+		"- Prefer feature-level recovery: failed validation keeps the same feature incomplete for another attempt unless user requests new scope.",
+		"",
+		"Initial mission status:",
+		summarizeMission(mission),
+	].join("\n");
 }
 
 function missionPlanningKickoffContext(cwd: string, goal: string): string {
@@ -991,7 +1026,7 @@ function updateWidget(ctx: ExtensionContext, mission?: MissionState): void {
 		ctx.ui.setStatus("missions", undefined);
 		return;
 	}
-	const features = missionMilestones(mission).flatMap((m) => m.features);
+	const features = missionFeatureList(mission);
 	const done = features.filter((f) => f.status === "complete" || f.status === "skipped").length;
 	const run = currentOrLastRunContext(mission);
 	const lifecycle = classifyMissionRunLifecycle(mission.cwd, mission);
@@ -1098,7 +1133,7 @@ function emitMissionBlockMessage(pi: ExtensionAPI, block: MissionBlockSummary): 
 }
 
 function summarizeMission(mission: MissionState): string {
-	const features = missionMilestones(mission).flatMap((m) => m.features);
+	const features = missionFeatureList(mission);
 	const done = features.filter((f) => f.status === "complete" || f.status === "skipped").length;
 	const run = currentOrLastRunContext(mission);
 	const lifecycle = classifyMissionRunLifecycle(mission.cwd, mission);
@@ -1142,18 +1177,11 @@ function validationSummary(validationContractJson: unknown): string {
 	return `Validation: ${maybeAssertions.length} assertion${maybeAssertions.length === 1 ? "" : "s"}${categoryText ? ` (${categoryText})` : ""}.`;
 }
 
-function planOutline(mission: MissionState, maxMilestones = 8, maxFeaturesPerMilestone = 8): string[] {
-	if (!Array.isArray(missionMilestones(mission)) || missionMilestones(mission).length === 0) return ["(no milestones provided)"];
-	const lines: string[] = [];
-	for (const milestone of missionMilestones(mission).slice(0, maxMilestones)) {
-		lines.push(`${mark(milestone.status)} ${milestone.id}: ${milestone.title}`);
-		const features = Array.isArray(milestone.features) ? milestone.features : [];
-		for (const feature of features.slice(0, maxFeaturesPerMilestone)) {
-			lines.push(`  ${mark(feature.status)} ${feature.id}: ${feature.title}`);
-		}
-		if (features.length > maxFeaturesPerMilestone) lines.push(`  … ${features.length - maxFeaturesPerMilestone} more feature${features.length - maxFeaturesPerMilestone === 1 ? "" : "s"}`);
-	}
-	if (missionMilestones(mission).length > maxMilestones) lines.push(`… ${missionMilestones(mission).length - maxMilestones} more milestone${missionMilestones(mission).length - maxMilestones === 1 ? "" : "s"}`);
+function planOutline(mission: MissionState, maxFeatures = 32): string[] {
+	const features = missionFeatureList(mission);
+	if (features.length === 0) return ["(no features provided)"];
+	const lines = features.slice(0, maxFeatures).map((feature) => `${mark(feature.status)} ${feature.id}: ${feature.title}`);
+	if (features.length > maxFeatures) lines.push(`… ${features.length - maxFeatures} more feature${features.length - maxFeatures === 1 ? "" : "s"}`);
 	return lines;
 }
 
@@ -1173,7 +1201,7 @@ function persistedPlanSummary(mission: MissionState, dir: string, objectiveMd: s
 		"Objective excerpt:",
 		boundedExcerpt(objectiveMd),
 		"",
-		"Milestones and features:",
+		"Features:",
 		...planOutline(mission),
 		"",
 		validationSummary(validationContractJson),
@@ -1207,7 +1235,7 @@ function padLineToWidth(line: string, width: number): string {
 }
 
 function missionFeatureCounts(mission: MissionState): { done: number; total: number; running: number; failed: number; pending: number } {
-	const features = missionMilestones(mission).flatMap((m) => m.features);
+	const features = missionFeatureList(mission);
 	const done = features.filter((f) => f.status === "complete" || f.status === "skipped").length;
 	const running = features.filter((f) => f.status === "running").length;
 	const failed = features.filter((f) => f.status === "failed").length;
@@ -1508,7 +1536,7 @@ function missionControlSelectableItems(mission: MissionState, block = latestBloc
 	const items: MissionControlSelection[] = [{ kind: "mission", mission }];
 	if (block) items.push({ kind: "block", mission, block });
 	for (const milestone of missionMilestones(mission)) {
-		items.push({ kind: "milestone", mission, milestone });
+		if (!isFeatureOnlyMission(mission)) items.push({ kind: "milestone", mission, milestone });
 		for (const feature of milestone.features) items.push({ kind: "feature", mission, milestone, feature });
 	}
 	return items;
@@ -1595,7 +1623,7 @@ function missionDetailsLines(selection: MissionControlSelection, run?: MissionRu
 		if (selection.milestone.validation) lines.push(`Validation: ${selection.milestone.validation}`);
 		if (selection.milestone.validationRunId) lines.push(`Validation run: ${selection.milestone.validationRunId}`);
 	} else {
-		lines.push(`Feature: ${selection.feature.id} — ${selection.feature.title}`, `Milestone: ${selection.milestone.id} — ${selection.milestone.title}`, `Status: ${selection.feature.status}`);
+		lines.push(`Feature: ${selection.feature.id} — ${selection.feature.title}`, `Status: ${selection.feature.status}`);
 		if (selection.feature.dependencies?.length) lines.push(`Dependencies: ${selection.feature.dependencies.join(", ")}`);
 		if (selection.feature.runId) lines.push(`Run: ${selection.feature.runId}`);
 		if (selection.feature.commit) lines.push(`Commit: ${selection.feature.commit}`);
@@ -1633,10 +1661,9 @@ function currentItemLines(selection: MissionControlSelection, run?: MissionRunCo
 			`${mark(selection.mission.status)} Mission: ${selection.mission.title}`,
 			`Status: ${selection.mission.status}`,
 			`Run lifecycle: ${lifecycle.state}${lifecycle.reason ? ` (${lifecycle.reason})` : ""}`,
-			`Current milestone: ${selection.mission.currentMilestoneId ?? "not set"}`,
 			`Current feature: ${selection.mission.currentFeatureId ?? "not set"}`,
 			`Created: ${selection.mission.createdAt}`,
-			`Expected: ${selection.mission.status === "complete" ? "all milestones complete" : "execute milestones sequentially"}`,
+			`Expected: ${selection.mission.status === "complete" ? "all features complete" : "execute features sequentially with validation after each feature"}`,
 			...(lifecycle.state === "interrupted" ? [nextSuggestedAction(selection.mission, lifecycle, run, block)] : []),
 			...verificationHintLines(selection.mission, ["current-work", "compatibility"]),
 			...currentWorkArtifactLines(run),
@@ -1662,7 +1689,6 @@ function currentItemLines(selection: MissionControlSelection, run?: MissionRunCo
 	const lines = [
 		`${mark(selection.feature.status)} Feature ${selection.feature.id}: ${selection.feature.title}`,
 		`Role/skill: worker · ${missionSkillPath(selection.mission, "worker")}`,
-		`Milestone: ${selection.milestone.id} — ${selection.milestone.title}`,
 		`Status: ${selection.feature.status}`,
 		...featureDependencyLines(selection.mission, selection.feature),
 		`Description: ${selection.feature.description}`,
@@ -1680,6 +1706,10 @@ function groupedFeatureLines(mission: MissionState, selection: MissionControlSel
 	const selectedId = selectionId(selection);
 	const lines = [`${selectedId === mission.id ? ">" : " "} ${mark(mission.status)} ${mission.id}`];
 	if (block) lines.push(`${selectedId === blockSelectionId(block) ? ">" : " "} ! Block ${block.reasonCategory} on ${block.failedItemId}`);
+	if (isFeatureOnlyMission(mission)) {
+		for (const feature of missionFeatureList(mission)) lines.push(`${selectedId === feature.id ? ">" : " "} ${mark(feature.status)} ${feature.id} ${feature.title}`);
+		return lines;
+	}
 	for (const milestone of missionMilestones(mission)) {
 		const done = milestone.features.filter((f) => f.status === "complete" || f.status === "skipped").length;
 		lines.push(`${selectedId === milestone.id ? ">" : " "} ${mark(milestone.status)} ${milestone.id} ${milestone.title} (${done}/${milestone.features.length})`);
@@ -1835,6 +1865,10 @@ function compactGroupedFeatureLines(mission: MissionState, selection: MissionCon
 	const selectedId = selectionId(selection);
 	const lines: string[] = [];
 	if (block) lines.push(`${selectedId === blockSelectionId(block) ? ">" : " "} ! ${block.failedItemId}: ${block.reasonCategory}`);
+	if (isFeatureOnlyMission(mission)) {
+		for (const feature of missionFeatureList(mission)) lines.push(`${selectedId === feature.id ? ">" : " "} ${mark(feature.status)} ${feature.id} ${feature.title}`);
+		return lines;
+	}
 	for (const milestone of missionMilestones(mission)) {
 		const done = milestone.features.filter((f) => f.status === "complete" || f.status === "skipped").length;
 		lines.push(`${selectedId === milestone.id ? ">" : " "} ${mark(milestone.status)} ${milestone.id} (${done}/${milestone.features.length})`);
@@ -1848,7 +1882,7 @@ function missionControlDashboardLines(mission: MissionState, selection: MissionC
 	const run = currentOrLastRunContext(mission);
 	const header = mode === "compact" ? compactMissionControlHeader(mission, width) : missionControlHeader(mission, width);
 	const currentPanel = panelLines("Current Item", currentItemLines(selection, run, block), width);
-	const featuresPanel = panelLines("Milestone Features", mode === "compact" ? compactGroupedFeatureLines(mission, selection, block) : groupedFeatureLines(mission, selection, block), width);
+	const featuresPanel = panelLines("Features", mode === "compact" ? compactGroupedFeatureLines(mission, selection, block) : groupedFeatureLines(mission, selection, block), width);
 	const progressPanel = panelLines("Progress Log", progressLogLines(mission), width);
 	const childPanel = panelLines("Child Output", childOutputLines(run), width);
 	const lines = [
@@ -1928,6 +1962,7 @@ function missionControlHelpLines(): string[] {
 		"s: start/resume mission execution (confirmation required)",
 		"c: clear completed missions from default visibility (confirmation required; artifacts are not deleted)",
 		"?: toggle this help",
+		"o: open dedicated orchestrator chat with /mission-orchestrator",
 		"q/esc: close Mission Control only",
 		"Mutating Mission Control actions use explicit shortcuts, audit events, notifications, and confirmation when required.",
 	];
@@ -1935,9 +1970,9 @@ function missionControlHelpLines(): string[] {
 
 function missionControlFooter(width: number): string {
 	const mode = missionControlLayoutMode(width);
-	if (mode === "compact") return "q close · ↑/↓ move · p pause · s start · c clear · r refresh · ? help";
-	if (mode === "narrow") return "q/esc close · ↑/↓ move · p pause · s start/resume · c clear done · r refresh · ? help";
-	return `q/esc close · ↑/↓/j/k move selection · tab focus · p pause-after-current · s start/resume · c clear completed · r refresh · ? help · confirmed actions only · auto-refresh ${MISSION_CONTROL_POLL_MS / 1000}s`;
+	if (mode === "compact") return "q close · ↑/↓ move · p pause · s start · o orch · c clear · r refresh · ? help";
+	if (mode === "narrow") return "q/esc close · ↑/↓ move · p pause · s start/resume · o orchestrator · c clear done · r refresh · ? help";
+	return `q/esc close · ↑/↓/j/k move selection · tab focus · p pause-after-current · s start/resume · o orchestrator chat · c clear completed · r refresh · ? help · confirmed actions only · auto-refresh ${MISSION_CONTROL_POLL_MS / 1000}s`;
 }
 
 function visibleCompletedMissionsToClear(cwd: string): MissionState[] {
@@ -2181,6 +2216,10 @@ async function openMissionControl(ctx: ExtensionContext, state: MissionOrchestra
 					tui.requestRender();
 					return;
 				}
+				if (data === "o") {
+					ctx.ui.notify("Open the dedicated orchestrator chat with /mission-orchestrator" + (active ? ` ${active.id}` : ""), "info");
+					return;
+				}
 				if (data === "?") {
 					view.showHelp = !view.showHelp;
 					tui.requestRender();
@@ -2222,7 +2261,7 @@ function createPlanningMission(cwd: string, requestedId?: string): MissionState 
 		updatedAt: nowIso(),
 		cwd,
 		models: readMissionGlobalSettings(cwd).models,
-		milestones: [],
+		features: [],
 	};
 }
 
@@ -2733,7 +2772,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			ensureDir(path.join(dir, "skills/worker"));
 			ensureDir(path.join(dir, "skills/validator-scrutiny"));
 			ensureDir(path.join(dir, "skills/validator-user-testing"));
-			const mission = params.mission as MissionState;
+			const mission = normalizeMissionShape(params.mission as MissionState);
 			mission.id = missionId;
 			mission.cwd = ctx.cwd;
 			mission.schemaVersion = 1;
@@ -2748,14 +2787,14 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			}
 			writeJson(path.join(dir, "mission.json"), mission);
 			fs.writeFileSync(path.join(dir, "plan/objective.md"), params.objectiveMd);
-			writeJson(path.join(dir, "plan/features.json"), params.featuresJson);
+			writeJson(path.join(dir, "plan/features.json"), mission.features ?? params.featuresJson);
 			writeJson(path.join(dir, "plan/validation-contract.json"), params.validationContractJson);
 			fs.writeFileSync(path.join(dir, "plan/validation-contract.md"), params.validationContractMd);
 			fs.writeFileSync(path.join(dir, "skills/worker/SKILL.md"), params.workerSkillMd);
 			fs.writeFileSync(path.join(dir, "skills/validator-scrutiny/SKILL.md"), params.validatorScrutinySkillMd);
 			if (params.validatorUserTestingSkillMd) fs.writeFileSync(path.join(dir, "skills/validator-user-testing/SKILL.md"), params.validatorUserTestingSkillMd);
 			const autoResume = shouldAutoResumeAfterPlanRevision(ctx.cwd, existingMission, mission);
-			appendEvent(dir, existingMission ? "interactive_plan_revised" : "interactive_plan_written", { title: mission.title, features: missionMilestones(mission).flatMap((m) => m.features).length, status: mission.status, autoResume });
+			appendEvent(dir, existingMission ? "interactive_plan_revised" : "interactive_plan_written", { title: mission.title, features: missionFeatureList(mission).length, status: mission.status, autoResume });
 			updateWidget(ctx, mission);
 			persistOrchestratorState(ctx.cwd, mission, {
 				activeMissionId: missionId,
@@ -2932,6 +2971,28 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			const targetMissionId = args.trim() || undefined;
 			await openMissionControl(ctx, orchestratorState, targetMissionId, pi);
+		},
+	});
+
+	pi.registerCommand("mission-orchestrator", {
+		description: "Open a dedicated orchestrator chat session for a running/active mission",
+		handler: async (args, ctx) => {
+			const mission = resolveMission(ctx.cwd, args.trim() || undefined, orchestratorState);
+			if (!mission) {
+				ctx.ui.notify("No mission found for orchestrator session.", "warning");
+				return;
+			}
+			const content = runningMissionOrchestratorContext(ctx.cwd, mission);
+			await ctx.newSession({
+				parentSession: ctx.sessionManager.getSessionFile(),
+				setup: async (sessionManager) => {
+					sessionManager.appendSessionInfo(`Mission orchestrator: ${mission.title}`);
+					sessionManager.appendCustomEntry(ORCHESTRATOR_STATE_ENTRY, buildOrchestratorState(ctx.cwd, mission, { activeMissionId: mission.id, activePlanningMissionId: undefined, activeRunningMissionId: mission.id }));
+				},
+				withSession: async (nextCtx) => {
+					await nextCtx.sendMessage({ customType: "missions-running-orchestrator", display: true, content, details: { missionId: mission.id, missionDir: missionDir(ctx.cwd, mission.id) } }, { triggerTurn: true, deliverAs: "followUp" });
+				},
+			});
 		},
 	});
 

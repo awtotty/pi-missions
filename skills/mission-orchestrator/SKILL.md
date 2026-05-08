@@ -96,7 +96,7 @@ When the user reports a block, or mission context shows `status: blocked`, first
 
 - use `mission_status` for the active mission;
 - read the latest failed worker `handoff.json` / `handoff.md` when a feature failed;
-- read the latest validator `validation-report.json` / `validation-report.md` when a milestone failed validation;
+- read the latest validator `validation-report.json` / `validation-report.md` when a feature failed validation;
 - inspect `event-log.jsonl` when the cause is unclear;
 - check git status and recent commits when procedure or dirty-worktree issues are involved.
 
@@ -114,7 +114,7 @@ Recovery policy:
 - Preserve completed commits and feature statuses unless there is evidence the work is invalid.
 - Do not discard or rewrite the validation contract just to make validation pass. Only change requirements when the user changes requirements.
 - Prefer retrying the same incomplete feature after validation failures. Add new features only for genuinely new scope or dependencies.
-- Mark failed/incomplete features or milestones back to a resumable state only when the plan makes the next worker action unambiguous.
+- Mark failed/incomplete features back to a resumable state only when the plan makes the next worker action unambiguous.
 - Record why the plan changed in the visible chat summary and in persisted artifacts when revising the plan.
 - Ask the user only for requirement ambiguity, destructive rollback decisions, credentials/secrets, unavailable external systems, or product tradeoffs.
 - After revising, show the recovery plan in chat before calling `mission_write_plan`, just like initial planning.

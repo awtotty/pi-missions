@@ -16,7 +16,7 @@ This is an early prototype inspired by Factory Missions, with a different design
 - sequential worker execution, one fresh child process per feature
 - required worker handoff files
 - required git commit per completed feature
-- milestone validator child process
+- feature-level validator child process
 - dedicated Mission Control dashboard/control TUI (`/mission-control`) and `/missions status`
 - compact mission footer/status indicator via `ctx.ui.setStatus("missions", ...)` instead of the old rich always-on widget
 
@@ -56,8 +56,8 @@ Use these scenarios for release-style checks of mission flows. They complement, 
 
 ### Code-review validator behavior
 
-1. Complete a milestone containing one or more feature commits and handoffs.
-2. Run `/missions run <mission-id>` until milestone validation starts.
+1. Complete a feature worker attempt and handoff.
+2. Run `/missions run <mission-id>` until feature validation starts.
 3. Inspect the validator run prompt/transcript and `validation-report.md`.
 4. Confirm the validator reviews each completed feature's commit and handoff, evaluates diffs, tests, edge cases, regressions, and procedure compliance, and can report code-review defects or procedure findings separately from validation-contract assertion results.
 
@@ -91,13 +91,13 @@ Use these scenarios for release-style checks of mission flows. They complement, 
 /mission ...               Alias for /missions
 ```
 
-`/missions` is a chat-first workflow: it loads the mission orchestrator skill into the current conversation, then brainstorming, scoping, assumptions, milestones, features, and validation planning happen in chat. When a plan is persisted, the assistant should show the plan content for review and `mission_write_plan` returns a concise visible summary with artifact locations. Persisted plans are directly runnable; `/missions run` or `mission_start_execution` is the single explicit confirmation gate before implementation begins.
+`/missions` is a chat-first workflow: it loads the mission orchestrator skill into the current conversation, then brainstorming, scoping, assumptions, ordered features, and validation planning happen in chat. When a plan is persisted, the assistant should show the plan content for review and `mission_write_plan` returns a concise visible summary with artifact locations. Persisted plans are directly runnable; `/missions run` or `mission_start_execution` is the single explicit confirmation gate before implementation begins.
 
 ## Mission Control
 
 `/mission-control [mission-id]` opens a dedicated Mission Control dashboard in interactive pi sessions. It monitors mission artifacts and also offers a small, explicit control surface for safe mission operations. In non-interactive/RPC/headless contexts, use `/missions status` or the `mission_status` tool instead.
 
-When opened without an id, Mission Control prefers the active mission. If there is no active mission, it shows recent visible missions or an empty state. The dashboard includes a mission header, progress bar, current-work panel, milestone-grouped feature panel, progress log, child output panel, and footer controls. The child output panel shows bounded tails from the current or most recent run's `transcript.jsonl` and `stderr.txt`; it never depends on reading an unbounded transcript into memory.
+When opened without an id, Mission Control prefers the active mission. If there is no active mission, it shows recent visible missions or an empty state. The dashboard includes a mission header, progress bar, current-work panel, feature panel, progress log, child output panel, and footer controls. The child output panel shows bounded full-stream tails from the current or most recent run's `transcript.jsonl` and `stderr.txt`; it never depends on reading an unbounded transcript into memory. Use `/mission-orchestrator [mission-id]` (or Mission Control's `o` hint) to open a dedicated orchestrator chat for a running mission.
 
 The layout is responsive. Wide terminals show side-by-side dashboard panels, medium and narrow terminals stack sections in priority order, and very narrow terminals use compact status/footer text. Rendering uses width-aware clipping/truncation so dashboard lines remain within terminal width.
 
@@ -170,7 +170,7 @@ Global defaults are configured with `/missions models`:
 /missions models                         Show current global defaults and settings file
 /missions models orchestrator <model>    Set the planner/orchestrator default
 /missions models worker <model>          Set the feature worker default
-/missions models validator <model>       Set the milestone validator default
+/missions models validator <model>       Set the feature validator default
 /missions models set <role> <model>      Equivalent explicit set form
 ```
 
