@@ -1733,9 +1733,11 @@ function groupedFeatureLines(mission: MissionState, selection: MissionControlSel
 	return lines;
 }
 
-const CHILD_TRANSCRIPT_TAIL_BYTES = 128 * 1024;
-const CHILD_STDERR_TAIL_BYTES = 32 * 1024;
-const CHILD_OUTPUT_MAX_STDERR_LINES = 12;
+const CHILD_TRANSCRIPT_TAIL_BYTES = 16 * 1024;
+const CHILD_STDERR_TAIL_BYTES = 8 * 1024;
+const CHILD_OUTPUT_MAX_TRANSCRIPT_LINES = 8;
+const CHILD_OUTPUT_MAX_STDERR_LINES = 4;
+const CHILD_OUTPUT_MAX_PANEL_LINES = 14;
 
 interface ChildTailReadResult {
 	text: string;
@@ -1825,7 +1827,12 @@ function transcriptTailLines(file: string): string[] {
 		}
 	}
 	const prefix = tail.truncated ? "transcript stream tail" : "transcript stream";
-	return [`${prefix}: ${stream.length} line${stream.length === 1 ? "" : "s"}${malformed ? ` · ${malformed} raw/malformed` : ""}`, ...stream];
+	const visible = stream.slice(-CHILD_OUTPUT_MAX_TRANSCRIPT_LINES);
+	const hidden = Math.max(0, stream.length - visible.length);
+	return [
+		`${prefix}: ${stream.length} line${stream.length === 1 ? "" : "s"}${hidden ? ` · showing last ${visible.length}` : ""}${malformed ? ` · ${malformed} raw/malformed` : ""}`,
+		...visible,
+	];
 }
 
 function stderrTailLines(file: string): string[] {
@@ -1841,13 +1848,14 @@ function childOutputLines(run?: MissionRunContext): string[] {
 	if (!run) return ["No current or recent child run.", "Waiting for transcript.jsonl or stderr.txt artifacts."];
 	const transcriptFile = path.join(run.runDir, "transcript.jsonl");
 	const stderrFile = path.join(run.runDir, "stderr.txt");
-	return [
+	const lines = [
 		`${run.label}: ${run.runId}`,
 		`Item: ${run.kind} ${run.itemId} — ${run.itemTitle}`,
 		`Artifacts: ${run.runDir}`,
 		...transcriptTailLines(transcriptFile),
 		...stderrTailLines(stderrFile),
 	];
+	return limitLines(lines, CHILD_OUTPUT_MAX_PANEL_LINES, 120);
 }
 
 type MissionControlLayoutMode = "wide" | "medium" | "narrow" | "compact";
@@ -1899,7 +1907,7 @@ function missionControlDashboardLines(mission: MissionState, selection: MissionC
 	const currentPanel = panelLines("Current Item", currentItemLines(selection, run, block), width);
 	const featuresPanel = panelLines("Features", mode === "compact" ? compactGroupedFeatureLines(mission, selection, block) : groupedFeatureLines(mission, selection, block), width);
 	const progressPanel = panelLines("Progress Log", progressLogLines(mission), width);
-	const childPanel = panelLines("Child Output", childOutputLines(run), width);
+	const childPanel = limitLines(panelLines("Child Output", childOutputLines(run), width), CHILD_OUTPUT_MAX_PANEL_LINES + 1, width);
 	const lines = [
 		...header,
 		"",
