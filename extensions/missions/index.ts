@@ -2750,6 +2750,36 @@ function findNextFeature(mission: MissionState): { milestone: MissionMilestone; 
 	return undefined;
 }
 
+function featureHandoffExists(mission: MissionState, feature: MissionFeature): boolean {
+	return Boolean(feature.runId && fs.existsSync(path.join(missionDir(mission.cwd, mission.id), "runs", feature.runId, "handoff.json")));
+}
+
+function featureAwaitingValidation(mission: MissionState, feature: MissionFeature): boolean {
+	if (!featureHandoffExists(mission, feature)) return false;
+	if (feature.status === "running") return true;
+	// Recovery repair may reset a worker-success feature to pending while preserving
+	// its run/commit. If it has not had any validation attempt yet, validate that
+	// existing implementation before launching later feature work.
+	return feature.status === "pending" && Boolean(feature.commit) && !feature.validationRunId;
+}
+
+function findFeatureAwaitingValidation(mission: MissionState): { milestone: MissionMilestone; feature: MissionFeature } | undefined {
+	const statuses = featureStatusById(mission);
+	for (const milestone of missionMilestones(mission)) {
+		if (milestone.status === "complete" || milestone.status === "failed" || milestone.status === "skipped") continue;
+		for (const feature of milestone.features) {
+			if (feature.status === "complete" || feature.status === "skipped") continue;
+			if (!areFeatureDependenciesSatisfied(feature, statuses)) return undefined;
+			if (featureAwaitingValidation(mission, feature)) return { milestone, feature };
+			// Sequential execution invariant: do not scan past an incomplete earlier
+			// feature. If it is not ready for validation, normal worker selection or
+			// no-runnable-work handling must deal with this feature before later ones.
+			return undefined;
+		}
+	}
+	return undefined;
+}
+
 function incompleteFeatures(mission: MissionState): Array<{ milestone: MissionMilestone; feature: MissionFeature; unsatisfiedDependencies: string[] }> {
 	const statuses = featureStatusById(mission);
 	const incomplete: Array<{ milestone: MissionMilestone; feature: MissionFeature; unsatisfiedDependencies: string[] }> = [];
@@ -2876,12 +2906,12 @@ function writeNoRunnablePendingWorkReport(runDir: string, mission: MissionState,
 	};
 }
 
-function shouldAutoResumeAfterPlanRevision(cwd: string, existingMission: MissionState | undefined, revisedMission: MissionState): boolean {
-	if (!existingMission || existingMission.status !== "blocked") return false;
-	if (!hasMissionExecutionStarted(cwd, existingMission)) return false;
-	if (revisedMission.status === "planning" || revisedMission.status === "planned" || revisedMission.status === "complete" || revisedMission.status === "failed") return false;
-	if (revisedMission.status === "paused") return false;
-	return Boolean(findNextFeature(revisedMission));
+function shouldAutoResumeAfterPlanRevision(_cwd: string, _existingMission: MissionState | undefined, _revisedMission: MissionState): boolean {
+	// Plan revision is a control-plane mutation, not execution confirmation. Auto
+	// resuming a blocked mission from mission_write_plan caused dogfooding runs to
+	// continue while the orchestrator was still repairing state. Keep revisions
+	// inert; users can explicitly resume via /missions run or Mission Control.
+	return false;
 }
 
 async function runWorker(ctx: ExtensionContext, mission: MissionState, milestone: MissionMilestone, feature: MissionFeature, signal?: AbortSignal): Promise<MissionBlockSummary | undefined> {
@@ -3268,6 +3298,19 @@ class MissionExecutionRunner {
 	async run(): Promise<void> {
 		while (true) {
 			let mission = loadMission(this.ctx.cwd, this.missionId);
+			const awaitingValidation = findFeatureAwaitingValidation(mission);
+			if (awaitingValidation) {
+				const validatorBlock = await runValidator(this.ctx, mission, awaitingValidation.milestone, this.childSignal, awaitingValidation.feature);
+				mission = loadMission(this.ctx.cwd, this.missionId);
+				if (mission.status === "blocked" || mission.status === "failed") {
+					if (validatorBlock) emitMissionBlockMessage(this.pi, validatorBlock);
+					this.ctx.ui.notify(`Validation blocked mission. See ${this.dir}`, "error");
+					clearMissionRunStatus(this.ctx);
+					return;
+				}
+				if (applyPauseAfterCurrentIfRequested(this.ctx, this.missionId, `validator:${awaitingValidation.feature.id}`)) return;
+				continue;
+			}
 			const next = findNextFeature(mission);
 			if (!next) break;
 			const workerBlock = await runWorker(this.ctx, mission, next.milestone, next.feature, this.childSignal);
