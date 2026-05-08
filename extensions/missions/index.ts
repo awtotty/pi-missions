@@ -3016,6 +3016,65 @@ function executeRunnerCommand(input: RunnerCommandInput, ctx: ExtensionContext, 
 	return { ok: false, text: `Unsupported runner command: ${input.command}` };
 }
 
+class MissionExecutionRunner {
+	constructor(
+		private readonly ctx: ExtensionContext,
+		private readonly pi: ExtensionAPI,
+		private readonly missionId: string,
+		private readonly dir: string,
+		private readonly childSignal?: AbortSignal,
+	) {}
+
+	async run(): Promise<void> {
+		while (true) {
+			let mission = loadMission(this.ctx.cwd, this.missionId);
+			const next = findNextFeature(mission);
+			if (!next) break;
+			const workerBlock = await runWorker(this.ctx, mission, next.milestone, next.feature, this.childSignal);
+			mission = loadMission(this.ctx.cwd, this.missionId);
+			if (mission.status === "blocked" || mission.status === "failed") {
+				if (workerBlock) emitMissionBlockMessage(this.pi, workerBlock);
+				this.ctx.ui.notify(`Mission blocked. See ${this.dir}`, "error");
+				clearMissionRunStatus(this.ctx);
+				return;
+			}
+			if (applyPauseAfterCurrentIfRequested(this.ctx, this.missionId, `worker:${next.feature.id}`)) return;
+			const milestone = missionMilestones(mission).find((m) => m.id === next.milestone.id)!;
+			const feature = milestone.features.find((f) => f.id === next.feature.id)!;
+			const validatorBlock = await runValidator(this.ctx, mission, milestone, this.childSignal, feature);
+			mission = loadMission(this.ctx.cwd, this.missionId);
+			if (mission.status === "blocked" || mission.status === "failed") {
+				if (validatorBlock) emitMissionBlockMessage(this.pi, validatorBlock);
+				this.ctx.ui.notify(`Validation blocked mission. See ${this.dir}`, "error");
+				clearMissionRunStatus(this.ctx);
+				return;
+			}
+			if (applyPauseAfterCurrentIfRequested(this.ctx, this.missionId, `validator:${next.feature.id}`)) return;
+		}
+		const mission = loadMission(this.ctx.cwd, this.missionId);
+		const pending = incompleteFeatures(mission);
+		if (pending.length > 0) {
+			transitionMissionNoRunnablePendingWorkToBlocked(mission);
+			const runId = `${String(Date.now())}-blocked-no-runnable-pending-work`;
+			const runDir = path.join(this.dir, "runs", runId);
+			const block = writeNoRunnablePendingWorkReport(runDir, mission, pending);
+			persistMissionBlock(this.dir, mission, block, "no_runnable_pending_work");
+			saveMission(this.ctx.cwd, mission);
+			updateWidget(this.ctx, mission);
+			emitMissionBlockMessage(this.pi, block);
+			this.ctx.ui.notify(`Mission blocked: pending work remains but no feature is runnable. See ${runDir}`, "error");
+			clearMissionRunStatus(this.ctx);
+			return;
+		}
+		transitionMissionToComplete(mission);
+		saveMission(this.ctx.cwd, mission);
+		appendEvent(this.dir, "mission_complete", {});
+		updateWidget(this.ctx, mission);
+		clearMissionRunStatus(this.ctx);
+		this.ctx.ui.notify(`Mission complete: ${mission.title}`, "info");
+	}
+}
+
 async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI, options: { detached?: boolean } = {}): Promise<void> {
 	const id = args.trim() || latestMission(ctx.cwd)?.id;
 	if (!id) {
@@ -3092,52 +3151,8 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 			else ctx.signal.addEventListener("abort", abortFromParent, { once: true });
 		}
 		ACTIVE_MISSION_CHILD_ABORTERS.set(runKey, childAbortController);
-		while (true) {
-			mission = loadMission(ctx.cwd, id);
-			const next = findNextFeature(mission);
-			if (!next) break;
-			const workerBlock = await runWorker(ctx, mission, next.milestone, next.feature, childSignal);
-			mission = loadMission(ctx.cwd, id);
-			if (mission.status === "blocked" || mission.status === "failed") {
-				if (workerBlock) emitMissionBlockMessage(pi, workerBlock);
-				ctx.ui.notify(`Mission blocked. See ${dir}`, "error");
-				clearMissionRunStatus(ctx);
-				return;
-			}
-			if (applyPauseAfterCurrentIfRequested(ctx, id, `worker:${next.feature.id}`)) return;
-			const milestone = missionMilestones(mission).find((m) => m.id === next.milestone.id)!;
-			const feature = milestone.features.find((f) => f.id === next.feature.id)!;
-			const validatorBlock = await runValidator(ctx, mission, milestone, childSignal, feature);
-			mission = loadMission(ctx.cwd, id);
-			if (mission.status === "blocked" || mission.status === "failed") {
-				if (validatorBlock) emitMissionBlockMessage(pi, validatorBlock);
-				ctx.ui.notify(`Validation blocked mission. See ${dir}`, "error");
-				clearMissionRunStatus(ctx);
-				return;
-			}
-			if (applyPauseAfterCurrentIfRequested(ctx, id, `validator:${next.feature.id}`)) return;
-		}
-		mission = loadMission(ctx.cwd, id);
-		const pending = incompleteFeatures(mission);
-		if (pending.length > 0) {
-			transitionMissionNoRunnablePendingWorkToBlocked(mission);
-			const runId = `${String(Date.now())}-blocked-no-runnable-pending-work`;
-			const runDir = path.join(dir, "runs", runId);
-			const block = writeNoRunnablePendingWorkReport(runDir, mission, pending);
-			persistMissionBlock(dir, mission, block, "no_runnable_pending_work");
-			saveMission(ctx.cwd, mission);
-			updateWidget(ctx, mission);
-			emitMissionBlockMessage(pi, block);
-			ctx.ui.notify(`Mission blocked: pending work remains but no feature is runnable. See ${runDir}`, "error");
-			clearMissionRunStatus(ctx);
-			return;
-		}
-		transitionMissionToComplete(mission);
-		saveMission(ctx.cwd, mission);
-		appendEvent(dir, "mission_complete", {});
-		updateWidget(ctx, mission);
-		clearMissionRunStatus(ctx);
-		ctx.ui.notify(`Mission complete: ${mission.title}`, "info");
+		const runner = new MissionExecutionRunner(ctx, pi, id, dir, childSignal);
+		await runner.run();
 	} finally {
 		clearInterval(heartbeat);
 		releaseRunnerLock(ctx.cwd, id, "runMission_finished");
