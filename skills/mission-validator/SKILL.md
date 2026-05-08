@@ -37,6 +37,8 @@ When reporting defects, include evidence from the diff or runtime behavior, a re
 
 ## Report JSON shape
 
+(Required fields must be present; extra fields are allowed.)
+
 ```json
 {
   "featureId": "F1",

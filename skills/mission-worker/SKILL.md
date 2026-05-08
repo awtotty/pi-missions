@@ -24,7 +24,7 @@ Write both:
 - `handoff.json`
 - `handoff.md`
 
-Use this JSON shape:
+Use this JSON shape (required fields must be present; extra fields are allowed):
 
 ```json
 {

@@ -56,6 +56,7 @@ import {
 	type ValidationContractAssertion,
 } from "./runtime-types.js";
 import { computeRecoveryGatePlan } from "./recovery-gate.js";
+import { artifactValidationErrorSummary, validateMissionArtifact } from "./runtime-artifact-schemas.js";
 
 function orchestratorSessionRecordFile(cwd: string, missionId: string): string {
 	return path.join(missionDir(cwd, missionId), "orchestrator-session.json");
@@ -1073,8 +1074,18 @@ function synthesizeWorkerHandoffArtifacts(runDir: string, feature: MissionFeatur
 		status: result.exitCode === 0 ? "complete" : "blocked",
 		commit,
 		summary: "Worker exited without handoff artifacts; orchestrator synthesized this handoff from runner metadata so validation/retry flow can continue.",
+		implemented: [] as string[],
+		leftUndone: ["Original worker did not produce required handoff.json/handoff.md."],
 		filesChanged: [] as string[],
 		commandsRun: [] as Array<{ command: string; exitCode?: number; notes?: string }>,
+		issuesDiscovered: [] as string[],
+		procedureCompliance: {
+			readMissionContext: false,
+			checkedGitStatusBeforeWork: false,
+			ranRequiredValidation: false,
+			committedChanges: Boolean(commit),
+			updatedHandoff: false,
+		},
 		risks: ["Original worker did not produce required handoff.json/handoff.md; inspect transcript.jsonl for details."],
 		synthesizedByOrchestrator: true,
 		exitCode: result.exitCode,
@@ -1101,7 +1112,7 @@ function synthesizeWorkerHandoffArtifacts(runDir: string, feature: MissionFeatur
 	return synthesized;
 }
 
-function ensureValidatorFailureReportArtifacts(runDir: string, milestone: MissionMilestone, result: RunResult, report: any): any {
+function ensureValidatorFailureReportArtifacts(runDir: string, milestone: MissionMilestone, result: RunResult, report: any, schemaError?: string): any {
 	const reportFile = path.join(runDir, "validation-report.json");
 	const reportMdFile = path.join(runDir, "validation-report.md");
 	const hasStructuredReport = report && typeof report === "object" && typeof report.status === "string";
@@ -1117,12 +1128,12 @@ function ensureValidatorFailureReportArtifacts(runDir: string, milestone: Missio
 	const synthesized = {
 		milestoneId: milestone.id,
 		status: "fail",
-		summary: finalText || "Validator exited without a parseable validation-report.json artifact.",
+		summary: schemaError || finalText || "Validator exited without a parseable validation-report.json artifact.",
 		assertions: [],
 		issues: [
 			{
 				title: "Missing or invalid validator report artifact",
-				details: finalText ? `Validator did not produce parseable JSON, but final response was: ${finalText.slice(0, 2000)}` : "The validator run did not produce a parseable validation-report.json file. See transcript.jsonl and stderr.txt for failure details.",
+				details: schemaError || (finalText ? `Validator did not produce parseable JSON, but final response was: ${finalText.slice(0, 2000)}` : "The validator run did not produce a parseable validation-report.json file. See transcript.jsonl and stderr.txt for failure details."),
 				severity: "high"
 			}
 		],
@@ -1685,11 +1696,13 @@ function runArtifactSummaryLines(run: MissionRunContext): string[] {
 	if (fs.existsSync(jsonFile)) {
 		try {
 			const artifact = readJson<Record<string, unknown>>(jsonFile);
+			const validation = validateMissionArtifact(run.kind === "worker" ? "worker-handoff" : "scrutiny-validation-report", artifact);
 			const status = typeof artifact.status === "string" ? artifact.status : undefined;
 			const commit = typeof artifact.commit === "string" ? artifact.commit : undefined;
 			const summary = typeof artifact.summary === "string" ? artifact.summary : undefined;
 			if (status || commit) lines.push(`Artifact status: ${[status, commit ? `commit ${commit}` : undefined].filter(Boolean).join(" · ")}`);
 			if (summary) lines.push(`Artifact summary: ${summary}`);
+			if (!validation.ok) lines.push(artifactValidationErrorSummary(run.kind === "worker" ? "worker-handoff" : "scrutiny-validation-report", validation.issues));
 		} catch {
 			lines.push(`Artifact summary: ${jsonFile} could not be parsed`);
 		}
@@ -2896,24 +2909,32 @@ Do not stop after stating that you will implement. Use tools to complete the wor
 	appendEvent(dir, "worker_finished", { featureId: feature.id, runId, exitCode: result.exitCode });
 
 	let handoff: any = undefined;
+	let handoffSchemaError: string | undefined;
 	const handoffFile = path.join(runDir, "handoff.json");
 	if (fs.existsSync(handoffFile)) {
 		try {
-			handoff = readJson<any>(handoffFile);
+			const parsed = readJson<any>(handoffFile);
+			const validation = validateMissionArtifact("worker-handoff", parsed);
+			if (validation.ok) handoff = parsed;
+			else {
+				handoffSchemaError = artifactValidationErrorSummary("worker-handoff", validation.issues);
+				appendEvent(dir, "handoff_parse_error", { featureId: feature.id, error: handoffSchemaError, issues: validation.issues });
+			}
 		} catch (error) {
+			handoffSchemaError = `Worker handoff.json parse error: ${String(error)}`;
 			appendEvent(dir, "handoff_parse_error", { featureId: feature.id, error: String(error) });
 		}
 	}
 	const dirty = await gitPorcelain(mission.cwd);
 	const head = await gitHead(mission.cwd);
-	if (!handoff && result.exitCode === 0 && !dirty) {
+	if (!handoff && !handoffSchemaError && result.exitCode === 0 && !dirty) {
 		handoff = synthesizeWorkerHandoffArtifacts(runDir, feature, result, head);
 		appendEvent(dir, "worker_handoff_synthesized", { featureId: feature.id, runId, commit: head });
 	}
 	feature.commit = handoff?.commit || head;
 	let block: MissionBlockSummary | undefined;
 	if (result.exitCode !== 0 || !handoff || dirty) {
-		const autoRetry = result.exitCode === 0 && !handoff && !dirty;
+		const autoRetry = result.exitCode === 0 && !handoff && !handoffSchemaError && !dirty;
 		feature.status = autoRetry ? "pending" : "failed";
 		mission.status = autoRetry ? "running" : "blocked";
 		appendEvent(dir, autoRetry ? "worker_missing_handoff_auto_retry" : "worker_failed", { featureId: feature.id, dirty, hasHandoff: Boolean(handoff), autoRetry });
@@ -2928,7 +2949,7 @@ Do not stop after stating that you will implement. Use tools to complete the wor
 			runId,
 			runDir,
 			exitCode: result.exitCode,
-			status: handoff?.status ?? (!handoff ? "missing handoff" : undefined),
+			status: handoff?.status ?? (handoffSchemaError ? "invalid handoff schema" : (!handoff ? "missing handoff" : undefined)),
 			dirty: dirty || undefined,
 			artifactPaths: existingPaths([handoffFile, path.join(runDir, "handoff.md"), path.join(runDir, "transcript.jsonl"), path.join(runDir, "stderr.txt")]),
 		};
@@ -3039,16 +3060,24 @@ Do not stop after stating that you will validate. Use tools to complete the vali
 	});
 	fs.writeFileSync(path.join(runDir, "stderr.txt"), result.stderr);
 	let report: any = undefined;
+	let reportSchemaError: string | undefined;
 	const reportFile = path.join(runDir, "validation-report.json");
 	if (fs.existsSync(reportFile)) {
 		try {
-			report = readJson<any>(reportFile);
+			const parsed = readJson<any>(reportFile);
+			const validation = validateMissionArtifact("scrutiny-validation-report", parsed);
+			if (validation.ok) report = parsed;
+			else {
+				reportSchemaError = artifactValidationErrorSummary("scrutiny-validation-report", validation.issues);
+				appendEvent(dir, "validation_parse_error", { milestoneId: milestone.id, error: reportSchemaError, issues: validation.issues });
+			}
 		} catch (error) {
+			reportSchemaError = `Scrutiny validation-report.json parse error: ${String(error)}`;
 			appendEvent(dir, "validation_parse_error", { milestoneId: milestone.id, error: String(error) });
 		}
 	}
 	if (!(result.exitCode === 0 && report?.status === "pass")) {
-		report = ensureValidatorFailureReportArtifacts(runDir, milestone, result, report);
+		report = ensureValidatorFailureReportArtifacts(runDir, milestone, result, report, reportSchemaError);
 	}
 	let block: MissionBlockSummary | undefined;
 	if (result.exitCode === 0 && report?.status === "pass") {
