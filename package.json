@@ -27,6 +27,7 @@
     "validate:f5": "node ./scripts/validate-f5-official-orchestrator-session.mjs",
     "validate:f7": "node ./scripts/validate-f7-mission-control-runner-wiring.mjs",
     "validate:f8": "node ./scripts/validate-f8-feature-execution-vs-milestones.mjs",
-    "validate:f9": "node ./scripts/validate-f9-recovery-protocol.mjs"
+    "validate:f9": "node ./scripts/validate-f9-recovery-protocol.mjs",
+    "validate:f10": "node ./scripts/validate-f10-simulation-harness.mjs"
   }
 }
