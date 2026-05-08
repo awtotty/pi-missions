@@ -40,6 +40,19 @@ interface MissionMilestone {
 	validationRunId?: string;
 }
 
+type MissionRunKind = "worker" | "validator";
+
+interface MissionActiveRunOwnership {
+	schemaVersion: 1;
+	kind: MissionRunKind;
+	itemId: string;
+	runId: string;
+	parentPid: number;
+	parentSessionMarker: string;
+	startedAt: string;
+	intent: "active";
+}
+
 interface MissionState {
 	schemaVersion: 1;
 	id: string;
@@ -59,6 +72,7 @@ interface MissionState {
 	executionStartedAt?: string;
 	pauseRequestedAt?: string;
 	latestBlock?: MissionBlockMetadata;
+	activeRun?: MissionActiveRunOwnership;
 	milestones: MissionMilestone[];
 }
 
@@ -221,6 +235,34 @@ function writeJson(file: string, value: unknown): void {
 
 function appendEvent(dir: string, type: string, data: unknown): void {
 	fs.appendFileSync(path.join(dir, "event-log.jsonl"), `${JSON.stringify({ ts: nowIso(), type, data })}\n`);
+}
+
+function parentSessionMarker(): string {
+	const marker = process.env.PI_SESSION_ID || process.env.PI_RUN_SESSION || process.env.TMUX || process.env.SSH_TTY;
+	return marker && marker.trim() ? marker.trim() : `pid-${process.pid}`;
+}
+
+function setActiveRunOwnership(mission: MissionState, run: { kind: MissionRunKind; itemId: string; runId: string; startedAt?: string }): MissionActiveRunOwnership {
+	const ownership: MissionActiveRunOwnership = {
+		schemaVersion: 1,
+		kind: run.kind,
+		itemId: run.itemId,
+		runId: run.runId,
+		parentPid: process.pid,
+		parentSessionMarker: parentSessionMarker(),
+		startedAt: run.startedAt ?? nowIso(),
+		intent: "active",
+	};
+	mission.activeRun = ownership;
+	return ownership;
+}
+
+function clearActiveRunOwnership(mission: MissionState): void {
+	mission.activeRun = undefined;
+}
+
+function persistRunOwnershipArtifact(runDir: string, ownership: MissionActiveRunOwnership): void {
+	writeJson(path.join(runDir, "run-ownership.json"), ownership);
 }
 
 function pauseRequestFile(cwd: string, missionId: string): string {
@@ -2146,9 +2188,11 @@ async function runWorker(ctx: ExtensionContext, mission: MissionState, milestone
 	mission.currentMilestoneId = milestone.id;
 	mission.currentFeatureId = feature.id;
 	milestone.status = "running";
+	const ownership = setActiveRunOwnership(mission, { kind: "worker", itemId: feature.id, runId });
 	saveMission(ctx.cwd, mission);
+	persistRunOwnershipArtifact(runDir, ownership);
 	updateWidget(ctx, mission);
-	appendEvent(dir, "worker_started", { milestoneId: milestone.id, featureId: feature.id, runId });
+	appendEvent(dir, "worker_started", { milestoneId: milestone.id, featureId: feature.id, runId, ownership });
 
 	const prompt = `Use the mission-worker skill and the mission-specific worker skill if present. Implement exactly one mission feature.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\nFeature: ${feature.id} - ${feature.title}\n\nFeature description:\n${feature.description}\n\nRequired outputs: commit code changes with git, then write handoff.json and handoff.md in the run directory. If blocked, write handoff files explaining why.`;
 	const result = await runPiChild({
@@ -2216,6 +2260,7 @@ async function runWorker(ctx: ExtensionContext, mission: MissionState, milestone
 		};
 	}
 	if (block) persistMissionBlock(dir, mission, block, classifyWorkerBlock(result, handoff, dirty));
+	clearActiveRunOwnership(mission);
 	saveMission(ctx.cwd, mission);
 	updateWidget(ctx, mission);
 	return block;
@@ -2250,9 +2295,11 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 	mission.status = "running";
 	mission.currentMilestoneId = milestone.id;
 	mission.currentFeatureId = undefined;
+	const ownership = setActiveRunOwnership(mission, { kind: "validator", itemId: milestone.id, runId });
 	saveMission(ctx.cwd, mission);
+	persistRunOwnershipArtifact(runDir, ownership);
 	updateWidget(ctx, mission);
-	appendEvent(dir, "validator_started", { milestoneId: milestone.id, runId });
+	appendEvent(dir, "validator_started", { milestoneId: milestone.id, runId, ownership });
 	const featureReviewContext = completedFeatureReviewContext(dir, milestone);
 	const prompt = `Use the mission-validator skill and the mission-specific scrutiny validator skill if present. Validate this completed milestone adversarially.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\n\n${featureReviewContext}\n\nPerform a per-feature adversarial code review for each completed feature listed above, using the recorded commits and handoff paths where available. Inspect relevant diffs/handoffs, assess whether tests and procedure were adequate, and report code-review defects or procedure findings. Also check the milestone against the validation contract and mission plan. Run appropriate checks. Write validation-report.json and validation-report.md in the run directory.`;
 	const result = await runPiChild({
@@ -2295,6 +2342,7 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 	}
 	if (block) persistMissionBlock(dir, mission, block, classifyValidatorBlock(result, report));
 	appendEvent(dir, "validator_finished", { milestoneId: milestone.id, runId, exitCode: result.exitCode, status: report?.status });
+	clearActiveRunOwnership(mission);
 	saveMission(ctx.cwd, mission);
 	updateWidget(ctx, mission);
 	return block;
