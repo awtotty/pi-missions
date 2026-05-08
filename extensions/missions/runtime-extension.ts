@@ -3194,7 +3194,7 @@ async function runReviewerFanout(ctx: ExtensionContext, mission: MissionState, m
 		status: "reviewer infrastructure/artifact failure",
 		artifactPaths: existingPaths([path.join(failed.runDir, "review-report.json"), path.join(failed.runDir, "review-report.md"), path.join(failed.runDir, "transcript.jsonl"), path.join(failed.runDir, "stderr.txt")]),
 	};
-	persistMissionBlock(dir, mission, block, "missing_validation_report");
+	persistMissionBlock(dir, mission, block, "reviewer_infrastructure_failure");
 	saveMission(ctx.cwd, mission);
 	return block;
 }

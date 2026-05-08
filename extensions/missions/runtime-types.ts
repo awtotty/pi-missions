@@ -182,7 +182,7 @@ export interface RunResult {
 	finalText: string;
 }
 
-export type BlockReasonCategory = "child_exit_nonzero" | "missing_handoff" | "dirty_worktree" | "worker_reported_blocked" | "validator_report_failed" | "missing_validation_report" | "no_runnable_pending_work";
+export type BlockReasonCategory = "child_exit_nonzero" | "missing_handoff" | "dirty_worktree" | "worker_reported_blocked" | "validator_report_failed" | "missing_validation_report" | "reviewer_infrastructure_failure" | "no_runnable_pending_work";
 
 export interface MissionBlockSummary {
 	kind: "worker" | "validator" | "user-testing-validator";
