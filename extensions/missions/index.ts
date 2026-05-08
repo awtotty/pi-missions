@@ -3292,7 +3292,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Recovery plan saved; auto-resuming mission ${missionId}.`, "info");
 				appendEvent(dir, "mission_auto_resume_after_plan_revision", { missionId });
 				activeRunningId = missionId;
-				const result = startMissionInBackground(missionId, ctx, pi, "plan_revision_auto_resume");
+				const result = executeRunnerCommand({ command: "resume", missionId, source: "plan_revision_auto_resume" }, ctx, pi, orchestratorState);
 				text = `${text}\n\n${result.text}`;
 			}
 			return { content: [{ type: "text", text }], details: { missionId, dir, autoResumed: autoResume } };
