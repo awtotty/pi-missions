@@ -1,297 +1,61 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import {
+	appendEvent,
+	BASE_SKILLS,
+	clearedMissionsFile,
+	ensureDir,
+	globalSettingsFile,
+	isMissionRole,
+	missionDir,
+	missionRoot,
+	normalizeRoleModels,
+	nowIso,
+	parentSessionMarker,
+	readJson,
+	writeJson,
+} from "./runtime-core.js";
+import {
+	DEFAULT_ROLE_MODELS,
+	LEGACY_ACTIVE_PLANNING_ENTRY,
+	MISSION_ROLES,
+	ORCHESTRATOR_STATE_ENTRY,
+	PLANNING_KICKOFF_ENTRY,
+	type BlockReasonCategory,
+	type ClearCompletedResult,
+	type ClearedMissionsState,
+	type ItemStatus,
+	type MissionActiveRunOwnership,
+	type MissionBlockMetadata,
+	type MissionBlockSummary,
+	type MissionChildSessionRecord,
+	type MissionChildSessionRegistry,
+	type MissionCommandResult,
+	type MissionFeature,
+	type MissionGlobalSettings,
+	type MissionMilestone,
+	type MissionOrchestratorSessionRecord,
+	type MissionOrchestratorSessionState,
+	type MissionRole,
+	type MissionRoleModels,
+	type MissionRunContext,
+	type MissionRunKind,
+	type MissionRunLifecycleClassification,
+	type MissionRunLifecycleState,
+	type MissionRunnerLockArtifact,
+	type MissionState,
+	type RunResult,
+	type RunnerCommandInput,
+	type RunnerCommandName,
+	type Status,
+	type ValidationContractAssertion,
+} from "./runtime-types.js";
 import { computeRecoveryGatePlan } from "./recovery-gate.js";
-
-const EXTENSION_DIR = path.dirname(fileURLToPath(import.meta.url));
-const PACKAGE_ROOT = path.resolve(EXTENSION_DIR, "../..");
-const BASE_SKILLS = {
-	orchestrator: path.join(PACKAGE_ROOT, "skills/mission-orchestrator/SKILL.md"),
-	worker: path.join(PACKAGE_ROOT, "skills/mission-worker/SKILL.md"),
-	validator: path.join(PACKAGE_ROOT, "skills/mission-validator/SKILL.md"),
-};
-
-type Status = "planning" | "planned" | "running" | "paused" | "blocked" | "complete" | "failed";
-type ItemStatus = "pending" | "running" | "complete" | "failed" | "skipped";
-type MissionRole = "orchestrator" | "worker" | "validator";
-type MissionRoleModels = Record<MissionRole, string>;
-
-interface MissionFeature {
-	id: string;
-	title: string;
-	description: string;
-	dependencies?: string[];
-	status: ItemStatus;
-	runId?: string;
-	validationRunId?: string;
-	commit?: string;
-}
-
-interface MissionMilestone {
-	id: string;
-	title: string;
-	objective?: string;
-	validation?: string;
-	status: ItemStatus;
-	features: MissionFeature[];
-	validationRunId?: string;
-}
-
-type MissionRunKind = "worker" | "validator";
-
-interface MissionActiveRunOwnership {
-	schemaVersion: 1;
-	kind: MissionRunKind;
-	itemId: string;
-	runId: string;
-	parentPid: number;
-	parentSessionMarker: string;
-	startedAt: string;
-	intent: "active";
-}
-
-interface MissionRunnerLockArtifact {
-	schemaVersion: 1;
-	missionId: string;
-	ownerPid: number;
-	ownerSessionMarker: string;
-	acquiredAt: string;
-	heartbeatAt: string;
-	heartbeatTimeoutMs: number;
-	status: "active" | "released";
-	releasedAt?: string;
-	releasedReason?: string;
-	recoveredFrom?: {
-		ownerPid: number;
-		ownerSessionMarker: string;
-		heartbeatAt: string;
-		status: "active" | "released";
-	};
-}
-
-interface MissionState {
-	schemaVersion: 1;
-	id: string;
-	title: string;
-	status: Status;
-	createdAt: string;
-	updatedAt: string;
-	cwd: string;
-	models: MissionRoleModels;
-	currentMilestoneId?: string;
-	currentFeatureId?: string;
-	/**
-	 * Durable marker that implementation has passed the explicit start/run gate.
-	 * Planned missions without this marker (or legacy execution events) must not
-	 * be treated as previously started by recovery automation.
-	 */
-	executionStartedAt?: string;
-	pauseRequestedAt?: string;
-	latestBlock?: MissionBlockMetadata;
-	activeRun?: MissionActiveRunOwnership;
-	features?: MissionFeature[];
-	milestones?: MissionMilestone[];
-}
-
-interface ClearedMissionsState {
-	schemaVersion: 1;
-	updatedAt: string;
-	clearedMissionIds: string[];
-}
-
-interface MissionGlobalSettings {
-	schemaVersion: 1;
-	updatedAt: string;
-	models: MissionRoleModels;
-}
-
-interface ClearCompletedResult {
-	clearedIds: string[];
-	alreadyClearedIds: string[];
-	completedIds: string[];
-	text: string;
-}
-
-interface MissionOrchestratorSessionState {
-	schemaVersion: 1;
-	cwd: string;
-	updatedAt: string;
-	activeMissionId?: string;
-	activePlanningMissionId?: string;
-	activeRunningMissionId?: string;
-	lastMissionId?: string;
-	context?: {
-		id: string;
-		title: string;
-		status: Status;
-		currentMilestoneId?: string;
-		currentFeatureId?: string;
-	};
-}
-
-interface MissionOrchestratorSessionRecord {
-	schemaVersion: 1;
-	missionId: string;
-	sessionId: string;
-	sessionPath: string;
-	createdAt: string;
-	active: boolean;
-}
-
-interface MissionChildSessionRecord {
-	schemaVersion: 1;
-	missionId: string;
-	runId: string;
-	role: "worker" | "validator";
-	featureId?: string;
-	milestoneId: string;
-	attempt: number;
-	status: string;
-	runDir: string;
-	transcriptPath: string;
-	stderrPath: string;
-	sessionId?: string;
-	sessionPath?: string;
-	startedAt: string;
-	finishedAt?: string;
-}
-
-interface MissionChildSessionRegistry {
-	schemaVersion: 1;
-	updatedAt: string;
-	records: MissionChildSessionRecord[];
-}
-
-const ORCHESTRATOR_STATE_ENTRY = "missions-orchestrator-state";
-const PLANNING_KICKOFF_ENTRY = "missions-planning-kickoff";
-const LEGACY_ACTIVE_PLANNING_ENTRY = "missions-active-planning";
-
-interface MissionCommandResult {
-	ok: boolean;
-	text: string;
-	details?: unknown;
-}
-
-type RunnerCommandName = "start" | "pause-after-current" | "resume" | "retry-feature" | "block" | "unblock" | "status" | "cancel-current-child";
-
-interface RunnerCommandInput {
-	command: RunnerCommandName;
-	missionId?: string;
-	featureId?: string;
-	reason?: string;
-	source: string;
-}
-
-interface RunResult {
-	exitCode: number;
-	messages: Message[];
-	stderr: string;
-	finalText: string;
-}
-
-type BlockReasonCategory = "child_exit_nonzero" | "missing_handoff" | "dirty_worktree" | "worker_reported_blocked" | "validator_report_failed" | "missing_validation_report" | "no_runnable_pending_work";
-
-interface MissionBlockSummary {
-	kind: "worker" | "validator";
-	missionId: string;
-	missionTitle: string;
-	milestoneId: string;
-	milestoneTitle: string;
-	featureId?: string;
-	featureTitle?: string;
-	runId: string;
-	runDir: string;
-	exitCode: number;
-	status?: string;
-	dirty?: string;
-	artifactPaths: string[];
-	reasonCategory?: BlockReasonCategory;
-}
-
-interface MissionBlockMetadata {
-	schemaVersion: 1;
-	timestamp: string;
-	reasonCategory: BlockReasonCategory;
-	kind: "worker" | "validator";
-	failedItemId: string;
-	failedItemTitle: string;
-	missionId: string;
-	milestoneId: string;
-	featureId?: string;
-	runId: string;
-	runDir: string;
-	exitCode: number;
-	status?: string;
-	dirty?: string;
-	artifactPaths: string[];
-}
-
-interface MissionRunContext {
-	label: string;
-	runId: string;
-	runDir: string;
-	kind: "worker" | "validator";
-	itemId: string;
-	itemTitle: string;
-	status?: string;
-}
-
-type MissionRunLifecycleState = "active" | "completed" | "blocked" | "interrupted";
-
-interface MissionRunLifecycleClassification {
-	state: MissionRunLifecycleState;
-	run?: MissionRunContext;
-	reason: string;
-}
-
-interface ValidationContractAssertion {
-	id?: string;
-	category?: string;
-	severity?: string;
-	assertion?: string;
-	verification?: string;
-}
-
-const MISSION_ROLES: MissionRole[] = ["orchestrator", "worker", "validator"];
-const DEFAULT_ROLE_MODELS: MissionRoleModels = { orchestrator: "default", worker: "default", validator: "default" };
-
-function nowIso(): string {
-	return new Date().toISOString();
-}
-
-function normalizeRoleModels(models?: Partial<Record<MissionRole, unknown>>): MissionRoleModels {
-	const normalized = { ...DEFAULT_ROLE_MODELS };
-	for (const role of MISSION_ROLES) {
-		const value = models?.[role];
-		if (typeof value === "string" && value.trim()) normalized[role] = value.trim();
-	}
-	return normalized;
-}
-
-function isMissionRole(value: string): value is MissionRole {
-	return (MISSION_ROLES as string[]).includes(value);
-}
-
-function missionRoot(cwd: string): string {
-	return path.join(cwd, ".pi", "missions");
-}
-
-function missionDir(cwd: string, id: string): string {
-	return path.join(missionRoot(cwd), id);
-}
-
-function clearedMissionsFile(cwd: string): string {
-	return path.join(missionRoot(cwd), "cleared.json");
-}
-
-function globalSettingsFile(cwd: string): string {
-	return path.join(missionRoot(cwd), "settings.json");
-}
 
 function orchestratorSessionRecordFile(cwd: string, missionId: string): string {
 	return path.join(missionDir(cwd, missionId), "orchestrator-session.json");
@@ -413,28 +177,6 @@ function ensureOfficialOrchestratorSessionRecord(ctx: ExtensionContext, mission:
 		createdAt: existing?.createdAt || nowIso(),
 		active: isActiveMissionStatus(mission.status),
 	});
-}
-
-function ensureDir(dir: string): void {
-	fs.mkdirSync(dir, { recursive: true });
-}
-
-function readJson<T>(file: string): T {
-	return JSON.parse(fs.readFileSync(file, "utf8")) as T;
-}
-
-function writeJson(file: string, value: unknown): void {
-	ensureDir(path.dirname(file));
-	fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
-}
-
-function appendEvent(dir: string, type: string, data: unknown): void {
-	fs.appendFileSync(path.join(dir, "event-log.jsonl"), `${JSON.stringify({ ts: nowIso(), type, data })}\n`);
-}
-
-function parentSessionMarker(): string {
-	const marker = process.env.PI_SESSION_ID || process.env.PI_RUN_SESSION || process.env.TMUX || process.env.SSH_TTY;
-	return marker && marker.trim() ? marker.trim() : `pid-${process.pid}`;
 }
 
 function setActiveRunOwnership(mission: MissionState, run: { kind: MissionRunKind; itemId: string; runId: string; startedAt?: string }): MissionActiveRunOwnership {

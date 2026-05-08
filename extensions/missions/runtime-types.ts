@@ -1,0 +1,238 @@
+export type Status = "planning" | "planned" | "running" | "paused" | "blocked" | "complete" | "failed";
+export type ItemStatus = "pending" | "running" | "complete" | "failed" | "skipped";
+export type MissionRole = "orchestrator" | "worker" | "validator";
+export type MissionRoleModels = Record<MissionRole, string>;
+
+export interface MissionFeature {
+	id: string;
+	title: string;
+	description: string;
+	dependencies?: string[];
+	status: ItemStatus;
+	runId?: string;
+	validationRunId?: string;
+	commit?: string;
+}
+
+export interface MissionMilestone {
+	id: string;
+	title: string;
+	objective?: string;
+	validation?: string;
+	status: ItemStatus;
+	features: MissionFeature[];
+	validationRunId?: string;
+}
+
+export type MissionRunKind = "worker" | "validator";
+
+export interface MissionActiveRunOwnership {
+	schemaVersion: 1;
+	kind: MissionRunKind;
+	itemId: string;
+	runId: string;
+	parentPid: number;
+	parentSessionMarker: string;
+	startedAt: string;
+	intent: "active";
+}
+
+export interface MissionRunnerLockArtifact {
+	schemaVersion: 1;
+	missionId: string;
+	ownerPid: number;
+	ownerSessionMarker: string;
+	acquiredAt: string;
+	heartbeatAt: string;
+	heartbeatTimeoutMs: number;
+	status: "active" | "released";
+	releasedAt?: string;
+	releasedReason?: string;
+	recoveredFrom?: {
+		ownerPid: number;
+		ownerSessionMarker: string;
+		heartbeatAt: string;
+		status: "active" | "released";
+	};
+}
+
+export interface MissionState {
+	schemaVersion: 1;
+	id: string;
+	title: string;
+	status: Status;
+	createdAt: string;
+	updatedAt: string;
+	cwd: string;
+	models: MissionRoleModels;
+	currentMilestoneId?: string;
+	currentFeatureId?: string;
+	executionStartedAt?: string;
+	pauseRequestedAt?: string;
+	latestBlock?: MissionBlockMetadata;
+	activeRun?: MissionActiveRunOwnership;
+	features?: MissionFeature[];
+	milestones?: MissionMilestone[];
+}
+
+export interface ClearedMissionsState {
+	schemaVersion: 1;
+	updatedAt: string;
+	clearedMissionIds: string[];
+}
+
+export interface MissionGlobalSettings {
+	schemaVersion: 1;
+	updatedAt: string;
+	models: MissionRoleModels;
+}
+
+export interface ClearCompletedResult {
+	clearedIds: string[];
+	alreadyClearedIds: string[];
+	completedIds: string[];
+	text: string;
+}
+
+export interface MissionOrchestratorSessionState {
+	schemaVersion: 1;
+	cwd: string;
+	updatedAt: string;
+	activeMissionId?: string;
+	activePlanningMissionId?: string;
+	activeRunningMissionId?: string;
+	lastMissionId?: string;
+	context?: {
+		id: string;
+		title: string;
+		status: Status;
+		currentMilestoneId?: string;
+		currentFeatureId?: string;
+	};
+}
+
+export interface MissionOrchestratorSessionRecord {
+	schemaVersion: 1;
+	missionId: string;
+	sessionId: string;
+	sessionPath: string;
+	createdAt: string;
+	active: boolean;
+}
+
+export interface MissionChildSessionRecord {
+	schemaVersion: 1;
+	missionId: string;
+	runId: string;
+	role: "worker" | "validator";
+	featureId?: string;
+	milestoneId: string;
+	attempt: number;
+	status: string;
+	runDir: string;
+	transcriptPath: string;
+	stderrPath: string;
+	sessionId?: string;
+	sessionPath?: string;
+	startedAt: string;
+	finishedAt?: string;
+}
+
+export interface MissionChildSessionRegistry {
+	schemaVersion: 1;
+	updatedAt: string;
+	records: MissionChildSessionRecord[];
+}
+
+export interface MissionCommandResult {
+	ok: boolean;
+	text: string;
+	details?: unknown;
+}
+
+export type RunnerCommandName = "start" | "pause-after-current" | "resume" | "retry-feature" | "block" | "unblock" | "status" | "cancel-current-child";
+
+export interface RunnerCommandInput {
+	command: RunnerCommandName;
+	missionId?: string;
+	featureId?: string;
+	reason?: string;
+	source: string;
+}
+
+export interface RunResult {
+	exitCode: number;
+	messages: import("@earendil-works/pi-ai").Message[];
+	stderr: string;
+	finalText: string;
+}
+
+export type BlockReasonCategory = "child_exit_nonzero" | "missing_handoff" | "dirty_worktree" | "worker_reported_blocked" | "validator_report_failed" | "missing_validation_report" | "no_runnable_pending_work";
+
+export interface MissionBlockSummary {
+	kind: "worker" | "validator";
+	missionId: string;
+	missionTitle: string;
+	milestoneId: string;
+	milestoneTitle: string;
+	featureId?: string;
+	featureTitle?: string;
+	runId: string;
+	runDir: string;
+	exitCode: number;
+	status?: string;
+	dirty?: string;
+	artifactPaths: string[];
+	reasonCategory?: BlockReasonCategory;
+}
+
+export interface MissionBlockMetadata {
+	schemaVersion: 1;
+	timestamp: string;
+	reasonCategory: BlockReasonCategory;
+	kind: "worker" | "validator";
+	failedItemId: string;
+	failedItemTitle: string;
+	missionId: string;
+	milestoneId: string;
+	featureId?: string;
+	runId: string;
+	runDir: string;
+	exitCode: number;
+	status?: string;
+	dirty?: string;
+	artifactPaths: string[];
+}
+
+export interface MissionRunContext {
+	label: string;
+	runId: string;
+	runDir: string;
+	kind: "worker" | "validator";
+	itemId: string;
+	itemTitle: string;
+	status?: string;
+}
+
+export type MissionRunLifecycleState = "active" | "completed" | "blocked" | "interrupted";
+
+export interface MissionRunLifecycleClassification {
+	state: MissionRunLifecycleState;
+	run?: MissionRunContext;
+	reason: string;
+}
+
+export interface ValidationContractAssertion {
+	id?: string;
+	category?: string;
+	severity?: string;
+	assertion?: string;
+	verification?: string;
+}
+
+export const ORCHESTRATOR_STATE_ENTRY = "missions-orchestrator-state";
+export const PLANNING_KICKOFF_ENTRY = "missions-planning-kickoff";
+export const LEGACY_ACTIVE_PLANNING_ENTRY = "missions-active-planning";
+
+export const MISSION_ROLES: MissionRole[] = ["orchestrator", "worker", "validator"];
+export const DEFAULT_ROLE_MODELS: MissionRoleModels = { orchestrator: "default", worker: "default", validator: "default" };
