@@ -54,6 +54,25 @@ interface MissionActiveRunOwnership {
 	intent: "active";
 }
 
+interface MissionRunnerLockArtifact {
+	schemaVersion: 1;
+	missionId: string;
+	ownerPid: number;
+	ownerSessionMarker: string;
+	acquiredAt: string;
+	heartbeatAt: string;
+	heartbeatTimeoutMs: number;
+	status: "active" | "released";
+	releasedAt?: string;
+	releasedReason?: string;
+	recoveredFrom?: {
+		ownerPid: number;
+		ownerSessionMarker: string;
+		heartbeatAt: string;
+		status: "active" | "released";
+	};
+}
+
 interface MissionState {
 	schemaVersion: 1;
 	id: string;
@@ -329,6 +348,8 @@ function applyPauseAfterCurrentIfRequested(ctx: ExtensionContext, missionId: str
 
 const EXECUTION_STARTED_EVENT_TYPES = new Set(["mission_execution_started", "worker_started", "validator_started", "mission_block_recorded", "mission_complete"]);
 const ACTIVE_MISSION_RUNS = new Set<string>();
+const RUNNER_HEARTBEAT_INTERVAL_MS = 5_000;
+const RUNNER_HEARTBEAT_TIMEOUT_MS = 20_000;
 
 function activeMissionRunKey(cwd: string, missionId: string): string {
 	return `${cwd}\u0000${missionId}`;
@@ -336,6 +357,119 @@ function activeMissionRunKey(cwd: string, missionId: string): string {
 
 function isMissionRunActive(cwd: string, missionId: string): boolean {
 	return ACTIVE_MISSION_RUNS.has(activeMissionRunKey(cwd, missionId));
+}
+
+function runnerLockFile(cwd: string, missionId: string): string {
+	return path.join(missionDir(cwd, missionId), "runner-lock.json");
+}
+
+function readRunnerLock(cwd: string, missionId: string): MissionRunnerLockArtifact | undefined {
+	const file = runnerLockFile(cwd, missionId);
+	if (!fs.existsSync(file)) return undefined;
+	try {
+		const parsed = readJson<Partial<MissionRunnerLockArtifact>>(file);
+		if (parsed?.schemaVersion !== 1 || typeof parsed.missionId !== "string" || parsed.missionId !== missionId) return undefined;
+		if (typeof parsed.ownerPid !== "number" || typeof parsed.ownerSessionMarker !== "string" || typeof parsed.acquiredAt !== "string" || typeof parsed.heartbeatAt !== "string") return undefined;
+		const status = parsed.status === "released" ? "released" : "active";
+		return {
+			schemaVersion: 1,
+			missionId,
+			ownerPid: parsed.ownerPid,
+			ownerSessionMarker: parsed.ownerSessionMarker,
+			acquiredAt: parsed.acquiredAt,
+			heartbeatAt: parsed.heartbeatAt,
+			heartbeatTimeoutMs: typeof parsed.heartbeatTimeoutMs === "number" && parsed.heartbeatTimeoutMs > 0 ? parsed.heartbeatTimeoutMs : RUNNER_HEARTBEAT_TIMEOUT_MS,
+			status,
+			releasedAt: typeof parsed.releasedAt === "string" ? parsed.releasedAt : undefined,
+			releasedReason: typeof parsed.releasedReason === "string" ? parsed.releasedReason : undefined,
+			recoveredFrom: parsed.recoveredFrom && typeof parsed.recoveredFrom === "object" && typeof parsed.recoveredFrom.ownerPid === "number" && typeof parsed.recoveredFrom.ownerSessionMarker === "string" && typeof parsed.recoveredFrom.heartbeatAt === "string"
+				? {
+					ownerPid: parsed.recoveredFrom.ownerPid,
+					ownerSessionMarker: parsed.recoveredFrom.ownerSessionMarker,
+					heartbeatAt: parsed.recoveredFrom.heartbeatAt,
+					status: parsed.recoveredFrom.status === "released" ? "released" : "active",
+				}
+				: undefined,
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+function lockHeartbeatExpired(lock: MissionRunnerLockArtifact): boolean {
+	const heartbeatAt = Date.parse(lock.heartbeatAt);
+	if (!Number.isFinite(heartbeatAt)) return true;
+	const timeout = Number.isFinite(lock.heartbeatTimeoutMs) && lock.heartbeatTimeoutMs > 0 ? lock.heartbeatTimeoutMs : RUNNER_HEARTBEAT_TIMEOUT_MS;
+	return Date.now() - heartbeatAt > timeout;
+}
+
+function isSameLockOwner(lock: MissionRunnerLockArtifact): boolean {
+	return lock.ownerPid === process.pid && lock.ownerSessionMarker === parentSessionMarker();
+}
+
+function writeRunnerLock(cwd: string, missionId: string, lock: MissionRunnerLockArtifact): void {
+	writeJson(runnerLockFile(cwd, missionId), lock);
+}
+
+function upsertRunnerLockHeartbeat(cwd: string, missionId: string): void {
+	const existing = readRunnerLock(cwd, missionId);
+	if (!existing || !isSameLockOwner(existing) || existing.status !== "active") return;
+	existing.heartbeatAt = nowIso();
+	writeRunnerLock(cwd, missionId, existing);
+}
+
+function releaseRunnerLock(cwd: string, missionId: string, reason: string): void {
+	const existing = readRunnerLock(cwd, missionId);
+	if (!existing || !isSameLockOwner(existing)) return;
+	existing.status = "released";
+	existing.releasedAt = nowIso();
+	existing.releasedReason = reason;
+	existing.heartbeatAt = existing.releasedAt;
+	writeRunnerLock(cwd, missionId, existing);
+}
+
+function acquireRunnerLock(cwd: string, mission: MissionState): { ok: true; lock: MissionRunnerLockArtifact; recoveredStale: boolean } | { ok: false; reason: string; lock?: MissionRunnerLockArtifact } {
+	const existing = readRunnerLock(cwd, mission.id);
+	if (existing && existing.status === "active") {
+		if (isSameLockOwner(existing)) {
+			existing.heartbeatAt = nowIso();
+			writeRunnerLock(cwd, mission.id, existing);
+			return { ok: true, lock: existing, recoveredStale: false };
+		}
+		const alive = isPidAlive(existing.ownerPid);
+		const stale = alive === false || lockHeartbeatExpired(existing);
+		if (!stale) return { ok: false, reason: `Mission ${mission.id} is already owned by pid ${existing.ownerPid} (${existing.ownerSessionMarker}) with recent heartbeat ${existing.heartbeatAt}.`, lock: existing };
+		const recovered: MissionRunnerLockArtifact = {
+			schemaVersion: 1,
+			missionId: mission.id,
+			ownerPid: process.pid,
+			ownerSessionMarker: parentSessionMarker(),
+			acquiredAt: nowIso(),
+			heartbeatAt: nowIso(),
+			heartbeatTimeoutMs: RUNNER_HEARTBEAT_TIMEOUT_MS,
+			status: "active",
+			recoveredFrom: {
+				ownerPid: existing.ownerPid,
+				ownerSessionMarker: existing.ownerSessionMarker,
+				heartbeatAt: existing.heartbeatAt,
+				status: existing.status,
+			},
+		};
+		writeRunnerLock(cwd, mission.id, recovered);
+		return { ok: true, lock: recovered, recoveredStale: true };
+	}
+	const lock: MissionRunnerLockArtifact = {
+		schemaVersion: 1,
+		missionId: mission.id,
+		ownerPid: process.pid,
+		ownerSessionMarker: parentSessionMarker(),
+		acquiredAt: nowIso(),
+		heartbeatAt: nowIso(),
+		heartbeatTimeoutMs: RUNNER_HEARTBEAT_TIMEOUT_MS,
+		status: "active",
+	};
+	writeRunnerLock(cwd, mission.id, lock);
+	return { ok: true, lock, recoveredStale: false };
 }
 
 function hasMissionExecutionStarted(cwd: string, mission: MissionState): boolean {
@@ -982,6 +1116,11 @@ function classifyMissionRunLifecycle(cwd: string, mission: MissionState): Missio
 	if (block && run && block.runId === run.runId) return { state: "blocked", run, reason: "mission block artifact recorded" };
 	if (mission.status === "blocked") return { state: "blocked", run, reason: "mission status is blocked" };
 	if (mission.status === "complete") return { state: "completed", run, reason: "mission status is complete" };
+	const lock = readRunnerLock(cwd, mission.id);
+	if (lock?.status === "active" && !lockHeartbeatExpired(lock)) {
+		const alive = isPidAlive(lock.ownerPid);
+		if (alive !== false) return { state: "active", run, reason: `runner lock owned by pid ${lock.ownerPid} with recent heartbeat ${lock.heartbeatAt}` };
+	}
 	if (artifactStatus === "complete") return { state: "completed", run, reason: "terminal run artifact status is complete" };
 	if (artifactStatus === "blocked" || artifactStatus === "failed") return { state: "blocked", run, reason: `terminal run artifact status is ${artifactStatus}` };
 	if (!run) return { state: mission.status === "running" ? "interrupted" : "completed", reason: mission.status === "running" ? "mission marked running without recorded run context" : "no active run context" };
@@ -2697,6 +2836,10 @@ function startMissionInBackground(missionId: string, ctx: ExtensionContext, pi: 
 	const existing = loadMission(ctx.cwd, missionId);
 	const lifecycle = classifyMissionRunLifecycle(ctx.cwd, existing);
 	if (isMissionRunActive(ctx.cwd, missionId)) return { ok: false, text: `Mission execution is already active for ${missionId}.` };
+	const lockCheck = readRunnerLock(ctx.cwd, missionId);
+	if (lockCheck?.status === "active" && !isSameLockOwner(lockCheck) && !lockHeartbeatExpired(lockCheck) && isPidAlive(lockCheck.ownerPid) !== false) {
+		return { ok: false, text: `Mission execution is already owned by pid ${lockCheck.ownerPid} (${lockCheck.ownerSessionMarker}); heartbeat ${lockCheck.heartbeatAt}.` };
+	}
 	if (existing.status === "running" && lifecycle.state === "interrupted") resetInterruptedRunForResume(ctx, existing, lifecycle);
 	const dir = missionDir(ctx.cwd, missionId);
 	appendEvent(dir, "mission_background_execution_requested", { missionId, source });
@@ -2750,7 +2893,22 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 		ctx.ui.notify("Mission execution is already active for this mission.", "warning");
 		return;
 	}
+	const lockAcquire = acquireRunnerLock(ctx.cwd, mission);
+	if (!lockAcquire.ok) {
+		ctx.ui.notify(lockAcquire.reason, "warning");
+		return;
+	}
+	if (lockAcquire.recoveredStale) {
+		appendEvent(dir, "mission_runner_lock_recovered", { missionId: mission.id, previousOwner: lockAcquire.lock.recoveredFrom, newOwnerPid: process.pid, newOwnerSessionMarker: parentSessionMarker() });
+	}
 	ACTIVE_MISSION_RUNS.add(runKey);
+	const heartbeat = setInterval(() => {
+		try {
+			upsertRunnerLockHeartbeat(ctx.cwd, id);
+		} catch {
+			// Best effort heartbeat persistence.
+		}
+	}, RUNNER_HEARTBEAT_INTERVAL_MS);
 	try {
 		if (await gitPorcelain(mission.cwd)) {
 			const ok = await ctx.ui.confirm("Dirty git status", "Repository has uncommitted changes. Continue anyway? Workers must leave it clean after each feature.");
@@ -2819,6 +2977,8 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 		clearMissionRunStatus(ctx);
 		ctx.ui.notify(`Mission complete: ${mission.title}`, "info");
 	} finally {
+		clearInterval(heartbeat);
+		releaseRunnerLock(ctx.cwd, id, "runMission_finished");
 		ACTIVE_MISSION_RUNS.delete(runKey);
 	}
 }
