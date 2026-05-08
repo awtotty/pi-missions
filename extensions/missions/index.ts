@@ -2895,9 +2895,9 @@ function milestoneForFeature(mission: MissionState, featureId: string): MissionM
 function findNextFeature(mission: MissionState): { milestone: MissionMilestone; feature: MissionFeature } | undefined {
 	const statuses = featureStatusById(mission);
 	for (const feature of missionFeatureList(mission)) {
-		if (feature.status === "pending" && areFeatureDependenciesSatisfied(feature, statuses)) {
-			return { milestone: milestoneForFeature(mission, feature.id), feature };
-		}
+		if (feature.status === "complete" || feature.status === "skipped") continue;
+		if (!areFeatureDependenciesSatisfied(feature, statuses)) return undefined;
+		return feature.status === "pending" ? { milestone: milestoneForFeature(mission, feature.id), feature } : undefined;
 	}
 	return undefined;
 }
@@ -2941,6 +2941,62 @@ function incompleteFeatures(mission: MissionState): Array<{ milestone: MissionMi
 		incomplete.push({ milestone: milestoneForFeature(mission, feature.id), feature, unsatisfiedDependencies });
 	}
 	return incomplete;
+}
+
+function normalizeBlockedFeatureForRetry(mission: MissionState, feature: MissionFeature): boolean {
+	if (feature.status === "failed" || feature.status === "running") {
+		feature.status = "pending";
+		feature.validationRunId = undefined;
+		return true;
+	}
+	return false;
+}
+
+function repairMissionExecutionGateState(_cwd: string, mission: MissionState): { changed: boolean; reasons: string[] } {
+	const reasons: string[] = [];
+	let changed = false;
+	const features = missionFeatureList(mission);
+	const indexById = new Map(features.map((feature, index) => [feature.id, index]));
+	const block = latestBlockFromArtifacts(mission);
+	const blockedFeature = block?.featureId ? features.find((feature) => feature.id === block.featureId) : undefined;
+	const firstIncomplete = features.find((feature) => feature.status !== "complete" && feature.status !== "skipped");
+	const gateFeature = blockedFeature && blockedFeature.status !== "complete" && blockedFeature.status !== "skipped" ? blockedFeature : firstIncomplete;
+	if (!gateFeature) return { changed: false, reasons };
+	const gateMilestone = milestoneForFeature(mission, gateFeature.id);
+	if (normalizeBlockedFeatureForRetry(mission, gateFeature)) {
+		changed = true;
+		reasons.push(`reset gate feature ${gateFeature.id} status to pending for retry`);
+	}
+	if (mission.currentFeatureId !== gateFeature.id) {
+		const currentIdx = mission.currentFeatureId ? indexById.get(mission.currentFeatureId) : undefined;
+		const gateIdx = indexById.get(gateFeature.id);
+		if (currentIdx === undefined || (gateIdx !== undefined && currentIdx > gateIdx) || block?.featureId === gateFeature.id) {
+			mission.currentFeatureId = gateFeature.id;
+			changed = true;
+			reasons.push(`set currentFeatureId to gate feature ${gateFeature.id}`);
+		}
+	}
+	if (mission.currentMilestoneId !== gateMilestone.id) {
+		mission.currentMilestoneId = gateMilestone.id;
+		changed = true;
+		reasons.push(`set currentMilestoneId to ${gateMilestone.id}`);
+	}
+	if (mission.activeRun) {
+		const activeItemId = mission.activeRun.kind === "worker" ? mission.activeRun.itemId : mission.currentFeatureId;
+		const activeIdx = activeItemId ? indexById.get(activeItemId) : undefined;
+		const gateIdx = indexById.get(gateFeature.id);
+		if (activeIdx !== undefined && gateIdx !== undefined && activeIdx > gateIdx) {
+			clearActiveRunOwnership(mission);
+			changed = true;
+			reasons.push(`cleared stale activeRun ${mission.activeRun?.runId} beyond gate feature ${gateFeature.id}`);
+		}
+	}
+	if (mission.status === "running" || mission.status === "paused") {
+		mission.status = "blocked";
+		changed = true;
+		reasons.push(`forced mission status to blocked until gate feature ${gateFeature.id} passes validation`);
+	}
+	return { changed, reasons };
 }
 
 type MissionLifecycleEvaluation = "active" | "blocked" | "complete" | "interrupted";
@@ -3524,6 +3580,12 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 	}
 	let mission = loadMission(ctx.cwd, id);
 	const dir = missionDir(ctx.cwd, id);
+	const gateRepair = repairMissionExecutionGateState(ctx.cwd, mission);
+	if (gateRepair.changed) {
+		saveMission(ctx.cwd, mission);
+		appendEvent(dir, "mission_recovery_gate_repaired", { missionId: mission.id, reasons: gateRepair.reasons, latestBlock: mission.latestBlock });
+		ctx.ui.notify(`Mission recovery repaired execution gate: ${gateRepair.reasons.join("; ")}`, "warning");
+	}
 	if (mission.status === "planning") {
 		ctx.ui.notify("Mission is still in interactive planning. Ask the orchestrator to persist a runnable plan first.", "warning");
 		return;
