@@ -868,6 +868,52 @@ function runArtifactStatus(run: MissionRunContext): string | undefined {
 	}
 }
 
+function ensureValidatorFailureReportArtifacts(runDir: string, milestone: MissionMilestone, result: RunResult, report: any): any {
+	const reportFile = path.join(runDir, "validation-report.json");
+	const reportMdFile = path.join(runDir, "validation-report.md");
+	const hasStructuredReport = report && typeof report === "object" && typeof report.status === "string";
+	if (hasStructuredReport) {
+		if (!fs.existsSync(reportMdFile)) {
+			const status = String(report.status ?? "fail");
+			const summary = typeof report.summary === "string" && report.summary.trim() ? report.summary.trim() : "Validator reported a non-pass result.";
+			fs.writeFileSync(reportMdFile, `# Validation Report\n\n- Milestone: ${milestone.id} - ${milestone.title}\n- Status: ${status}\n\n## Summary\n${summary}\n`);
+		}
+		return report;
+	}
+	const synthesized = {
+		milestoneId: milestone.id,
+		status: "fail",
+		summary: "Validator exited without a parseable validation-report.json artifact.",
+		assertions: [],
+		issues: [
+			{
+				title: "Missing or invalid validator report artifact",
+				details: "The validator run did not produce a parseable validation-report.json file. See transcript.jsonl and stderr.txt for failure details.",
+				severity: "high"
+			}
+		],
+		commandsRun: [] as Array<{ command: string; exitCode: number; notes?: string }>,
+		risks: ["Validation output was synthesized by the orchestrator due to missing/invalid validator artifacts."]
+	};
+	writeJson(reportFile, synthesized);
+	if (!fs.existsSync(reportMdFile)) {
+		fs.writeFileSync(reportMdFile, [
+			"# Validation Report",
+			"",
+			`- Milestone: ${milestone.id} - ${milestone.title}`,
+			`- Status: fail`,
+			`- Validator exit code: ${result.exitCode}`,
+			"",
+			"## Summary",
+			synthesized.summary,
+			"",
+			"## Follow-up",
+			"Inspect transcript.jsonl and stderr.txt in this run directory for root cause details."
+		].join("\n"));
+	}
+	return synthesized;
+}
+
 function classifyMissionRunLifecycle(cwd: string, mission: MissionState): MissionRunLifecycleClassification {
 	const run = currentOrLastRunContext(mission);
 	const artifactStatus = run ? runArtifactStatus(run) : undefined;
@@ -882,8 +928,8 @@ function classifyMissionRunLifecycle(cwd: string, mission: MissionState): Missio
 	if (ownership && ownership.runId === run.runId && mission.status === "running") {
 		if (isMissionRunActive(cwd, mission.id)) return { state: "active", run, reason: "runtime has an active mission execution lock" };
 		const alive = isPidAlive(ownership.parentPid);
-		if (alive === true) return { state: "active", run, reason: `owner pid ${ownership.parentPid} appears alive` };
-		if (alive === undefined) return { state: "active", run, reason: "owner liveness check unavailable; conservatively treating run as active" };
+		if (alive === true) return { state: "interrupted", run, reason: `owner pid ${ownership.parentPid} is alive but no in-process execution lock exists` };
+		if (alive === undefined) return { state: "interrupted", run, reason: "owner liveness check unavailable and no in-process execution lock exists" };
 		return { state: "interrupted", run, reason: `owner pid ${ownership.parentPid} is not alive and no terminal artifact was found` };
 	}
 	if (run.status === "running" || mission.status === "running") return { state: "interrupted", run, reason: "running status persisted without live ownership evidence" };
@@ -2392,6 +2438,9 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 		} catch (error) {
 			appendEvent(dir, "validation_parse_error", { milestoneId: milestone.id, error: String(error) });
 		}
+	}
+	if (!(result.exitCode === 0 && report?.status === "pass")) {
+		report = ensureValidatorFailureReportArtifacts(runDir, milestone, result, report);
 	}
 	let block: MissionBlockSummary | undefined;
 	if (result.exitCode === 0 && report?.status === "pass") {
