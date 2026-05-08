@@ -323,7 +323,7 @@ function applyPauseAfterCurrentIfRequested(ctx: ExtensionContext, missionId: str
 	saveMission(ctx.cwd, mission);
 	appendEvent(missionDir(ctx.cwd, missionId), "mission_paused_after_current", { missionId, requestedAt: request.requestedAt, completedUnit });
 	updateWidget(ctx, mission);
-	ctx.ui.setWidget("missions-run", undefined);
+	clearMissionRunStatus(ctx);
 	ctx.ui.notify(`Mission paused after current unit: ${mission.title}`, "info");
 	return true;
 }
@@ -1032,6 +1032,21 @@ function updateWidget(ctx: ExtensionContext, mission?: MissionState): void {
 	const lifecycle = classifyMissionRunLifecycle(mission.cwd, mission);
 	const statusLabel = lifecycle.state === "interrupted" ? "interrupted" : mission.status;
 	ctx.ui.setStatus("missions", `🚀 ${done}/${features.length} ${statusLabel}${run ? ` ${run.runId}` : ""}`);
+}
+
+function clearMissionRunStatus(ctx: ExtensionContext): void {
+	// Child pi output is already captured in transcript/stderr artifacts. Do not
+	// mirror it into a widget: widgets consume scrollback space and can push the
+	// Mission Control component off screen while background workers are active.
+	ctx.ui.setWidget("missions-run", undefined);
+	ctx.ui.setStatus("missions-run", undefined);
+}
+
+function updateMissionRunStatus(ctx: ExtensionContext, label: string, text?: string): void {
+	ctx.ui.setWidget("missions-run", undefined);
+	const latestLine = text?.split("\n").map((line) => line.trim()).filter(Boolean).at(-1);
+	const suffix = latestLine ? ` · ${truncateToWidth(latestLine, 80)}` : "";
+	ctx.ui.setStatus("missions-run", truncateToWidth(`${label}${suffix}`, 120));
 }
 
 function mark(status: string): string {
@@ -2393,7 +2408,7 @@ Do not stop after stating that you will implement. Use tools to complete the wor
 		systemPromptFiles: [BASE_SKILLS.worker, path.join(dir, "skills/worker/SKILL.md")],
 		transcriptFile: path.join(runDir, "transcript.jsonl"),
 		signal,
-		onUpdate: (text) => ctx.ui.setWidget("missions-run", [`Worker ${feature.id}: ${feature.title}`, ...text.split("\n").slice(-7)]),
+		onUpdate: (text) => updateMissionRunStatus(ctx, `Worker ${feature.id}`, text),
 	});
 	fs.writeFileSync(path.join(runDir, "stderr.txt"), result.stderr);
 	appendEvent(dir, "worker_finished", { featureId: feature.id, runId, exitCode: result.exitCode });
@@ -2508,7 +2523,7 @@ Do not stop after stating that you will validate. Use tools to complete the vali
 		systemPromptFiles: [BASE_SKILLS.validator, path.join(dir, "skills/validator-scrutiny/SKILL.md")],
 		transcriptFile: path.join(runDir, "transcript.jsonl"),
 		signal,
-		onUpdate: (text) => ctx.ui.setWidget("missions-run", [`Validator ${milestone.id}: ${milestone.title}`, ...text.split("\n").slice(-7)]),
+		onUpdate: (text) => updateMissionRunStatus(ctx, `Validator ${targetFeature?.id ?? milestone.id}`, text),
 	});
 	fs.writeFileSync(path.join(runDir, "stderr.txt"), result.stderr);
 	let report: any = undefined;
@@ -2594,7 +2609,7 @@ function startMissionInBackground(missionId: string, ctx: ExtensionContext, pi: 
 		} catch {
 			appendEvent(dir, "mission_background_execution_failed", { missionId, source, error: message, artifactUpdateFailed: true });
 		}
-		ctx.ui.setWidget("missions-run", undefined);
+		clearMissionRunStatus(ctx);
 		ctx.ui.notify(`Mission execution failed: ${message}`, "error");
 	});
 	return { ok: true, text: `Mission execution started in background for ${missionId}. Mission Control remains interactive.` };
@@ -2658,7 +2673,7 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 			if (mission.status === "blocked" || mission.status === "failed") {
 				if (workerBlock) emitMissionBlockMessage(pi, workerBlock);
 				ctx.ui.notify(`Mission blocked. See ${dir}`, "error");
-				ctx.ui.setWidget("missions-run", undefined);
+				clearMissionRunStatus(ctx);
 				return;
 			}
 			if (applyPauseAfterCurrentIfRequested(ctx, id, `worker:${next.feature.id}`)) return;
@@ -2669,7 +2684,7 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 			if (mission.status === "blocked" || mission.status === "failed") {
 				if (validatorBlock) emitMissionBlockMessage(pi, validatorBlock);
 				ctx.ui.notify(`Validation blocked mission. See ${dir}`, "error");
-				ctx.ui.setWidget("missions-run", undefined);
+				clearMissionRunStatus(ctx);
 				return;
 			}
 			if (applyPauseAfterCurrentIfRequested(ctx, id, `validator:${next.feature.id}`)) return;
@@ -2686,7 +2701,7 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 			updateWidget(ctx, mission);
 			emitMissionBlockMessage(pi, block);
 			ctx.ui.notify(`Mission blocked: pending work remains but no feature is runnable. See ${runDir}`, "error");
-			ctx.ui.setWidget("missions-run", undefined);
+			clearMissionRunStatus(ctx);
 			return;
 		}
 		mission.status = "complete";
@@ -2694,7 +2709,7 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 		saveMission(ctx.cwd, mission);
 		appendEvent(dir, "mission_complete", {});
 		updateWidget(ctx, mission);
-		ctx.ui.setWidget("missions-run", undefined);
+		clearMissionRunStatus(ctx);
 		ctx.ui.notify(`Mission complete: ${mission.title}`, "info");
 	} finally {
 		ACTIVE_MISSION_RUNS.delete(runKey);
