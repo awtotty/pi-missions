@@ -1072,7 +1072,7 @@ function synthesizeWorkerHandoffArtifacts(runDir: string, feature: MissionFeatur
 	const synthesized = {
 		featureId: feature.id,
 		status: result.exitCode === 0 ? "complete" : "blocked",
-		commit,
+		commit: commit ?? "unknown",
 		summary: "Worker exited without handoff artifacts; orchestrator synthesized this handoff from runner metadata so validation/retry flow can continue.",
 		implemented: [] as string[],
 		leftUndone: ["Original worker did not produce required handoff.json/handoff.md."],

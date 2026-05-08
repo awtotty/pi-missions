@@ -39,13 +39,14 @@ function expectBoolean(issues: ArtifactValidationIssue[], obj: Record<string, un
 	if (typeof value !== "boolean") addIssue(issues, path, "must be a boolean");
 }
 
-function expectStatus(issues: ArtifactValidationIssue[], obj: Record<string, unknown>, key: string, allowed: string[], required = true): void {
+function expectStatus(issues: ArtifactValidationIssue[], obj: Record<string, unknown>, key: string, allowed: string[], required = true, basePath = ""): void {
 	const value = obj[key];
+	const path = `${basePath}/${key}`;
 	if (value === undefined) {
-		if (required) addIssue(issues, `/${key}`, "is required");
+		if (required) addIssue(issues, path, "is required");
 		return;
 	}
-	if (typeof value !== "string" || !allowed.includes(value)) addIssue(issues, `/${key}`, `must be one of: ${allowed.join(", ")}`);
+	if (typeof value !== "string" || !allowed.includes(value)) addIssue(issues, path, `must be one of: ${allowed.join(", ")}`);
 }
 
 function expectStringArray(issues: ArtifactValidationIssue[], obj: Record<string, unknown>, key: string, required = false): void {
@@ -85,19 +86,25 @@ function expectCommandArray(issues: ArtifactValidationIssue[], obj: Record<strin
 	}
 }
 
-function expectObjectArray(issues: ArtifactValidationIssue[], obj: Record<string, unknown>, key: string, required = false): void {
+function expectObjectArray(issues: ArtifactValidationIssue[], obj: Record<string, unknown>, key: string, required = false): Record<string, unknown>[] | undefined {
 	const value = obj[key];
 	if (value === undefined) {
 		if (required) addIssue(issues, `/${key}`, "is required");
-		return;
+		return undefined;
 	}
 	if (!Array.isArray(value)) {
 		addIssue(issues, `/${key}`, "must be an array");
-		return;
+		return undefined;
 	}
+	const out: Record<string, unknown>[] = [];
 	for (let i = 0; i < value.length; i += 1) {
-		if (!isRecord(value[i])) addIssue(issues, `/${key}/${i}`, "must be an object");
+		if (!isRecord(value[i])) {
+			addIssue(issues, `/${key}/${i}`, "must be an object");
+			continue;
+		}
+		out.push(value[i]);
 	}
+	return out;
 }
 
 function validateWorkerHandoff(value: unknown): ArtifactValidationIssue[] {
@@ -137,10 +144,30 @@ function validateScrutinyValidationReport(value: unknown): ArtifactValidationIss
 	expectString(issues, value, "summary", true);
 	expectString(issues, value, "featureId");
 	expectCommandArray(issues, value, "commandsRun", true);
-	expectObjectArray(issues, value, "assertions", true);
-	expectObjectArray(issues, value, "defects", true);
-	expectObjectArray(issues, value, "procedureFindings", true);
+	const assertions = expectObjectArray(issues, value, "assertions", true);
+	const defects = expectObjectArray(issues, value, "defects", true);
+	const procedureFindings = expectObjectArray(issues, value, "procedureFindings", true);
 	expectStatus(issues, value, "recommendation", ["accept", "fix", "replan", "ask-user"]);
+	for (let i = 0; assertions && i < assertions.length; i += 1) {
+		expectString(issues, assertions[i], "assertionId", true, `/assertions/${i}`);
+		expectStatus(issues, assertions[i], "status", ["pass", "fail", "inconclusive"], true, `/assertions/${i}`);
+		expectString(issues, assertions[i], "evidence", true, `/assertions/${i}`);
+	}
+	for (let i = 0; defects && i < defects.length; i += 1) {
+		expectString(issues, defects[i], "id", true, `/defects/${i}`);
+		expectStatus(issues, defects[i], "severity", ["critical", "major", "minor"], true, `/defects/${i}`);
+		expectString(issues, defects[i], "title", true, `/defects/${i}`);
+		expectString(issues, defects[i], "description", true, `/defects/${i}`);
+		expectString(issues, defects[i], "reproduction", true, `/defects/${i}`);
+		if (defects[i].suggestedFix !== undefined && typeof defects[i].suggestedFix !== "string") addIssue(issues, `/defects/${i}/suggestedFix`, "must be a string");
+	}
+	for (let i = 0; procedureFindings && i < procedureFindings.length; i += 1) {
+		expectString(issues, procedureFindings[i], "id", true, `/procedureFindings/${i}`);
+		expectStatus(issues, procedureFindings[i], "severity", ["critical", "major", "minor"], true, `/procedureFindings/${i}`);
+		expectString(issues, procedureFindings[i], "title", true, `/procedureFindings/${i}`);
+		expectString(issues, procedureFindings[i], "description", true, `/procedureFindings/${i}`);
+		expectString(issues, procedureFindings[i], "evidence", true, `/procedureFindings/${i}`);
+	}
 	return issues;
 }
 
@@ -168,6 +195,13 @@ function validateReviewerReport(value: unknown): ArtifactValidationIssue[] {
 	expectString(issues, value, "summary", true);
 	expectString(issues, value, "featureId", true);
 	expectCommandArray(issues, value, "commandsRun", true);
+	const findings = expectObjectArray(issues, value, "findings");
+	for (let i = 0; findings && i < findings.length; i += 1) {
+		expectString(issues, findings[i], "id", true, `/findings/${i}`);
+		expectStatus(issues, findings[i], "severity", ["critical", "major", "minor"], true, `/findings/${i}`);
+		expectString(issues, findings[i], "title", true, `/findings/${i}`);
+		expectString(issues, findings[i], "description", true, `/findings/${i}`);
+	}
 	return issues;
 }
 
