@@ -1057,12 +1057,17 @@ function formatMissionBlockMessage(block: MissionBlockSummary): string {
 }
 
 function emitMissionBlockMessage(pi: ExtensionAPI, block: MissionBlockSummary): void {
+	// Blocking a mission is an artifact/state transition, not permission to start a
+	// nested assistant turn. Triggering a follow-up turn from inside a running tool
+	// call or Mission Control action can collide with the active child execution and
+	// interactive custom UI. Surface the recovery context as a display-only custom
+	// message; the user can then decide when to continue recovery in chat.
 	pi.sendMessage({
 		customType: "missions-block-context",
 		display: true,
 		content: formatMissionBlockMessage(block),
 		details: block,
-	}, { triggerTurn: true, deliverAs: "followUp" });
+	}, { triggerTurn: false, deliverAs: "followUp" });
 }
 
 function summarizeMission(mission: MissionState): string {
@@ -1937,10 +1942,9 @@ function missionControlAvailableActions(context: MissionControlActionContext): M
 				message: mission ? `${mission.title}\n\nThis will run mission ${mission.id}. Workers may modify files and create commits.` : "Start or resume the selected mission.",
 			}),
 			isAvailable: ({ mission, ctx }) => Boolean(mission && (mission.status === "planned" || mission.status === "paused" || mission.status === "blocked") && !isMissionRunActive(ctx.cwd, mission.id)),
-			run: async ({ ctx, pi, mission }) => {
+			run: ({ ctx, pi, mission }) => {
 				if (!mission) return { ok: false, text: "No mission is selected." };
-				await runMission(mission.id, ctx, pi);
-				return { ok: true, text: `Start/resume requested for ${mission.id}.` };
+				return startMissionInBackground(mission.id, ctx, pi, "mission_control");
 			},
 		},
 		{
@@ -2295,7 +2299,7 @@ function shouldAutoResumeAfterPlanRevision(cwd: string, existingMission: Mission
 	return Boolean(findNextFeature(revisedMission));
 }
 
-async function runWorker(ctx: ExtensionContext, mission: MissionState, milestone: MissionMilestone, feature: MissionFeature): Promise<MissionBlockSummary | undefined> {
+async function runWorker(ctx: ExtensionContext, mission: MissionState, milestone: MissionMilestone, feature: MissionFeature, signal?: AbortSignal): Promise<MissionBlockSummary | undefined> {
 	const dir = missionDir(mission.cwd, mission.id);
 	const runId = `${String(Date.now())}-worker-${feature.id}`;
 	const runDir = path.join(dir, "runs", runId);
@@ -2312,14 +2316,16 @@ async function runWorker(ctx: ExtensionContext, mission: MissionState, milestone
 	updateWidget(ctx, mission);
 	appendEvent(dir, "worker_started", { milestoneId: milestone.id, featureId: feature.id, runId, ownership });
 
-	const prompt = `Use the mission-worker skill and the mission-specific worker skill if present. Implement exactly one mission feature.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\nFeature: ${feature.id} - ${feature.title}\n\nFeature description:\n${feature.description}\n\nRequired outputs: commit code changes with git, then write handoff.json and handoff.md in the run directory. If blocked, write handoff files explaining why.`;
+	const prompt = `Use the mission-worker skill and the mission-specific worker skill if present. Implement exactly one mission feature.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\nFeature: ${feature.id} - ${feature.title}\n\nFeature description:\n${feature.description}\n\nRequired outputs: commit code changes with git, then write handoff.json and handoff.md in the run directory. If blocked, write handoff files explaining why.
+
+Do not stop after stating that you will implement. Use tools to complete the work before any final response. Your final response is allowed only after the commit and handoff artifacts exist, or after blocked handoff artifacts exist.`;
 	const result = await runPiChild({
 		cwd: mission.cwd,
 		prompt,
 		model: resolveRoleModel(mission.cwd, mission, "worker"),
 		systemPromptFiles: [BASE_SKILLS.worker, path.join(dir, "skills/worker/SKILL.md")],
 		transcriptFile: path.join(runDir, "transcript.jsonl"),
-		signal: ctx.signal,
+		signal,
 		onUpdate: (text) => ctx.ui.setWidget("missions-run", [`Worker ${feature.id}: ${feature.title}`, ...text.split("\n").slice(-7)]),
 	});
 	fs.writeFileSync(path.join(runDir, "stderr.txt"), result.stderr);
@@ -2403,7 +2409,7 @@ function completedFeatureReviewContext(dir: string, milestone: MissionMilestone)
 	return lines.join("\n");
 }
 
-async function runValidator(ctx: ExtensionContext, mission: MissionState, milestone: MissionMilestone): Promise<MissionBlockSummary | undefined> {
+async function runValidator(ctx: ExtensionContext, mission: MissionState, milestone: MissionMilestone, signal?: AbortSignal): Promise<MissionBlockSummary | undefined> {
 	const dir = missionDir(mission.cwd, mission.id);
 	const runId = `${String(Date.now())}-validator-${milestone.id}`;
 	const runDir = path.join(dir, "runs", runId);
@@ -2419,14 +2425,16 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 	updateWidget(ctx, mission);
 	appendEvent(dir, "validator_started", { milestoneId: milestone.id, runId, ownership });
 	const featureReviewContext = completedFeatureReviewContext(dir, milestone);
-	const prompt = `Use the mission-validator skill and the mission-specific scrutiny validator skill if present. Validate this completed milestone adversarially.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\n\n${featureReviewContext}\n\nPerform a per-feature adversarial code review for each completed feature listed above, using the recorded commits and handoff paths where available. Inspect relevant diffs/handoffs, assess whether tests and procedure were adequate, and report code-review defects or procedure findings. Also check the milestone against the validation contract and mission plan. Run appropriate checks. Write validation-report.json and validation-report.md in the run directory.`;
+	const prompt = `Use the mission-validator skill and the mission-specific scrutiny validator skill if present. Validate this completed milestone adversarially.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\n\n${featureReviewContext}\n\nPerform a per-feature adversarial code review for each completed feature listed above, using the recorded commits and handoff paths where available. Inspect relevant diffs/handoffs, assess whether tests and procedure were adequate, and report code-review defects or procedure findings. Also check the milestone against the validation contract and mission plan. Run appropriate checks. Write validation-report.json and validation-report.md in the run directory.
+
+Do not stop after stating that you will validate. Use tools to complete the validation before any final response. Your final response is allowed only after validation-report.json and validation-report.md exist.`;
 	const result = await runPiChild({
 		cwd: mission.cwd,
 		prompt,
 		model: resolveRoleModel(mission.cwd, mission, "validator"),
 		systemPromptFiles: [BASE_SKILLS.validator, path.join(dir, "skills/validator-scrutiny/SKILL.md")],
 		transcriptFile: path.join(runDir, "transcript.jsonl"),
-		signal: ctx.signal,
+		signal,
 		onUpdate: (text) => ctx.ui.setWidget("missions-run", [`Validator ${milestone.id}: ${milestone.title}`, ...text.split("\n").slice(-7)]),
 	});
 	fs.writeFileSync(path.join(runDir, "stderr.txt"), result.stderr);
@@ -2489,7 +2497,29 @@ function autoOpenMissionControl(ctx: ExtensionContext, mission: MissionState, pi
 	});
 }
 
-async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI): Promise<void> {
+function startMissionInBackground(missionId: string, ctx: ExtensionContext, pi: ExtensionAPI, source: string): MissionCommandResult {
+	if (isMissionRunActive(ctx.cwd, missionId)) return { ok: false, text: `Mission execution is already active for ${missionId}.` };
+	const dir = missionDir(ctx.cwd, missionId);
+	appendEvent(dir, "mission_background_execution_requested", { missionId, source });
+	void runMission(missionId, ctx, pi, { detached: true }).catch((error) => {
+		const message = error instanceof Error ? error.message : String(error);
+		try {
+			const mission = loadMission(ctx.cwd, missionId);
+			mission.status = mission.status === "complete" ? mission.status : "blocked";
+			clearActiveRunOwnership(mission);
+			saveMission(ctx.cwd, mission);
+			appendEvent(dir, "mission_background_execution_failed", { missionId, source, error: message });
+			updateWidget(ctx, mission);
+		} catch {
+			appendEvent(dir, "mission_background_execution_failed", { missionId, source, error: message, artifactUpdateFailed: true });
+		}
+		ctx.ui.setWidget("missions-run", undefined);
+		ctx.ui.notify(`Mission execution failed: ${message}`, "error");
+	});
+	return { ok: true, text: `Mission execution started in background for ${missionId}. Mission Control remains interactive.` };
+}
+
+async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI, options: { detached?: boolean } = {}): Promise<void> {
 	const id = args.trim() || latestMission(ctx.cwd)?.id;
 	if (!id) {
 		ctx.ui.notify("No mission found. Start with /missions [goal] and persist a plan first.", "warning");
@@ -2537,11 +2567,12 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI)
 		}
 		autoOpenMissionControl(ctx, mission, pi);
 		ctx.ui.notify(`Running mission ${mission.title}`, "info");
+		const childSignal = options.detached ? undefined : ctx.signal;
 		while (true) {
 			mission = loadMission(ctx.cwd, id);
 			const next = findNextFeature(mission);
 			if (!next) break;
-			const workerBlock = await runWorker(ctx, mission, next.milestone, next.feature);
+			const workerBlock = await runWorker(ctx, mission, next.milestone, next.feature, childSignal);
 			mission = loadMission(ctx.cwd, id);
 			if (mission.status === "blocked" || mission.status === "failed") {
 				if (workerBlock) emitMissionBlockMessage(pi, workerBlock);
@@ -2552,7 +2583,7 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI)
 			if (applyPauseAfterCurrentIfRequested(ctx, id, `worker:${next.feature.id}`)) return;
 			const milestone = mission.milestones.find((m) => m.id === next.milestone.id)!;
 			if (milestone.features.every((f) => f.status === "complete" || f.status === "skipped")) {
-				const validatorBlock = await runValidator(ctx, mission, milestone);
+				const validatorBlock = await runValidator(ctx, mission, milestone, childSignal);
 				mission = loadMission(ctx.cwd, id);
 				if (mission.status === "blocked" || mission.status === "failed") {
 					if (validatorBlock) emitMissionBlockMessage(pi, validatorBlock);
@@ -2630,9 +2661,8 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			if (!ok) return { content: [{ type: "text", text: "Mission start canceled by user." }], details: { missionId } };
 			activeRunningId = missionId;
 			persistOrchestratorState(ctx.cwd, mission, { activeMissionId: missionId, activePlanningMissionId: undefined, activeRunningMissionId: missionId });
-			await runMission(missionId, ctx, pi);
-			persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, missionId), { activeMissionId: missionId, activePlanningMissionId: undefined, activeRunningMissionId: undefined });
-			return { content: [{ type: "text", text: `Started or resumed mission ${missionId}.` }], details: { missionId } };
+			const result = startMissionInBackground(missionId, ctx, pi, "mission_start_execution_tool");
+			return { content: [{ type: "text", text: result.text }], details: { missionId }, isError: !result.ok };
 		},
 	});
 
@@ -2696,10 +2726,8 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Recovery plan saved; auto-resuming mission ${missionId}.`, "info");
 				appendEvent(dir, "mission_auto_resume_after_plan_revision", { missionId });
 				activeRunningId = missionId;
-				await runMission(missionId, ctx, pi);
-				const resumedMission = loadMission(ctx.cwd, missionId);
-				persistOrchestratorState(ctx.cwd, resumedMission, { activeMissionId: missionId, activePlanningMissionId: undefined, activeRunningMissionId: undefined });
-				text = `${text}\n\nAuto-resumed mission execution because this revision unblocked a previously started mission with pending work.`;
+				const result = startMissionInBackground(missionId, ctx, pi, "plan_revision_auto_resume");
+				text = `${text}\n\n${result.text}`;
 			}
 			return { content: [{ type: "text", text }], details: { missionId, dir, autoResumed: autoResume } };
 		},
@@ -2764,13 +2792,10 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			}
 			if (subcommand === "run" || subcommand === "resume") {
 				const id = args || activeMissionId || activeMissionFromState(ctx.cwd, orchestratorState)?.id || latestMission(ctx.cwd)?.id;
-				if (id) {
-					activeRunningId = id;
-					persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, id), { activeMissionId: id, activePlanningMissionId: undefined, activeRunningMissionId: id });
-				}
-				await runMission(args || id || "", ctx, pi);
-				if (id) persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, id), { activeMissionId: id, activePlanningMissionId: undefined, activeRunningMissionId: undefined });
-				return { ok: true, text: "Mission run command completed." };
+				if (!id) return { ok: false, text: "No mission found to run." };
+				activeRunningId = id;
+				persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, id), { activeMissionId: id, activePlanningMissionId: undefined, activeRunningMissionId: id });
+				return startMissionInBackground(id, ctx, pi, `missions_${subcommand}_command`);
 			}
 			if (subcommand === "list") {
 				const text = missionListText(ctx.cwd);
