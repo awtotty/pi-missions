@@ -1,0 +1,70 @@
+import fs from "node:fs";
+
+function fail(message) {
+	throw new Error(message);
+}
+
+function assertIncludes(haystack, needle, message) {
+	if (!haystack.includes(needle)) fail(message);
+}
+
+const indexSource = fs.readFileSync(new URL("../extensions/missions/index.ts", import.meta.url), "utf8");
+const runtimeSource = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
+
+// Module split coverage: index.ts should stay bootstrap-only.
+assertIncludes(indexSource, 'import missionsExtension from "./runtime-extension.js";', "index.ts must import runtime-extension bootstrap module.");
+assertIncludes(indexSource, "export default missionsExtension;", "index.ts must export runtime-extension bootstrap module.");
+if (indexSource.split("\n").filter((line) => line.trim()).length > 3) fail("index.ts should remain minimal bootstrap glue after runtime split.");
+
+// Artifact schema failure handling coverage.
+for (const token of [
+	'validateMissionArtifact("worker-handoff", parsed)',
+	'validateMissionArtifact("scrutiny-validation-report", parsed)',
+	'validateMissionArtifact("user-testing-report", parsed)',
+	'validateMissionArtifact("reviewer-report", parsed)',
+	'artifactValidationErrorSummary("worker-handoff", validation.issues)',
+	'artifactValidationErrorSummary("scrutiny-validation-report", validation.issues)',
+	'artifactValidationErrorSummary("user-testing-report", validation.issues)',
+	'ensureValidatorFailureReportArtifacts(runDir, milestone, result, report, reportSchemaError)',
+	'ensureUserTestingFailureReportArtifacts(runDir, feature, result, report, reportSchemaError)',
+]) {
+	assertIncludes(runtimeSource, token, `missing artifact-schema coverage token: ${token}`);
+}
+
+// Optional user-testing skip/pass/fail behavior.
+for (const token of [
+	"if (isFeatureUserTestingRequired(targetFeature))",
+	"targetFeature.userTestingPending = true",
+	"else transitionValidatorPassToFeatureComplete(mission, milestone, targetFeature)",
+	"if (result.exitCode === 0 && report?.status === \"pass\") transitionValidatorPassToFeatureComplete(mission, milestone, feature);",
+	"transitionUserTestingFailToFeaturePendingAndMissionBlocked(mission, feature);",
+	"if (!isFeatureUserTestingRequired(feature)) return false;",
+]) {
+	assertIncludes(runtimeSource, token, `missing user-testing flow token: ${token}`);
+}
+
+// Reviewer fanout advisory routing into scrutiny.
+for (const token of [
+	"Act as a read-only mission reviewer. Do not edit files. Do not run git commit.",
+	"Findings are advisory for scrutiny validation.",
+	"Treat reviewer reports as advisory evidence only.",
+	"reviewerEvidenceContext(mission, targetFeature)",
+]) {
+	assertIncludes(runtimeSource, token, `missing reviewer advisory token: ${token}`);
+}
+
+// Existing command/tool behavior preservation.
+for (const token of [
+	'name: "mission_start_execution"',
+	'name: "mission_runner_command"',
+	'if (input.command === "start" || input.command === "resume")',
+	'if (input.command === "pause-after-current")',
+	'if (input.command === "cancel-current-child")',
+	'if (input.command === "retry-feature")',
+	'if (input.command === "block")',
+	'if (input.command === "unblock")',
+]) {
+	assertIncludes(runtimeSource, token, `missing command/tool compatibility token: ${token}`);
+}
+
+console.log("F4 mission-flow coverage checks passed.");

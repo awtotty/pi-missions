@@ -38,15 +38,30 @@ After edits, use `/reload` in pi.
 
 ## Run tests
 
-The current automated validation check is TypeScript type checking:
-
 ```bash
 npm run typecheck
+npm run validate:f3
+npm run validate:f4
+npm run validate:f5
+npm run validate:f7
+npm run validate:f8
+npm run validate:f9
+npm run validate:f10
 ```
 
 ## Manual validation scenarios
 
 Use these scenarios for release-style checks of mission flows. They complement, but do not replace, the automated `npm run typecheck` validation command.
+
+### New mission flow: schemas, optional user-testing, and reviewer advisory routing
+
+1. In a disposable branch, run a feature with reviewer fanout and user-testing required in its feature metadata.
+2. Confirm reviewer runs produce `review-report.json/md`; scrutiny still runs and treats reviewer output as advisory evidence rather than final pass/fail.
+3. Confirm scrutiny pass with `userTesting.required: false` marks the feature complete (user-testing is skipped).
+4. Confirm scrutiny pass with `userTesting.required: true` moves the feature into user-testing pending/running.
+5. Confirm user-testing `pass` marks feature complete; `fail` or `inconclusive` blocks the mission and resets the feature to pending for retry.
+6. Corrupt one of `handoff.json`, `validation-report.json`, `user-testing-report.json`, or `review-report.json` in a run directory and confirm the mission records a clear schema parse/validation failure with field-path details and block metadata.
+7. Verify existing mission controls still behave the same (`/missions run`, `/missions status`, Mission Control controls, `mission_start_execution`, and `mission_runner_command`).
 
 ### Block injection and recovery context
 
