@@ -328,6 +328,26 @@ function parseRunOwnershipSessionId(runDir: string): string | undefined {
 	return undefined;
 }
 
+function parseTranscriptSessionIdentity(transcriptFile: string): { sessionId?: string; sessionPath?: string } {
+	if (!fs.existsSync(transcriptFile)) return {};
+	try {
+		const content = fs.readFileSync(transcriptFile, "utf8");
+		for (const line of content.split("\n")) {
+			if (!line.trim()) continue;
+			const parsed = JSON.parse(line) as { type?: unknown; id?: unknown; sessionPath?: unknown; path?: unknown };
+			if (parsed.type !== "session") continue;
+			const sessionId = typeof parsed.id === "string" && parsed.id.trim() ? parsed.id : undefined;
+			const sessionPath = typeof parsed.sessionPath === "string" && parsed.sessionPath.trim()
+				? parsed.sessionPath
+				: (typeof parsed.path === "string" && parsed.path.trim() ? parsed.path : undefined);
+			return { sessionId, sessionPath };
+		}
+	} catch {
+		return {};
+	}
+	return {};
+}
+
 function nextChildAttemptNumber(cwd: string, missionId: string, role: "worker" | "validator", featureId: string | undefined): number {
 	const registry = readChildSessionRegistry(cwd, missionId);
 	return registry.records.filter((record) => record.role === role && record.featureId === featureId).length + 1;
@@ -3108,10 +3128,12 @@ Do not stop after stating that you will implement. Use tools to complete the wor
 		};
 	}
 	if (block) persistMissionBlock(dir, mission, block, classifyWorkerBlock(result, handoff, dirty));
+	const workerTranscriptSession = parseTranscriptSessionIdentity(path.join(runDir, "transcript.jsonl"));
 	upsertChildSessionRecord(mission.cwd, mission.id, {
 		...workerSessionRecord,
 		status: block ? (block.status ?? "failed") : "complete",
-		sessionId: workerSessionRecord.sessionId ?? parseRunOwnershipSessionId(runDir),
+		sessionId: workerTranscriptSession.sessionId ?? workerSessionRecord.sessionId ?? parseRunOwnershipSessionId(runDir),
+		sessionPath: workerTranscriptSession.sessionPath ?? workerSessionRecord.sessionPath,
 		finishedAt: nowIso(),
 	});
 	clearActiveRunOwnership(mission);
@@ -3231,10 +3253,12 @@ Do not stop after stating that you will validate. Use tools to complete the vali
 	}
 	if (block) persistMissionBlock(dir, mission, block, classifyValidatorBlock(result, report));
 	appendEvent(dir, "validator_finished", { milestoneId: milestone.id, featureId: targetFeature?.id, runId, exitCode: result.exitCode, status: report?.status });
+	const validatorTranscriptSession = parseTranscriptSessionIdentity(path.join(runDir, "transcript.jsonl"));
 	upsertChildSessionRecord(mission.cwd, mission.id, {
 		...validatorSessionRecord,
 		status: report?.status ?? (block ? "failed" : "pass"),
-		sessionId: validatorSessionRecord.sessionId ?? parseRunOwnershipSessionId(runDir),
+		sessionId: validatorTranscriptSession.sessionId ?? validatorSessionRecord.sessionId ?? parseRunOwnershipSessionId(runDir),
+		sessionPath: validatorTranscriptSession.sessionPath ?? validatorSessionRecord.sessionPath,
 		finishedAt: nowIso(),
 	});
 	clearActiveRunOwnership(mission);
