@@ -143,6 +143,16 @@ interface MissionCommandResult {
 	details?: unknown;
 }
 
+type RunnerCommandName = "start" | "pause-after-current" | "resume" | "retry-feature" | "block" | "unblock" | "status" | "cancel-current-child";
+
+interface RunnerCommandInput {
+	command: RunnerCommandName;
+	missionId?: string;
+	featureId?: string;
+	reason?: string;
+	source: string;
+}
+
 interface RunResult {
 	exitCode: number;
 	messages: Message[];
@@ -348,6 +358,7 @@ function applyPauseAfterCurrentIfRequested(ctx: ExtensionContext, missionId: str
 
 const EXECUTION_STARTED_EVENT_TYPES = new Set(["mission_execution_started", "worker_started", "validator_started", "mission_block_recorded", "mission_complete"]);
 const ACTIVE_MISSION_RUNS = new Set<string>();
+const ACTIVE_MISSION_CHILD_ABORTERS = new Map<string, AbortController>();
 const RUNNER_HEARTBEAT_INTERVAL_MS = 5_000;
 const RUNNER_HEARTBEAT_TIMEOUT_MS = 20_000;
 const RUNNER_LOCK_GUARD_TIMEOUT_MS = 30_000;
@@ -360,6 +371,17 @@ function activeMissionRunKey(cwd: string, missionId: string): string {
 
 function isMissionRunActive(cwd: string, missionId: string): boolean {
 	return ACTIVE_MISSION_RUNS.has(activeMissionRunKey(cwd, missionId));
+}
+
+function activeMissionChildAbortController(cwd: string, missionId: string): AbortController | undefined {
+	return ACTIVE_MISSION_CHILD_ABORTERS.get(activeMissionRunKey(cwd, missionId));
+}
+
+function tryCancelCurrentChild(cwd: string, missionId: string): boolean {
+	const controller = activeMissionChildAbortController(cwd, missionId);
+	if (!controller || controller.signal.aborted) return false;
+	controller.abort();
+	return true;
 }
 
 function runnerLockFile(cwd: string, missionId: string): string {
@@ -2188,6 +2210,7 @@ function missionControlHelpLines(): string[] {
 		"r: refresh mission artifacts",
 		"p: request pause-after-current (does not kill current worker/validator)",
 		"s: start/resume mission execution (confirmation required)",
+		"x: cancel current worker/validator child if supported (confirmation required)",
 		"c: clear completed missions from default visibility (confirmation required; artifacts are not deleted)",
 		"?: toggle this help",
 		"o: open dedicated orchestrator chat with /mission-orchestrator",
@@ -2198,9 +2221,9 @@ function missionControlHelpLines(): string[] {
 
 function missionControlFooter(width: number): string {
 	const mode = missionControlLayoutMode(width);
-	if (mode === "compact") return "q close · ↑/↓ move · p pause · s start · o orch · c clear · r refresh · ? help";
-	if (mode === "narrow") return "q/esc close · ↑/↓ move · p pause · s start/resume · o orchestrator · c clear done · r refresh · ? help";
-	return `q/esc close · ↑/↓/j/k move selection · tab focus · p pause-after-current · s start/resume · o orchestrator chat · c clear completed · r refresh · ? help · confirmed actions only · auto-refresh ${MISSION_CONTROL_POLL_MS / 1000}s`;
+	if (mode === "compact") return "q close · ↑/↓ move · p pause · s start · x cancel · o orch · c clear · r refresh · ? help";
+	if (mode === "narrow") return "q/esc close · ↑/↓ move · p pause · s start/resume · x cancel child · o orchestrator · c clear done · r refresh · ? help";
+	return `q/esc close · ↑/↓/j/k move selection · tab focus · p pause-after-current · s start/resume · x cancel current child · o orchestrator chat · c clear completed · r refresh · ? help · confirmed actions only · auto-refresh ${MISSION_CONTROL_POLL_MS / 1000}s`;
 }
 
 function visibleCompletedMissionsToClear(cwd: string): MissionState[] {
@@ -2218,7 +2241,22 @@ function missionControlAvailableActions(context: MissionControlActionContext): M
 			severity: "warning",
 			requiresConfirmation: false,
 			isAvailable: ({ mission, ctx }) => Boolean(mission && mission.status === "running" && !hasMissionPauseRequest(ctx.cwd, mission.id)),
-			run: ({ ctx, mission }) => mission ? requestMissionPauseAfterCurrent(ctx.cwd, mission, "mission_control") : { ok: false, text: "No mission is selected." },
+			run: ({ ctx, pi, mission, state }) => executeRunnerCommand({ command: "pause-after-current", missionId: mission?.id, source: "mission_control" }, ctx, pi, state),
+		},
+		{
+			id: "cancel-current-child",
+			key: "x",
+			label: "Cancel current child",
+			description: "Request cancellation of the currently running worker/validator child process when supported by the active runner.",
+			kind: "mutation",
+			severity: "destructive",
+			requiresConfirmation: true,
+			confirmation: ({ mission }) => ({
+				title: "Cancel current mission child?",
+				message: mission ? `Request cancellation for the currently running child in ${mission.id}.` : "Cancel current worker/validator child.",
+			}),
+			isAvailable: ({ mission, ctx }) => Boolean(mission && isMissionRunActive(ctx.cwd, mission.id)),
+			run: ({ ctx, pi, mission, state }) => executeRunnerCommand({ command: "cancel-current-child", missionId: mission?.id, source: "mission_control" }, ctx, pi, state),
 		},
 		{
 			id: "start-resume",
@@ -2233,10 +2271,7 @@ function missionControlAvailableActions(context: MissionControlActionContext): M
 				message: mission ? `${mission.title}\n\nThis will run mission ${mission.id}. Workers may modify files and create commits.` : "Start or resume the selected mission.",
 			}),
 			isAvailable: ({ mission, ctx }) => Boolean(mission && (mission.status === "planned" || mission.status === "paused" || mission.status === "blocked") && !isMissionRunActive(ctx.cwd, mission.id)),
-			run: ({ ctx, pi, mission }) => {
-				if (!mission) return { ok: false, text: "No mission is selected." };
-				return startMissionInBackground(mission.id, ctx, pi, "mission_control");
-			},
+			run: ({ ctx, pi, mission, state }) => executeRunnerCommand({ command: "start", missionId: mission?.id, source: "mission_control" }, ctx, pi, state),
 		},
 		{
 			id: "clear-completed",
@@ -2926,6 +2961,61 @@ function startMissionInBackground(missionId: string, ctx: ExtensionContext, pi: 
 	return { ok: true, text: `Mission execution started in background for ${missionId}. Mission Control remains interactive.` };
 }
 
+function executeRunnerCommand(input: RunnerCommandInput, ctx: ExtensionContext, pi: ExtensionAPI, state?: MissionOrchestratorSessionState): MissionCommandResult {
+	const missionId = input.missionId || activeMissionFromState(ctx.cwd, state)?.id || latestMission(ctx.cwd)?.id;
+	if (!missionId) return { ok: false, text: "No mission found." };
+	const mission = loadMission(ctx.cwd, missionId);
+	const dir = missionDir(ctx.cwd, missionId);
+	if (input.command === "status") return { ok: true, text: summarizeMission(mission), details: { missionId } };
+	if (input.command === "start" || input.command === "resume") {
+		return startMissionInBackground(missionId, ctx, pi, input.source);
+	}
+	if (input.command === "pause-after-current") {
+		if (mission.status !== "running") return { ok: false, text: `Mission ${missionId} is not running.` };
+		return requestMissionPauseAfterCurrent(ctx.cwd, mission, input.source);
+	}
+	if (input.command === "cancel-current-child") {
+		const canceled = tryCancelCurrentChild(ctx.cwd, missionId);
+		appendEvent(dir, "mission_current_child_cancel_requested", { missionId, source: input.source, canceled });
+		return canceled
+			? { ok: true, text: `Cancellation requested for current child of ${missionId}.` }
+			: { ok: false, text: `No cancelable child is active for ${missionId}.` };
+	}
+	if (input.command === "retry-feature") {
+		if (isMissionRunActive(ctx.cwd, missionId)) return { ok: false, text: `Mission ${missionId} is currently running.` };
+		const featureId = input.featureId || mission.currentFeatureId;
+		if (!featureId) return { ok: false, text: "No feature id provided for retry." };
+		const feature = missionFeatureList(mission).find((item) => item.id === featureId);
+		if (!feature) return { ok: false, text: `Feature not found: ${featureId}.` };
+		feature.status = "pending";
+		feature.runId = undefined;
+		feature.validationRunId = undefined;
+		mission.status = "blocked";
+		mission.updatedAt = nowIso();
+		saveMission(ctx.cwd, mission);
+		appendEvent(dir, "mission_feature_retry_requested", { missionId, featureId, source: input.source });
+		return { ok: true, text: `Feature ${featureId} reset to pending for retry.` };
+	}
+	if (input.command === "block") {
+		if (isMissionRunActive(ctx.cwd, missionId)) return { ok: false, text: `Mission ${missionId} is currently running.` };
+		mission.status = "blocked";
+		mission.updatedAt = nowIso();
+		saveMission(ctx.cwd, mission);
+		appendEvent(dir, "mission_block_manual", { missionId, source: input.source, reason: input.reason });
+		return { ok: true, text: `Mission ${missionId} marked blocked.` };
+	}
+	if (input.command === "unblock") {
+		if (isMissionRunActive(ctx.cwd, missionId)) return { ok: false, text: `Mission ${missionId} is currently running.` };
+		if (mission.status !== "blocked") return { ok: false, text: `Mission ${missionId} is not blocked.` };
+		mission.status = "paused";
+		mission.updatedAt = nowIso();
+		saveMission(ctx.cwd, mission);
+		appendEvent(dir, "mission_unblock_manual", { missionId, source: input.source, reason: input.reason });
+		return { ok: true, text: `Mission ${missionId} unblocked to paused state.` };
+	}
+	return { ok: false, text: `Unsupported runner command: ${input.command}` };
+}
+
 async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI, options: { detached?: boolean } = {}): Promise<void> {
 	const id = args.trim() || latestMission(ctx.cwd)?.id;
 	if (!id) {
@@ -2994,7 +3084,14 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 		}
 		autoOpenMissionControl(ctx, mission, pi);
 		ctx.ui.notify(`Running mission ${mission.title}`, "info");
-		const childSignal = options.detached ? undefined : ctx.signal;
+		const childAbortController = new AbortController();
+		const childSignal = childAbortController.signal;
+		if (!options.detached && ctx.signal) {
+			const abortFromParent = () => childAbortController.abort();
+			if (ctx.signal.aborted) abortFromParent();
+			else ctx.signal.addEventListener("abort", abortFromParent, { once: true });
+		}
+		ACTIVE_MISSION_CHILD_ABORTERS.set(runKey, childAbortController);
 		while (true) {
 			mission = loadMission(ctx.cwd, id);
 			const next = findNextFeature(mission);
@@ -3044,6 +3141,7 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 	} finally {
 		clearInterval(heartbeat);
 		releaseRunnerLock(ctx.cwd, id, "runMission_finished");
+		ACTIVE_MISSION_CHILD_ABORTERS.delete(runKey);
 		ACTIVE_MISSION_RUNS.delete(runKey);
 	}
 }
@@ -3088,8 +3186,49 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			if (!ok) return { content: [{ type: "text", text: "Mission start canceled by user." }], details: { missionId } };
 			activeRunningId = missionId;
 			persistOrchestratorState(ctx.cwd, mission, { activeMissionId: missionId, activePlanningMissionId: undefined, activeRunningMissionId: missionId });
-			const result = startMissionInBackground(missionId, ctx, pi, "mission_start_execution_tool");
+			const result = executeRunnerCommand({ command: "start", missionId, source: "mission_start_execution_tool" }, ctx, pi, orchestratorState);
 			return { content: [{ type: "text", text: result.text }], details: { missionId }, isError: !result.ok };
+		},
+	});
+
+	pi.registerTool({
+		name: "mission_runner_command",
+		label: "Mission Runner Command",
+		description: "Execute deterministic mission runner commands (start, pause-after-current, resume, retry feature, block/unblock where safe, status, cancel current child when supported).",
+		parameters: Type.Object({
+			command: Type.Union([
+				Type.Literal("start"),
+				Type.Literal("pause-after-current"),
+				Type.Literal("resume"),
+				Type.Literal("retry-feature"),
+				Type.Literal("block"),
+				Type.Literal("unblock"),
+				Type.Literal("status"),
+				Type.Literal("cancel-current-child"),
+			]),
+			missionId: Type.Optional(Type.String()),
+			featureId: Type.Optional(Type.String()),
+			reason: Type.Optional(Type.String()),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const command = params.command as RunnerCommandName;
+			const missionId = params.missionId || activeMissionId || activePlanningId || activeMissionFromState(ctx.cwd, orchestratorState)?.id || latestMission(ctx.cwd)?.id;
+			if (!missionId) return { content: [{ type: "text", text: "No mission found." }], details: {}, isError: true };
+			if ((command === "start" || command === "resume" || command === "cancel-current-child") && ctx.hasUI) {
+				const ok = await ctx.ui.confirm(
+					command === "cancel-current-child" ? "Cancel current mission child?" : command === "resume" ? "Resume mission execution?" : "Start mission execution?",
+					`Mission ${missionId}\n\nCommand: ${command}. Workers may modify files and create commits.`,
+				);
+				if (!ok) return { content: [{ type: "text", text: `Mission runner command canceled: ${command}.` }], details: { missionId, command } };
+			}
+			if (command === "start" || command === "resume") {
+				activeRunningId = missionId;
+				persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, missionId), { activeMissionId: missionId, activePlanningMissionId: undefined, activeRunningMissionId: missionId });
+			}
+			const result = executeRunnerCommand({ command, missionId, featureId: params.featureId, reason: params.reason, source: "mission_runner_command_tool" }, ctx, pi, orchestratorState);
+			if (result.ok && command === "status") ctx.ui.notify(result.text, "info");
+			else ctx.ui.notify(result.text, result.ok ? "info" : "warning");
+			return { content: [{ type: "text", text: result.text }], details: { missionId, command, ...(result.details && typeof result.details === "object" ? result.details as Record<string, unknown> : {}) }, isError: !result.ok };
 		},
 	});
 
@@ -3222,7 +3361,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 				if (!id) return { ok: false, text: "No mission found to run." };
 				activeRunningId = id;
 				persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, id), { activeMissionId: id, activePlanningMissionId: undefined, activeRunningMissionId: id });
-				return startMissionInBackground(id, ctx, pi, `missions_${subcommand}_command`);
+				return executeRunnerCommand({ command: subcommand === "resume" ? "resume" : "start", missionId: id, source: `missions_${subcommand}_command` }, ctx, pi, orchestratorState);
 			}
 			if (subcommand === "list") {
 				const text = missionListText(ctx.cwd);
