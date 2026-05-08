@@ -150,7 +150,15 @@ function runFeatureFlowAndRegressionChecks(computeRecoveryGatePlan) {
 
 	const milestone = { id: "features", title: "Features", status: "running", features: [{ id: "F5", status: "running" }, { id: "F6", status: "pending" }] };
 	const feature = milestone.features[0];
-	const mission = { id: "M1", status: "running", currentFeatureId: "F5", activeRun: { itemId: "F5", runId: "run-f5" }, milestones: [milestone], features: milestone.features, latestBlock: { featureId: "F5" } };
+	const mission = {
+		id: "M1",
+		status: "running",
+		currentFeatureId: "F5",
+		activeRun: { itemId: "F5", runId: "run-f5" },
+		milestones: [milestone],
+		features: milestone.features,
+		latestBlock: { featureId: "F5", reasonCategory: "validator_report_failed", runId: "run-val-f5" },
+	};
 
 	transitionValidatorPassToFeatureComplete(mission, milestone, feature);
 	assert(feature.status === "complete", "worker pass + validator pass should complete feature");
@@ -162,6 +170,7 @@ function runFeatureFlowAndRegressionChecks(computeRecoveryGatePlan) {
 	mission.currentFeatureId = "F6";
 	mission.activeRun = { itemId: "F6", runId: "run-f6" };
 	feature.status = "failed";
+	mission.latestBlock = { featureId: "F5", reasonCategory: "missing_handoff", runId: "run-worker-f5-retry" };
 	const gate = computeRecoveryGatePlan({
 		featureOrder: ["F5", "F6"],
 		featureStatusById: { F5: "failed", F6: "pending" },
@@ -179,18 +188,21 @@ function runFeatureFlowAndRegressionChecks(computeRecoveryGatePlan) {
 	assert(mission.currentFeatureId === "F5", "currentFeatureId must repair to F5");
 	assert(mission.activeRun === undefined, "stale activeRun must clear");
 	assert(mission.features[0].status === "pending", "F5 must normalize to pending for retry");
+	assert(mission.features[1].status === "pending", "F6 must stay pending while F5 is unresolved");
 	assert(mission.status === "blocked", "mission must remain blocked");
+	assert(mission.latestBlock.featureId === "F5", "latestBlock must continue pointing at F5");
 	assert(findNextFeature(mission)?.feature.id === "F5", "resume must pick F5, never F6");
 
 	const workerRetryClass = compileNamedFunction("classifyWorkerBlock", {});
 	assert(workerRetryClass({ exitCode: 0 }, undefined, "") === "missing_handoff", "retry exit without handoff remains an F5 block condition");
 
 	const eventLog = [
-		{ type: "feature_validation_failed", featureId: "F5" },
-		{ type: "worker_missing_handoff", featureId: "F5" },
-		{ type: "mission_recovery_gate_repaired", featureId: mission.currentFeatureId, activeRun: mission.activeRun },
+		{ type: "feature_validation_failed", featureId: "F5", runId: "run-val-f5" },
+		{ type: "worker_missing_handoff", featureId: "F5", runId: "run-worker-f5-retry" },
+		{ type: "mission_recovery_gate_repaired", featureId: mission.currentFeatureId, activeRun: mission.activeRun, latestBlockFeatureId: mission.latestBlock.featureId },
 	];
 	assert(eventLog.at(-1)?.featureId === "F5", "event log repair must preserve F5 as gate");
+	assert(eventLog.at(-1)?.latestBlockFeatureId === "F5", "event log repair must preserve latestBlock consistency");
 }
 
 runArtifactFailureCoverage();
