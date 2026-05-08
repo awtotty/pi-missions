@@ -1417,7 +1417,7 @@ function nextSuggestedAction(mission: MissionState, lifecycle: MissionRunLifecyc
 	}
 	if (mission.status === "running") return run ? `Monitor ${run.runDir} or wait for run ${run.runId} to finish.` : "Mission is running; wait for the next worker or validator update.";
 	if (mission.status === "paused") return `Run /missions resume ${mission.id} when ready.`;
-	if (mission.status === "blocked") return block ? `Inspect block artifacts in ${block.runDir}, decide the recovery path, then revise or resume the mission.` : `Inspect ${missionDir(mission.cwd, mission.id)} and decide whether to revise or resume the mission.`;
+	if (mission.status === "blocked") return block ? `Inspect the recovery packet and block artifacts for ${block.runId}, decide the recovery path, then revise or resume the mission.` : `Inspect ${missionDir(mission.cwd, mission.id)} and decide whether to revise or resume the mission.`;
 	if (mission.status === "failed") return block ? `Inspect failure artifacts in ${block.runDir} before retrying or revising.` : `Inspect ${missionDir(mission.cwd, mission.id)} before retrying or revising.`;
 	return `Mission is complete. Use /missions clear to hide completed missions from default Mission Control UI.`;
 }
@@ -1500,9 +1500,55 @@ function blockMetadataFromSummary(block: MissionBlockSummary, reasonCategory: Bl
 	};
 }
 
+function writeRecoveryPacket(dir: string, mission: MissionState, block: MissionBlockMetadata): string[] {
+	const packetDir = path.join(dir, "recovery-packets");
+	const base = `${block.timestamp.replace(/[:.]/g, "-")}-${block.runId}`;
+	const jsonFile = path.join(packetDir, `${base}.json`);
+	const mdFile = path.join(packetDir, `${base}.md`);
+	const packet = {
+		schemaVersion: 1,
+		missionId: mission.id,
+		missionTitle: mission.title,
+		status: "orchestrator_action_required",
+		createdAt: nowIso(),
+		block,
+		instructions: [
+			"Inspect block artifacts and transcript/stderr.",
+			"Classify the failure as implementation defect, validator defect, procedural failure, environment issue, or planning issue.",
+			"Repair artifacts/state when safe or revise the mission plan before resuming.",
+			"Do not advance later features while this recovery packet is unresolved.",
+		],
+	};
+	writeJson(jsonFile, packet);
+	fs.writeFileSync(mdFile, [
+		"# Mission Recovery Packet",
+		"",
+		`- Mission: ${mission.id} - ${mission.title}`,
+		`- Status: orchestrator_action_required`,
+		`- Block: ${describeBlock(block)}`,
+		`- Run directory: ${block.runDir}`,
+		"",
+		"## Required orchestrator action",
+		"1. Inspect block artifacts and transcript/stderr.",
+		"2. Classify the failure.",
+		"3. Repair artifacts/state when safe or revise the mission plan before resuming.",
+		"4. Do not advance later features while this packet is unresolved.",
+		"",
+		"## Artifacts",
+		...block.artifactPaths.map((artifact) => `- ${artifact}`),
+		"",
+	].join("\n"));
+	return [jsonFile, mdFile];
+}
+
 function persistMissionBlock(dir: string, mission: MissionState, block: MissionBlockSummary, reasonCategory: BlockReasonCategory): void {
 	block.reasonCategory = reasonCategory;
 	const latestBlock = blockMetadataFromSummary(block, reasonCategory);
+	if (mission.status === "blocked" || mission.status === "failed") {
+		const packetPaths = writeRecoveryPacket(dir, mission, latestBlock);
+		latestBlock.artifactPaths = existingPaths([...latestBlock.artifactPaths, ...packetPaths]);
+		appendEvent(dir, "orchestrator_recovery_packet_created", { missionId: mission.id, featureId: latestBlock.featureId, runId: latestBlock.runId, packetPaths });
+	}
 	mission.latestBlock = latestBlock;
 	appendEvent(dir, "mission_block_recorded", latestBlock);
 }
