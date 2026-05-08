@@ -2160,13 +2160,20 @@ function stderrTailLines(file: string): string[] {
 }
 
 function childOutputLines(run?: MissionRunContext): string[] {
-	if (!run) return ["No current or recent child run.", "Waiting for transcript.jsonl or stderr.txt artifacts."];
+	if (!run) {
+		return [
+			"Live stream: no active child run.",
+			"Waiting for transcript.jsonl or stderr.txt artifacts.",
+		];
+	}
 	const transcriptFile = path.join(run.runDir, "transcript.jsonl");
 	const stderrFile = path.join(run.runDir, "stderr.txt");
 	const lines = [
-		`${run.label}: ${run.runId}`,
+		`Live stream: ${run.label} ${run.kind === "worker" ? "worker" : run.kind}`,
+		`Run: ${run.runId}`,
 		`Item: ${run.kind} ${run.itemId} — ${run.itemTitle}`,
 		`Artifacts: ${run.runDir}`,
+		"",
 		...transcriptTailLines(transcriptFile),
 		...stderrTailLines(stderrFile),
 	];
@@ -2229,12 +2236,14 @@ function missionControlDashboardLines(mission: MissionState, selection: MissionC
 		...header,
 		"",
 		...(mode === "wide"
-			? [...columnLines([...currentPanel, "", ...controlPlanePanel], [...featuresPanel, "", ...progressPanel], width), "", ...childPanel]
+			? [...columnLines([...currentPanel, "", ...controlPlanePanel], [...featuresPanel, "", ...progressPanel], width)]
 			: mode === "medium"
-				? [...currentPanel, "", ...featuresPanel, "", ...controlPlanePanel, "", ...columnLines(progressPanel, childPanel, width)]
+				? [...currentPanel, "", ...featuresPanel, "", ...controlPlanePanel, "", ...progressPanel]
 				: mode === "narrow"
-					? [...limitLines(currentPanel, 8, width), "", ...featuresPanel, "", ...limitLines(controlPlanePanel, 7, width), "", ...limitLines(progressPanel, 7, width), "", ...limitLines(childPanel, 5, width)]
+					? [...limitLines(currentPanel, 8, width), "", ...featuresPanel, "", ...limitLines(controlPlanePanel, 7, width), "", ...limitLines(progressPanel, 7, width)]
 					: [...featuresPanel, "", ...limitLines(controlPlanePanel, 6, width), "", ...limitLines(progressPanel, 6, width)]),
+		"",
+		...limitLines(childPanel, mode === "narrow" ? 7 : mode === "compact" ? 6 : CHILD_OUTPUT_MAX_PANEL_LINES + 1, width),
 	];
 	return lines.map((line) => clipLine(line, width));
 }
