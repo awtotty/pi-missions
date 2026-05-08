@@ -1,12 +1,25 @@
 import fs from "node:fs";
 import ts from "typescript";
 
-function fail(message) {
-	throw new Error(message);
-}
+function fail(message) { throw new Error(message); }
+function assert(condition, message) { if (!condition) fail(message); }
 
-function assert(condition, message) {
-	if (!condition) fail(message);
+const source = fs.readFileSync(new URL("../extensions/missions/index.ts", import.meta.url), "utf8");
+
+function extractFunctionSource(name) {
+	const start = source.indexOf(`function ${name}(`);
+	if (start === -1) fail(`missing function ${name}`);
+	let i = source.indexOf("{", start);
+	let depth = 0;
+	for (; i < source.length; i++) {
+		const ch = source[i];
+		if (ch === "{") depth++;
+		if (ch === "}") {
+			depth--;
+			if (depth === 0) return source.slice(start, i + 1);
+		}
+	}
+	fail(`unterminated function ${name}`);
 }
 
 async function loadRecoveryGateModule() {
@@ -20,126 +33,141 @@ async function loadRecoveryGateModule() {
 	return import(dataUrl);
 }
 
-const source = fs.readFileSync(new URL("../extensions/missions/index.ts", import.meta.url), "utf8");
-
-function simulateFeatureRun({ workerHandoff, validatorReport, pauseAfterCurrent = false, lockState = "free" }) {
-	const events = [];
-	const state = {
-		featureStatus: "pending",
-		missionStatus: "running",
-		latestBlock: undefined,
-		launchedNextUnit: false,
-	};
-
-	if (lockState === "active") {
-		events.push({ type: "start_rejected_duplicate_runner" });
-		state.missionStatus = "blocked";
-		return { state, events };
-	}
-	if (lockState === "stale") events.push({ type: "mission_runner_lock_recovered" });
-
-	if (!workerHandoff) {
-		state.featureStatus = "pending";
-		state.missionStatus = "blocked";
-		state.latestBlock = { reason: "worker_missing_handoff" };
-		events.push({ type: "worker_missing_handoff_auto_retry" });
-		return { state, events };
-	}
-
-	state.featureStatus = "running";
-	if (!validatorReport) {
-		state.featureStatus = "pending";
-		state.missionStatus = "blocked";
-		state.latestBlock = { reason: "missing validation report" };
-		events.push({ type: "validator_report_missing" });
-		return { state, events };
-	}
-
-	if (validatorReport === "fail") {
-		state.featureStatus = "pending";
-		state.missionStatus = "blocked";
-		state.latestBlock = { reason: "validator_failed" };
-		events.push({ type: "feature_validation_failed_auto_retry" });
-		return { state, events };
-	}
-
-	state.featureStatus = "complete";
-	events.push({ type: "feature_validation_passed" });
-	if (pauseAfterCurrent) {
-		state.missionStatus = "paused";
-		events.push({ type: "mission_pause_after_current_applied" });
-	} else {
-		state.launchedNextUnit = true;
-	}
-	return { state, events };
+function compileNamedFunction(name, deps) {
+	const fnText = extractFunctionSource(name);
+	const transpiled = ts.transpileModule(fnText, {
+		compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
+		fileName: `${name}.ts`,
+	}).outputText;
+	const depNames = Object.keys(deps);
+	const depValues = Object.values(deps);
+	return new Function(...depNames, `"use strict"; ${transpiled}; return ${name};`)(...depValues);
 }
 
-function runBehaviorSimulations() {
-	const pass = simulateFeatureRun({ workerHandoff: true, validatorReport: "pass" });
-	assert(pass.state.featureStatus === "complete", "worker pass + validator pass must complete feature");
-	assert(pass.events.some((e) => e.type === "feature_validation_passed"), "pass flow must emit validation-pass event");
+function runCommandRoutingChecks() {
+	const calls = [];
+	const executeRunnerCommand = compileNamedFunction("executeRunnerCommand", {
+		activeMissionFromState: () => undefined,
+		latestMission: () => ({ id: "M1" }),
+		loadMission: () => ({ id: "M1", status: "running", currentFeatureId: "F5", features: [] }),
+		missionDir: () => "/tmp/mission",
+		appendEvent: (...args) => calls.push(["appendEvent", ...args]),
+		startMissionInBackground: (...args) => { calls.push(["start", ...args]); return { ok: true, text: "started" }; },
+		requestMissionPauseAfterCurrent: (...args) => { calls.push(["pause", ...args]); return { ok: true, text: "paused" }; },
+		tryCancelCurrentChild: () => true,
+		isMissionRunActive: () => false,
+		missionFeatureList: () => [{ id: "F5", status: "failed" }],
+		nowIso: () => "2026-01-01T00:00:00.000Z",
+		saveMission: () => {},
+	});
+	const ctx = { cwd: "/tmp" };
+	const pi = {};
 
-	const failRetry = simulateFeatureRun({ workerHandoff: true, validatorReport: "fail" });
-	assert(failRetry.state.featureStatus === "pending", "validator fail must keep same feature pending/retryable");
-	assert(failRetry.events.some((e) => e.type === "feature_validation_failed_auto_retry"), "validator fail must emit retry event");
+	assert(executeRunnerCommand({ command: "start", missionId: "M1", source: "test" }, ctx, pi).ok, "start must route via startMissionInBackground");
+	assert(calls.some((c) => c[0] === "start"), "start routing call missing");
 
-	const missingHandoff = simulateFeatureRun({ workerHandoff: false, validatorReport: undefined });
-	assert(missingHandoff.state.latestBlock?.reason === "worker_missing_handoff", "missing handoff must block/retry deterministically");
+	assert(executeRunnerCommand({ command: "pause-after-current", missionId: "M1", source: "test" }, ctx, pi).ok, "pause-after-current must route");
+	assert(calls.some((c) => c[0] === "pause"), "pause routing call missing");
 
-	const missingReport = simulateFeatureRun({ workerHandoff: true, validatorReport: undefined });
-	assert(missingReport.state.latestBlock?.reason === "missing validation report", "missing validation report must produce deterministic failure artifacts");
-
-	const pause = simulateFeatureRun({ workerHandoff: true, validatorReport: "pass", pauseAfterCurrent: true });
-	assert(pause.state.missionStatus === "paused", "pause-after-current must pause after current unit");
-	assert(pause.state.launchedNextUnit === false, "pause-after-current must prevent launching next unit");
-
-	const duplicate = simulateFeatureRun({ workerHandoff: true, validatorReport: "pass", lockState: "active" });
-	assert(duplicate.events.some((e) => e.type === "start_rejected_duplicate_runner"), "duplicate runner start must be rejected");
-
-	const stale = simulateFeatureRun({ workerHandoff: true, validatorReport: "pass", lockState: "stale" });
-	assert(stale.events.some((e) => e.type === "mission_runner_lock_recovered"), "stale lock recovery must be auditable");
+	assert(executeRunnerCommand({ command: "cancel-current-child", missionId: "M1", source: "test" }, ctx, pi).ok, "cancel-current-child should succeed when cancelable");
+	assert(calls.some((c) => c[0] === "appendEvent" && c[2] === "mission_current_child_cancel_requested"), "cancel must append auditable event");
 }
 
-function runMissionControlStructuralChecks() {
-	const required = [
-		'executeRunnerCommand({ command: "pause-after-current"',
-		'executeRunnerCommand({ command: "start"',
-		'executeRunnerCommand({ command: "cancel-current-child"',
-		"autoOpenMissionControl",
-		"dispose: () => {",
-		"finalize();",
-		"done(undefined);",
-	];
-	for (const token of required) assert(source.includes(token), `Mission Control regression: missing ${token}`);
+async function runMissionControlLifecycleCheck() {
+	let opened = false;
+	let settled = false;
+	const autoOpenMissionControl = compileNamedFunction("autoOpenMissionControl", {
+		buildOrchestratorState: () => ({}),
+		openMissionControl: () => {
+			opened = true;
+			return new Promise((resolve) => setTimeout(() => { settled = true; resolve(); }, 50));
+		},
+	});
+	const notifications = [];
+	const ctx = { hasUI: true, cwd: "/tmp", ui: { notify: (m, l) => notifications.push([m, l]) } };
+	autoOpenMissionControl(ctx, { id: "M1" }, {});
+	assert(opened, "Mission Control should open when UI exists");
+	assert(!settled, "auto-open must be fire-and-forget and not block execution");
+	await new Promise((r) => setTimeout(r, 80));
+	assert(settled, "Mission Control promise should eventually settle without blocking caller");
+	assert(notifications.length === 0, "no warning expected on normal Mission Control close");
 }
 
-function runDogfoodingRegression(computeRecoveryGatePlan) {
-	const scenario = {
+function runFeatureFlowSimulations() {
+	const transitionValidatorFailToFeaturePendingForRetry = compileNamedFunction("transitionValidatorFailToFeaturePendingForRetry", {});
+	const transitionValidatorPassToFeatureComplete = compileNamedFunction("transitionValidatorPassToFeatureComplete", {});
+	const transitionMissionPauseAfterCurrent = compileNamedFunction("transitionMissionPauseAfterCurrent", {});
+
+	const milestone = { features: [{ status: "running" }], status: "running" };
+	const feature = { status: "running" };
+	const mission = { status: "running" };
+	transitionValidatorPassToFeatureComplete(mission, milestone, feature);
+	assert(feature.status === "complete", "worker pass + validator pass should complete feature");
+
+	feature.status = "running";
+	mission.status = "running";
+	transitionValidatorFailToFeaturePendingForRetry(mission, feature);
+	assert(feature.status === "pending", "validator fail should keep same feature retryable");
+
+	transitionMissionPauseAfterCurrent(mission, "2026-01-01T00:00:00.000Z");
+	assert(mission.status === "paused", "pause-after-current must set paused state");
+}
+
+function runRecoveryAndRegressionChecks(computeRecoveryGatePlan) {
+	const gate = computeRecoveryGatePlan({
 		featureOrder: ["F5", "F6"],
 		featureStatusById: { F5: "failed", F6: "pending" },
 		blockedFeatureId: "F5",
 		currentFeatureId: "F6",
 		activeRunItemId: "F6",
 		missionStatus: "running",
-	};
-	const plan = computeRecoveryGatePlan(scenario);
-	assert(plan.gateFeatureId === "F5", "dogfooding regression: gate must remain F5");
-	assert(plan.normalizeGateToPending, "dogfooding regression: failed F5 must normalize to pending");
-	assert(plan.setCurrentFeatureToGate, "dogfooding regression: currentFeatureId must be reset to F5");
-	assert(plan.clearActiveRun, "dogfooding regression: stale F6 activeRun must be cleared");
-	assert(plan.forceBlockedStatus, "dogfooding regression: mission must remain blocked on F5");
+	});
+	assert(gate.gateFeatureId === "F5", "gate must stay on F5");
+	assert(gate.normalizeGateToPending && gate.setCurrentFeatureToGate && gate.clearActiveRun && gate.forceBlockedStatus, "gate repair plan must fix F5/F6 inconsistency");
 
-	const eventLog = [];
-	eventLog.push({ type: "feature_validation_failed", featureId: "F5" });
-	eventLog.push({ type: "worker_missing_handoff", featureId: "F5" });
-	eventLog.push({ type: "mission_recovery_gate_repaired", gateFeatureId: plan.gateFeatureId });
-	assert(eventLog.at(-1)?.gateFeatureId === "F5", "dogfooding regression: event log repair must record F5 gate");
+	const mission = {
+		id: "M1",
+		status: "running",
+		currentFeatureId: "F6",
+		currentMilestoneId: "features",
+		latestBlock: { featureId: "F5" },
+		activeRun: { itemId: "F6", runId: "run-f6" },
+		features: [{ id: "F5", status: "failed" }, { id: "F6", status: "pending" }],
+	};
+	if (gate.normalizeGateToPending) mission.features[0].status = "pending";
+	if (gate.setCurrentFeatureToGate) mission.currentFeatureId = "F5";
+	if (gate.clearActiveRun) mission.activeRun = undefined;
+	if (gate.forceBlockedStatus) mission.status = "blocked";
+
+	assert(mission.currentFeatureId === "F5", "currentFeatureId must be repaired to F5");
+	assert(mission.activeRun === undefined, "stale activeRun on F6 must clear");
+	assert(mission.features[0].status === "pending", "F5 should normalize to pending for retry");
+	assert(mission.status === "blocked", "mission should remain blocked until F5 passes validation");
+
+	const eventLog = [
+		{ type: "feature_validation_failed", featureId: "F5" },
+		{ type: "worker_missing_handoff", featureId: "F5" },
+		{ type: "mission_recovery_gate_repaired", featureId: mission.currentFeatureId },
+	];
+	assert(eventLog.at(-1)?.featureId === "F5", "event log repair must record F5 gate consistency");
 }
 
-runBehaviorSimulations();
-runMissionControlStructuralChecks();
-const { computeRecoveryGatePlan } = await loadRecoveryGateModule();
-runDogfoodingRegression(computeRecoveryGatePlan);
+function runStructuralGuardrails() {
+	for (const token of [
+		"worker_missing_handoff_auto_retry",
+		"ensureValidatorFailureReportArtifacts",
+		"mission_runner_lock_recovered",
+		"mission_recovery_gate_repaired",
+		'executeRunnerCommand({ command: "pause-after-current"',
+	]) {
+		assert(source.includes(token), `missing required control-plane guardrail: ${token}`);
+	}
+}
 
-assert(source.includes('appendEvent(dir, "mission_recovery_gate_repaired"'), "execution-gate repairs must remain auditable in event logs");
+runCommandRoutingChecks();
+await runMissionControlLifecycleCheck();
+runFeatureFlowSimulations();
+const { computeRecoveryGatePlan } = await loadRecoveryGateModule();
+runRecoveryAndRegressionChecks(computeRecoveryGatePlan);
+runStructuralGuardrails();
 console.log("F10 simulation/test harness validation passed.");
