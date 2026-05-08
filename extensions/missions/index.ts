@@ -133,6 +133,15 @@ interface MissionOrchestratorSessionState {
 	};
 }
 
+interface MissionOrchestratorSessionRecord {
+	schemaVersion: 1;
+	missionId: string;
+	sessionId: string;
+	sessionPath: string;
+	createdAt: string;
+	active: boolean;
+}
+
 const ORCHESTRATOR_STATE_ENTRY = "missions-orchestrator-state";
 const PLANNING_KICKOFF_ENTRY = "missions-planning-kickoff";
 const LEGACY_ACTIVE_PLANNING_ENTRY = "missions-active-planning";
@@ -257,6 +266,28 @@ function clearedMissionsFile(cwd: string): string {
 
 function globalSettingsFile(cwd: string): string {
 	return path.join(missionRoot(cwd), "settings.json");
+}
+
+function orchestratorSessionRecordFile(cwd: string, missionId: string): string {
+	return path.join(missionDir(cwd, missionId), "orchestrator-session.json");
+}
+
+function readOrchestratorSessionRecord(cwd: string, missionId: string): MissionOrchestratorSessionRecord | undefined {
+	const file = orchestratorSessionRecordFile(cwd, missionId);
+	if (!fs.existsSync(file)) return undefined;
+	try {
+		const record = readJson<MissionOrchestratorSessionRecord>(file);
+		if (record?.schemaVersion !== 1 || record.missionId !== missionId || typeof record.sessionPath !== "string" || !record.sessionPath.trim()) return undefined;
+		return record;
+	} catch {
+		return undefined;
+	}
+}
+
+function writeOrchestratorSessionRecord(cwd: string, missionId: string, value: Omit<MissionOrchestratorSessionRecord, "schemaVersion" | "missionId">): MissionOrchestratorSessionRecord {
+	const record: MissionOrchestratorSessionRecord = { schemaVersion: 1, missionId, ...value };
+	writeJson(orchestratorSessionRecordFile(cwd, missionId), record);
+	return record;
 }
 
 function ensureDir(dir: string): void {
@@ -2412,6 +2443,41 @@ function missionControlMoveRecentMission(cwd: string, selectedId: string | undef
 	return missions[nextIndex]?.id;
 }
 
+function hasSessionSwitchControls(ctx: ExtensionContext): ctx is ExtensionCommandContext {
+	return typeof (ctx as ExtensionCommandContext).newSession === "function" && typeof (ctx as ExtensionCommandContext).switchSession === "function";
+}
+
+async function openOrSwitchMissionOrchestratorSession(ctx: ExtensionCommandContext, mission: MissionState): Promise<void> {
+	const existing = readOrchestratorSessionRecord(ctx.cwd, mission.id);
+	const content = runningMissionOrchestratorContext(ctx.cwd, mission);
+	if (existing?.active && fs.existsSync(existing.sessionPath)) {
+		await ctx.switchSession(existing.sessionPath, {
+			withSession: async (nextCtx) => {
+				await nextCtx.sendMessage({ customType: "missions-running-orchestrator", display: true, content, details: { missionId: mission.id, missionDir: missionDir(ctx.cwd, mission.id), reusedSession: true } }, { deliverAs: "followUp" });
+			},
+		});
+		return;
+	}
+	let createdSessionPath = "";
+	await ctx.newSession({
+		parentSession: ctx.sessionManager.getSessionFile(),
+		setup: async (sessionManager) => {
+			createdSessionPath = sessionManager.getSessionFile() || "";
+			sessionManager.appendSessionInfo(`Mission orchestrator: ${mission.title}`);
+			sessionManager.appendCustomEntry(ORCHESTRATOR_STATE_ENTRY, buildOrchestratorState(ctx.cwd, mission, { activeMissionId: mission.id, activePlanningMissionId: undefined, activeRunningMissionId: mission.id }));
+			writeOrchestratorSessionRecord(ctx.cwd, mission.id, {
+				sessionId: createdSessionPath ? path.basename(createdSessionPath, path.extname(createdSessionPath)) : `pid-${process.pid}`,
+				sessionPath: createdSessionPath || ctx.sessionManager.getSessionFile() || "",
+				createdAt: nowIso(),
+				active: true,
+			});
+		},
+		withSession: async (nextCtx) => {
+			await nextCtx.sendMessage({ customType: "missions-running-orchestrator", display: true, content, details: { missionId: mission.id, missionDir: missionDir(ctx.cwd, mission.id), sessionPath: createdSessionPath } }, { triggerTurn: true, deliverAs: "followUp" });
+		},
+	});
+}
+
 async function openMissionControl(ctx: ExtensionContext, state: MissionOrchestratorSessionState | undefined, targetMissionId: string | undefined, pi: ExtensionAPI): Promise<MissionCommandResult> {
 	if (!ctx.hasUI) {
 		const text = "Mission Control requires an interactive UI.";
@@ -2480,7 +2546,17 @@ async function openMissionControl(ctx: ExtensionContext, state: MissionOrchestra
 					return;
 				}
 				if (data === "o") {
-					ctx.ui.notify("Open the dedicated orchestrator chat with /mission-orchestrator" + (active ? ` ${active.id}` : ""), "info");
+					if (!active) {
+						ctx.ui.notify("No active mission to open orchestrator session.", "warning");
+						return;
+					}
+					if (!hasSessionSwitchControls(ctx)) {
+						ctx.ui.notify("Open the dedicated orchestrator chat with /mission-orchestrator" + (active ? ` ${active.id}` : ""), "info");
+						return;
+					}
+					void openOrSwitchMissionOrchestratorSession(ctx, active).catch((error) => {
+						ctx.ui.notify(`Failed to open orchestrator session: ${error instanceof Error ? error.message : String(error)}`, "error");
+					});
 					return;
 				}
 				if (data === "?") {
@@ -3483,17 +3559,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("No mission found for orchestrator session.", "warning");
 				return;
 			}
-			const content = runningMissionOrchestratorContext(ctx.cwd, mission);
-			await ctx.newSession({
-				parentSession: ctx.sessionManager.getSessionFile(),
-				setup: async (sessionManager) => {
-					sessionManager.appendSessionInfo(`Mission orchestrator: ${mission.title}`);
-					sessionManager.appendCustomEntry(ORCHESTRATOR_STATE_ENTRY, buildOrchestratorState(ctx.cwd, mission, { activeMissionId: mission.id, activePlanningMissionId: undefined, activeRunningMissionId: mission.id }));
-				},
-				withSession: async (nextCtx) => {
-					await nextCtx.sendMessage({ customType: "missions-running-orchestrator", display: true, content, details: { missionId: mission.id, missionDir: missionDir(ctx.cwd, mission.id) } }, { triggerTurn: true, deliverAs: "followUp" });
-				},
-			});
+			await openOrSwitchMissionOrchestratorSession(ctx, mission);
 		},
 	});
 
