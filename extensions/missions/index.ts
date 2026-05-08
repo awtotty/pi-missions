@@ -894,9 +894,13 @@ function describeBlock(block: MissionBlockMetadata): string {
 	return `${block.reasonCategory} on ${block.kind} ${block.failedItemId} (${block.failedItemTitle}); run ${block.runId}${block.status ? ` reported ${block.status}` : ""}`;
 }
 
-function nextSuggestedAction(mission: MissionState, run?: MissionRunContext, block?: MissionBlockMetadata): string {
+function nextSuggestedAction(mission: MissionState, lifecycle: MissionRunLifecycleClassification, run?: MissionRunContext, block?: MissionBlockMetadata): string {
 	if (mission.status === "planning") return "Continue planning, then persist the plan when it is ready.";
 	if (mission.status === "planned") return `Run /missions run ${mission.id} to start execution.`;
+	if (lifecycle.state === "interrupted") {
+		const runHint = run ? `Inspect ${run.runDir} for transcript/stderr evidence from ${run.runId}.` : `Inspect ${missionDir(mission.cwd, mission.id)} run artifacts.`;
+		return `${runHint} Then use /missions run ${mission.id} (or Mission Control: s) to attempt safe recovery/resume.`;
+	}
 	if (mission.status === "running") return run ? `Monitor ${run.runDir} or wait for run ${run.runId} to finish.` : "Mission is running; wait for the next worker or validator update.";
 	if (mission.status === "paused") return `Run /missions resume ${mission.id} when ready.`;
 	if (mission.status === "blocked") return block ? `Inspect block artifacts in ${block.runDir}, decide the recovery path, then revise or resume the mission.` : `Inspect ${missionDir(mission.cwd, mission.id)} and decide whether to revise or resume the mission.`;
@@ -917,7 +921,9 @@ function updateWidget(ctx: ExtensionContext, mission?: MissionState): void {
 	const features = mission.milestones.flatMap((m) => m.features);
 	const done = features.filter((f) => f.status === "complete" || f.status === "skipped").length;
 	const run = currentOrLastRunContext(mission);
-	ctx.ui.setStatus("missions", `🚀 ${done}/${features.length} ${mission.status}${run ? ` ${run.runId}` : ""}`);
+	const lifecycle = classifyMissionRunLifecycle(mission.cwd, mission);
+	const statusLabel = lifecycle.state === "interrupted" ? "interrupted" : mission.status;
+	ctx.ui.setStatus("missions", `🚀 ${done}/${features.length} ${statusLabel}${run ? ` ${run.runId}` : ""}`);
 }
 
 function mark(status: string): string {
@@ -1031,7 +1037,7 @@ function summarizeMission(mission: MissionState): string {
 		run ? `Run artifacts: ${run.runDir}` : undefined,
 		block ? `Blocked reason: ${describeBlock(block)}` : undefined,
 		block?.artifactPaths.length ? `Block artifacts: ${block.artifactPaths.join(", ")}` : undefined,
-		`Next suggested action: ${nextSuggestedAction(mission, run, block)}`,
+		`Next suggested action: ${nextSuggestedAction(mission, lifecycle, run, block)}`,
 		"",
 		...mission.milestones.flatMap((m) => [
 			`${mark(m.status)} ${m.id}: ${m.title}${m.validationRunId ? ` [validator ${m.validationRunId}]` : ""}`,
@@ -1456,12 +1462,13 @@ function moveMissionControlSelection(mission: MissionState, selectedId: string |
 
 function missionControlHeader(mission: MissionState, width: number): string[] {
 	const run = currentOrLastRunContext(mission);
+	const lifecycle = classifyMissionRunLifecycle(mission.cwd, mission);
 	const counts = missionFeatureCounts(mission);
 	const barWidth = Math.max(8, Math.min(32, width - 38));
 	const runText = run ? `${run.label} ${run.runId} (${run.kind} ${run.itemId})` : "no active run";
 	return [
 		clipLine(`MISSION CONTROL DASHBOARD — ${mission.title}`, width),
-		clipLine(`Mission ${mission.id} · ${mission.status} · updated ${mission.updatedAt}`, width),
+		clipLine(`Mission ${mission.id} · ${mission.status} · lifecycle ${lifecycle.state} · updated ${mission.updatedAt}`, width),
 		clipLine(`[${progressBar(counts.done, counts.total, barWidth)}] ${progressText(mission)} ${percentText(counts.done, counts.total)} · ${counts.running} running · ${counts.pending} pending · ${counts.failed} failed · ${runText}`, width),
 	];
 }
@@ -1522,15 +1529,20 @@ function missionDetailsLines(selection: MissionControlSelection, run?: MissionRu
 }
 
 function progressLogLines(mission: MissionState): string[] {
+	const lifecycle = classifyMissionRunLifecycle(mission.cwd, mission);
 	const window = readMissionEventWindow(mission);
 	if (window.events.length === 0) {
-		return window.malformedInTail > 0
-			? [`No parseable events in recent log tail; skipped ${window.malformedInTail} malformed entr${window.malformedInTail === 1 ? "y" : "ies"}.`]
-			: ["(no events recorded)"];
+		const base = window.malformedInTail > 0
+			? `No parseable events in recent log tail; skipped ${window.malformedInTail} malformed entr${window.malformedInTail === 1 ? "y" : "ies"}.`
+			: "(no events recorded)";
+		return [`Run lifecycle: ${lifecycle.state}${lifecycle.reason ? ` (${lifecycle.reason})` : ""}`, base];
 	}
 	const prefix = window.truncated ? "Recent tail" : "Recent log";
 	const hidden = Math.max(0, window.parsedInTail - window.events.length);
-	const lines = [`${prefix}: showing ${window.events.length}/${window.parsedInTail} parsed event${window.parsedInTail === 1 ? "" : "s"}${hidden ? ` (${hidden} older in tail)` : ""}${window.malformedInTail ? ` · skipped ${window.malformedInTail} malformed` : ""}`];
+	const lines = [
+		`Run lifecycle: ${lifecycle.state}${lifecycle.reason ? ` (${lifecycle.reason})` : ""}`,
+		`${prefix}: showing ${window.events.length}/${window.parsedInTail} parsed event${window.parsedInTail === 1 ? "" : "s"}${hidden ? ` (${hidden} older in tail)` : ""}${window.malformedInTail ? ` · skipped ${window.malformedInTail} malformed` : ""}`,
+	];
 	const now = Date.now();
 	for (const event of window.events) lines.push(formatMissionEventLine(event, now));
 	return lines;
@@ -1538,13 +1550,16 @@ function progressLogLines(mission: MissionState): string[] {
 
 function currentItemLines(selection: MissionControlSelection, run?: MissionRunContext, block?: MissionBlockMetadata): string[] {
 	if (selection.kind === "mission") {
+		const lifecycle = classifyMissionRunLifecycle(selection.mission.cwd, selection.mission);
 		return [
 			`${mark(selection.mission.status)} Mission: ${selection.mission.title}`,
 			`Status: ${selection.mission.status}`,
+			`Run lifecycle: ${lifecycle.state}${lifecycle.reason ? ` (${lifecycle.reason})` : ""}`,
 			`Current milestone: ${selection.mission.currentMilestoneId ?? "not set"}`,
 			`Current feature: ${selection.mission.currentFeatureId ?? "not set"}`,
 			`Created: ${selection.mission.createdAt}`,
 			`Expected: ${selection.mission.status === "complete" ? "all milestones complete" : "execute milestones sequentially"}`,
+			...(lifecycle.state === "interrupted" ? [nextSuggestedAction(selection.mission, lifecycle, run, block)] : []),
 			...verificationHintLines(selection.mission, ["current-work", "compatibility"]),
 			...currentWorkArtifactLines(run),
 		];
@@ -1729,9 +1744,10 @@ function limitLines(lines: string[], maxLines: number, width: number): string[] 
 function compactMissionControlHeader(mission: MissionState, width: number): string[] {
 	const counts = missionFeatureCounts(mission);
 	const run = currentOrLastRunContext(mission);
+	const lifecycle = classifyMissionRunLifecycle(mission.cwd, mission);
 	const current = mission.currentFeatureId ?? mission.currentMilestoneId ?? "mission";
 	return [
-		clipLine(`MISSION ${mission.status} · ${progressText(mission)} ${percentText(counts.done, counts.total)}`, width),
+		clipLine(`MISSION ${mission.status}/${lifecycle.state} · ${progressText(mission)} ${percentText(counts.done, counts.total)}`, width),
 		clipLine(`Current: ${current}${run ? ` · ${run.kind} ${run.runId}` : ""}`, width),
 	];
 }
