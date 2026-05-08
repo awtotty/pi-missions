@@ -1527,15 +1527,21 @@ function progressBar(done: number, total: number, width: number): string {
 
 function dividerLine(label: string, width: number): string {
 	const safeWidth = Math.max(20, width);
-	const prefix = `── ${label} `;
-	return clipLine(`${prefix}${"─".repeat(Math.max(0, safeWidth - visibleWidth(prefix)))}`, safeWidth);
+	const innerWidth = Math.max(4, safeWidth - 2);
+	const title = ` ${label} `;
+	const titleWidth = visibleWidth(title);
+	const remaining = Math.max(0, innerWidth - titleWidth);
+	const left = "─".repeat(Math.floor(remaining / 2));
+	const right = "─".repeat(Math.ceil(remaining / 2));
+	return clipLine(`┌${left}${title}${right}┐`, safeWidth);
 }
 
 function panelLines(title: string, body: string[], width: number): string[] {
 	const safeWidth = Math.max(20, width);
+	const innerWidth = Math.max(1, safeWidth - 2);
 	const header = dividerLine(title, safeWidth);
-	const clippedBody = body.length > 0 ? body.map((line) => clipLine(line, safeWidth)) : [clipLine("(no data)", safeWidth)];
-	return [header, ...clippedBody];
+	const clippedBody = body.length > 0 ? body.map((line) => clipLine(line, innerWidth)) : [clipLine("(no data)", innerWidth)];
+	return [header, ...clippedBody.map((line) => clipLine(`│${padLineToWidth(line, innerWidth)}│`, safeWidth)), clipLine(`└${"─".repeat(innerWidth)}┘`, safeWidth)];
 }
 
 interface MissionControlEvent {
@@ -1849,12 +1855,22 @@ function missionControlHeader(mission: MissionState, width: number): string[] {
 	const run = currentOrLastRunContext(mission);
 	const lifecycle = classifyMissionRunLifecycle(mission.cwd, mission);
 	const counts = missionFeatureCounts(mission);
-	const barWidth = Math.max(8, Math.min(32, width - 38));
+	const barWidth = Math.max(8, Math.min(28, width - 44));
 	const runText = run ? `${run.label} ${run.runId} (${run.kind} ${run.itemId})` : "no active run";
+	const statusStrip = ` STATUS ${mission.status.toUpperCase()} · lifecycle ${lifecycle.state} · updated ${mission.updatedAt} `;
+	const titleStrip = ` MISSION CONTROL · ${mission.title} (${mission.id}) `;
+	const progressStrip = ` PROGRESS ${progressText(mission)} ${percentText(counts.done, counts.total)} · ${counts.running} running · ${counts.pending} pending · ${counts.failed} failed `;
+	const line = (content: string): string => {
+		const innerWidth = Math.max(1, width - 2);
+		return clipLine(`│${padLineToWidth(content, innerWidth)}│`, width);
+	};
 	return [
-		clipLine(`MISSION CONTROL DASHBOARD — ${mission.title}`, width),
-		clipLine(`Mission ${mission.id} · ${mission.status} · lifecycle ${lifecycle.state} · updated ${mission.updatedAt}`, width),
-		clipLine(`[${progressBar(counts.done, counts.total, barWidth)}] ${progressText(mission)} ${percentText(counts.done, counts.total)} · ${counts.running} running · ${counts.pending} pending · ${counts.failed} failed · ${runText}`, width),
+		clipLine(`┌${"═".repeat(Math.max(1, width - 2))}┐`, width),
+		line(titleStrip),
+		line(statusStrip),
+		line(`${progressStrip}[${progressBar(counts.done, counts.total, barWidth)}]`),
+		line(` RUN ${runText} `),
+		clipLine(`└${"═".repeat(Math.max(1, width - 2))}┘`, width),
 	];
 }
 
@@ -2435,12 +2451,20 @@ function missionControlTarget(cwd: string, state: MissionOrchestratorSessionStat
 	return activeMissionFromState(cwd, state);
 }
 
-function missionControlLines(cwd: string, state: MissionOrchestratorSessionState | undefined, width: number, view: MissionControlViewState, targetMissionId?: string): string[] {
+function fitToViewport(lines: string[], width: number, height?: number): string[] {
+	const clipped = lines.map((line) => clipLine(line, width));
+	const target = typeof height === "number" && Number.isFinite(height) ? Math.max(1, Math.floor(height)) : undefined;
+	if (!target) return clipped;
+	if (clipped.length >= target) return clipped.slice(0, target);
+	return [...clipped, ...Array.from({ length: target - clipped.length }, () => "")];
+}
+
+function missionControlLines(cwd: string, state: MissionOrchestratorSessionState | undefined, width: number, height: number | undefined, view: MissionControlViewState, targetMissionId?: string): string[] {
 	let active: MissionState | undefined;
 	try {
 		active = missionControlTarget(cwd, state, targetMissionId);
 	} catch {
-		return ["Mission Control", "", `Mission not found: ${targetMissionId}`, "", "q/esc close"].map((line) => clipLine(line, Math.max(1, width)));
+		return fitToViewport(["Mission Control", "", `Mission not found: ${targetMissionId}`, "", "q/esc close"], Math.max(1, width), height);
 	}
 	const missions = active ? [active] : visibleMissions(cwd).slice(0, 10);
 	const safeWidth = Math.max(1, width);
@@ -2458,13 +2482,13 @@ function missionControlLines(cwd: string, state: MissionOrchestratorSessionState
 		const selection = missionControlSelectionById(active, view.selectedId, block);
 		view.selectedId = selectionId(selection);
 		const focusText = view.focus === "tree" ? "Focus: milestone features" : "Focus: progress log";
-		return [
+		return fitToViewport([
 			...missionControlDashboardLines(active, selection, safeWidth, block),
 			focusText,
 			...(view.showHelp ? ["", ...missionControlHelpLines()] : []),
 			"",
 			missionControlFooter(safeWidth),
-		].map((line) => clipLine(line, safeWidth));
+		], safeWidth, height);
 	}
 	const lines = ["Mission Control", "", "No active mission.", ""];
 	if (missions.length > 0) {
@@ -2476,7 +2500,7 @@ function missionControlLines(cwd: string, state: MissionOrchestratorSessionState
 	}
 	if (view.showHelp) lines.push("", ...missionControlHelpLines());
 	lines.push("", "q/esc close · ↑/↓/j/k move recent mission · c clear completed · r refresh · ? help");
-	return lines.map((line) => clipLine(line, safeWidth));
+	return fitToViewport(lines, safeWidth, height);
 }
 
 function missionControlMoveRecentMission(cwd: string, selectedId: string | undefined, delta: number): string | undefined {
@@ -2567,7 +2591,7 @@ async function openMissionControl(ctx: ExtensionContext, state: MissionOrchestra
 			finalize();
 		};
 		return {
-			render: (width: number) => missionControlLines(ctx.cwd, state, width, view, targetMissionId),
+			render: (width: number) => missionControlLines(ctx.cwd, state, width, (tui as { rows?: number }).rows, view, targetMissionId),
 			invalidate: () => undefined,
 			dispose: () => {
 				finalize();
