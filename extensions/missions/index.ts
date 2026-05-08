@@ -350,6 +350,9 @@ const EXECUTION_STARTED_EVENT_TYPES = new Set(["mission_execution_started", "wor
 const ACTIVE_MISSION_RUNS = new Set<string>();
 const RUNNER_HEARTBEAT_INTERVAL_MS = 5_000;
 const RUNNER_HEARTBEAT_TIMEOUT_MS = 20_000;
+const RUNNER_LOCK_GUARD_TIMEOUT_MS = 30_000;
+const RUNNER_LOCK_GUARD_WAIT_MS = 2_000;
+const RUNNER_LOCK_GUARD_RETRY_DELAY_MS = 50;
 
 function activeMissionRunKey(cwd: string, missionId: string): string {
 	return `${cwd}\u0000${missionId}`;
@@ -361,6 +364,66 @@ function isMissionRunActive(cwd: string, missionId: string): boolean {
 
 function runnerLockFile(cwd: string, missionId: string): string {
 	return path.join(missionDir(cwd, missionId), "runner-lock.json");
+}
+
+function runnerLockGuardDir(cwd: string, missionId: string): string {
+	return path.join(missionDir(cwd, missionId), "runner-lock.guard");
+}
+
+function sleepMs(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withRunnerLockGuard<T>(cwd: string, missionId: string, work: () => T | Promise<T>): Promise<T> {
+	const guardDir = runnerLockGuardDir(cwd, missionId);
+	const deadline = Date.now() + RUNNER_LOCK_GUARD_WAIT_MS;
+	while (true) {
+		try {
+			fs.mkdirSync(guardDir);
+			writeJson(path.join(guardDir, "claim.json"), {
+				schemaVersion: 1,
+				missionId,
+				ownerPid: process.pid,
+				ownerSessionMarker: parentSessionMarker(),
+				acquiredAt: nowIso(),
+			});
+			break;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "EEXIST") throw error;
+			const claimFile = path.join(guardDir, "claim.json");
+			let stale = false;
+			try {
+				const claim = readJson<{ acquiredAt?: unknown; ownerPid?: unknown }>(claimFile);
+				const acquiredAt = typeof claim.acquiredAt === "string" ? Date.parse(claim.acquiredAt) : Number.NaN;
+				const ownerPid = typeof claim.ownerPid === "number" ? claim.ownerPid : undefined;
+				const guardExpired = !Number.isFinite(acquiredAt) || Date.now() - acquiredAt > RUNNER_LOCK_GUARD_TIMEOUT_MS;
+				const ownerAlive = ownerPid === undefined ? undefined : isPidAlive(ownerPid);
+				stale = guardExpired && ownerAlive === false;
+			} catch {
+				stale = true;
+			}
+			if (stale) {
+				try {
+					fs.rmSync(guardDir, { recursive: true, force: true });
+					continue;
+				} catch {
+					// Another process may be recovering simultaneously; retry below.
+				}
+			}
+			if (Date.now() >= deadline) throw new Error(`Timed out waiting for runner lock guard for mission ${missionId}.`);
+			await sleepMs(RUNNER_LOCK_GUARD_RETRY_DELAY_MS);
+		}
+	}
+	try {
+		return await work();
+	} finally {
+		try {
+			fs.rmSync(guardDir, { recursive: true, force: true });
+		} catch {
+			// Best-effort guard cleanup.
+		}
+	}
 }
 
 function readRunnerLock(cwd: string, missionId: string): MissionRunnerLockArtifact | undefined {
@@ -428,18 +491,38 @@ function releaseRunnerLock(cwd: string, missionId: string, reason: string): void
 	writeRunnerLock(cwd, missionId, existing);
 }
 
-function acquireRunnerLock(cwd: string, mission: MissionState): { ok: true; lock: MissionRunnerLockArtifact; recoveredStale: boolean } | { ok: false; reason: string; lock?: MissionRunnerLockArtifact } {
-	const existing = readRunnerLock(cwd, mission.id);
-	if (existing && existing.status === "active") {
-		if (isSameLockOwner(existing)) {
-			existing.heartbeatAt = nowIso();
-			writeRunnerLock(cwd, mission.id, existing);
-			return { ok: true, lock: existing, recoveredStale: false };
+async function acquireRunnerLock(cwd: string, mission: MissionState): Promise<{ ok: true; lock: MissionRunnerLockArtifact; recoveredStale: boolean } | { ok: false; reason: string; lock?: MissionRunnerLockArtifact }> {
+	return await withRunnerLockGuard(cwd, mission.id, () => {
+		const existing = readRunnerLock(cwd, mission.id);
+		if (existing && existing.status === "active") {
+			if (isSameLockOwner(existing)) {
+				existing.heartbeatAt = nowIso();
+				writeRunnerLock(cwd, mission.id, existing);
+				return { ok: true, lock: existing, recoveredStale: false };
+			}
+			const alive = isPidAlive(existing.ownerPid);
+			const stale = alive === false || lockHeartbeatExpired(existing);
+			if (!stale) return { ok: false, reason: `Mission ${mission.id} is already owned by pid ${existing.ownerPid} (${existing.ownerSessionMarker}) with recent heartbeat ${existing.heartbeatAt}.`, lock: existing };
+			const recovered: MissionRunnerLockArtifact = {
+				schemaVersion: 1,
+				missionId: mission.id,
+				ownerPid: process.pid,
+				ownerSessionMarker: parentSessionMarker(),
+				acquiredAt: nowIso(),
+				heartbeatAt: nowIso(),
+				heartbeatTimeoutMs: RUNNER_HEARTBEAT_TIMEOUT_MS,
+				status: "active",
+				recoveredFrom: {
+					ownerPid: existing.ownerPid,
+					ownerSessionMarker: existing.ownerSessionMarker,
+					heartbeatAt: existing.heartbeatAt,
+					status: existing.status,
+				},
+			};
+			writeRunnerLock(cwd, mission.id, recovered);
+			return { ok: true, lock: recovered, recoveredStale: true };
 		}
-		const alive = isPidAlive(existing.ownerPid);
-		const stale = alive === false || lockHeartbeatExpired(existing);
-		if (!stale) return { ok: false, reason: `Mission ${mission.id} is already owned by pid ${existing.ownerPid} (${existing.ownerSessionMarker}) with recent heartbeat ${existing.heartbeatAt}.`, lock: existing };
-		const recovered: MissionRunnerLockArtifact = {
+		const lock: MissionRunnerLockArtifact = {
 			schemaVersion: 1,
 			missionId: mission.id,
 			ownerPid: process.pid,
@@ -448,28 +531,10 @@ function acquireRunnerLock(cwd: string, mission: MissionState): { ok: true; lock
 			heartbeatAt: nowIso(),
 			heartbeatTimeoutMs: RUNNER_HEARTBEAT_TIMEOUT_MS,
 			status: "active",
-			recoveredFrom: {
-				ownerPid: existing.ownerPid,
-				ownerSessionMarker: existing.ownerSessionMarker,
-				heartbeatAt: existing.heartbeatAt,
-				status: existing.status,
-			},
 		};
-		writeRunnerLock(cwd, mission.id, recovered);
-		return { ok: true, lock: recovered, recoveredStale: true };
-	}
-	const lock: MissionRunnerLockArtifact = {
-		schemaVersion: 1,
-		missionId: mission.id,
-		ownerPid: process.pid,
-		ownerSessionMarker: parentSessionMarker(),
-		acquiredAt: nowIso(),
-		heartbeatAt: nowIso(),
-		heartbeatTimeoutMs: RUNNER_HEARTBEAT_TIMEOUT_MS,
-		status: "active",
-	};
-	writeRunnerLock(cwd, mission.id, lock);
-	return { ok: true, lock, recoveredStale: false };
+		writeRunnerLock(cwd, mission.id, lock);
+		return { ok: true, lock, recoveredStale: false };
+	});
 }
 
 function hasMissionExecutionStarted(cwd: string, mission: MissionState): boolean {
@@ -2893,7 +2958,7 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 		ctx.ui.notify("Mission execution is already active for this mission.", "warning");
 		return;
 	}
-	const lockAcquire = acquireRunnerLock(ctx.cwd, mission);
+	const lockAcquire = await acquireRunnerLock(ctx.cwd, mission);
 	if (!lockAcquire.ok) {
 		ctx.ui.notify(lockAcquire.reason, "warning");
 		return;
