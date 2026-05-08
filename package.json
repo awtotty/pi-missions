@@ -23,6 +23,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "validate:f3": "node ./scripts/validate-f3-runner-command-routing.mjs"
+    "validate:f3": "node ./scripts/validate-f3-runner-command-routing.mjs",
+    "validate:f5": "node ./scripts/validate-f5-official-orchestrator-session.mjs"
   }
 }

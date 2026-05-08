@@ -290,6 +290,29 @@ function writeOrchestratorSessionRecord(cwd: string, missionId: string, value: O
 	return record;
 }
 
+function sessionIdentity(ctx: ExtensionContext): { sessionId: string; sessionPath: string } | undefined {
+	const sessionPath = ctx.sessionManager.getSessionFile() || "";
+	if (!sessionPath.trim()) return undefined;
+	return {
+		sessionId: path.basename(sessionPath, path.extname(sessionPath)) || `pid-${process.pid}`,
+		sessionPath,
+	};
+}
+
+function ensureOfficialOrchestratorSessionRecord(ctx: ExtensionContext, mission: MissionState): MissionOrchestratorSessionRecord | undefined {
+	const identity = sessionIdentity(ctx);
+	if (!identity) return undefined;
+	const existing = readOrchestratorSessionRecord(ctx.cwd, mission.id);
+	const shouldReuseExisting = existing?.active && fs.existsSync(existing.sessionPath);
+	if (shouldReuseExisting) return existing;
+	return writeOrchestratorSessionRecord(ctx.cwd, mission.id, {
+		sessionId: identity.sessionId,
+		sessionPath: identity.sessionPath,
+		createdAt: existing?.createdAt || nowIso(),
+		active: isActiveMissionStatus(mission.status),
+	});
+}
+
 function ensureDir(dir: string): void {
 	fs.mkdirSync(dir, { recursive: true });
 }
@@ -660,6 +683,15 @@ function loadMission(cwd: string, id: string): MissionState {
 function saveMission(cwd: string, mission: MissionState): void {
 	mission.updatedAt = nowIso();
 	writeJson(path.join(missionDir(cwd, mission.id), "mission.json"), mission);
+	const existingOrchestrator = readOrchestratorSessionRecord(cwd, mission.id);
+	if (existingOrchestrator && existingOrchestrator.active !== isActiveMissionStatus(mission.status)) {
+		writeOrchestratorSessionRecord(cwd, mission.id, {
+			sessionId: existingOrchestrator.sessionId,
+			sessionPath: existingOrchestrator.sessionPath,
+			createdAt: existingOrchestrator.createdAt,
+			active: isActiveMissionStatus(mission.status),
+		});
+	}
 }
 
 function listMissions(cwd: string): MissionState[] {
@@ -3277,6 +3309,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			if (!ok) return { content: [{ type: "text", text: "Mission start canceled by user." }], details: { missionId } };
 			activeRunningId = missionId;
 			persistOrchestratorState(ctx.cwd, mission, { activeMissionId: missionId, activePlanningMissionId: undefined, activeRunningMissionId: missionId });
+			ensureOfficialOrchestratorSessionRecord(ctx, mission);
 			const result = executeRunnerCommand({ command: "start", missionId, source: "mission_start_execution_tool" }, ctx, pi, orchestratorState);
 			return { content: [{ type: "text", text: result.text }], details: { missionId }, isError: !result.ok };
 		},
@@ -3314,7 +3347,9 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			}
 			if (command === "start" || command === "resume") {
 				activeRunningId = missionId;
-				persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, missionId), { activeMissionId: missionId, activePlanningMissionId: undefined, activeRunningMissionId: missionId });
+				const mission = loadMission(ctx.cwd, missionId);
+				persistOrchestratorState(ctx.cwd, mission, { activeMissionId: missionId, activePlanningMissionId: undefined, activeRunningMissionId: missionId });
+				ensureOfficialOrchestratorSessionRecord(ctx, mission);
 			}
 			const result = executeRunnerCommand({ command, missionId, featureId: params.featureId, reason: params.reason, source: "mission_runner_command_tool" }, ctx, pi, orchestratorState);
 			if (result.ok && command === "status") ctx.ui.notify(result.text, "info");
@@ -3378,6 +3413,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 				activePlanningMissionId: mission.status === "planning" ? missionId : undefined,
 				activeRunningMissionId: autoResume || mission.status === "running" || mission.status === "paused" ? missionId : undefined,
 			});
+			ensureOfficialOrchestratorSessionRecord(ctx, mission);
 			let text = persistedPlanSummary(mission, dir, params.objectiveMd, params.validationContractJson, Boolean(existingMission));
 			if (autoResume) {
 				ctx.ui.notify(`Recovery plan saved; auto-resuming mission ${missionId}.`, "info");
@@ -3451,7 +3487,9 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 				const id = args || activeMissionId || activeMissionFromState(ctx.cwd, orchestratorState)?.id || latestMission(ctx.cwd)?.id;
 				if (!id) return { ok: false, text: "No mission found to run." };
 				activeRunningId = id;
-				persistOrchestratorState(ctx.cwd, loadMission(ctx.cwd, id), { activeMissionId: id, activePlanningMissionId: undefined, activeRunningMissionId: id });
+				const mission = loadMission(ctx.cwd, id);
+				persistOrchestratorState(ctx.cwd, mission, { activeMissionId: id, activePlanningMissionId: undefined, activeRunningMissionId: id });
+				ensureOfficialOrchestratorSessionRecord(ctx, mission);
 				return executeRunnerCommand({ command: subcommand === "resume" ? "resume" : "start", missionId: id, source: `missions_${subcommand}_command` }, ctx, pi, orchestratorState);
 			}
 			if (subcommand === "list") {
@@ -3578,6 +3616,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 		if (active && (!orchestratorState?.context || orchestratorState.context.id !== active.id || orchestratorState.context.status !== active.status)) {
 			persistOrchestratorState(ctx.cwd, active, { activeMissionId: active.id, activePlanningMissionId: activePlanningId, activeRunningMissionId: activeRunningId });
 		}
+		if (active) ensureOfficialOrchestratorSessionRecord(ctx, active);
 		updateWidget(ctx, active ?? latestVisibleMission(ctx.cwd));
 	});
 }
