@@ -1,6 +1,4 @@
 import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
 import ts from "typescript";
 
 function fail(message) { throw new Error(message); }
@@ -70,7 +68,9 @@ function runCommandRoutingAndPauseChecks() {
 	const pi = {};
 
 	assert(executeRunnerCommand({ command: "start", missionId: "M1", source: "test" }, ctx, pi).ok, "start must route via startMissionInBackground");
+	assert(executeRunnerCommand({ command: "resume", missionId: "M1", source: "test" }, ctx, pi).ok, "resume must route via startMissionInBackground");
 	assert(executeRunnerCommand({ command: "pause-after-current", missionId: "M1", source: "test" }, ctx, pi).ok, "pause-after-current must route via requestMissionPauseAfterCurrent");
+	assert(calls.filter((c) => c[0] === "start").length === 2, "start/resume should call startMissionInBackground twice");
 	assert(calls.some((c) => c[0] === "pause"), "pause routing call missing");
 	assert(executeRunnerCommand({ command: "cancel-current-child", missionId: "M1", source: "test" }, ctx, pi).ok, "cancel-current-child should succeed when cancelable");
 	assert(calls.some((c) => c[0] === "appendEvent" && c[2] === "mission_current_child_cancel_requested"), "cancel must append auditable event");
@@ -86,6 +86,24 @@ function runCommandRoutingAndPauseChecks() {
 	});
 	const response = requestMissionPauseAfterCurrent("/tmp", { id: "M1", status: "running" }, "test");
 	assert(response.text.includes("Current worker/validator will continue; no new unit will start"), "pause contract text must confirm non-killing + next-unit suppression");
+
+	const applyPauseAfterCurrentIfRequested = compileNamedFunction("applyPauseAfterCurrentIfRequested", {
+		readMissionPauseRequest: () => ({ requestedAt: "2026-01-01T00:00:00.000Z", source: "test" }),
+		loadMission: () => ({ id: "M1", title: "Mission", status: "running" }),
+		transitionMissionPauseAfterCurrent: (mission, requestedAt) => {
+			mission.status = "paused";
+			mission.pauseRequestedAt = requestedAt;
+		},
+		saveMission: () => {},
+		appendEvent: (...args) => calls.push(["appendEvent", ...args]),
+		missionDir: () => "/tmp/mission",
+		updateWidget: () => {},
+		clearMissionRunStatus: () => {},
+		clearMissionPauseRequest: () => {},
+	});
+	const paused = applyPauseAfterCurrentIfRequested({ cwd: "/tmp", ui: { notify: () => {} } }, "M1", "worker");
+	assert(paused === true, "pause-after-current request should pause mission after current unit");
+	assert(calls.some((c) => c[0] === "appendEvent" && c[2] === "mission_paused_after_current"), "pause-after-current must append mission_paused_after_current event");
 }
 
 function runRunnerLockCoverage() {
@@ -115,6 +133,33 @@ function runRunnerLockCoverage() {
 	});
 	assert(lockHeartbeatExpired({ heartbeatAt: "2026-01-01T00:00:00.000Z", heartbeatTimeoutMs: 1 }) === true, "stale heartbeat must be detected");
 	assert(source.includes("recoveredFrom"), "stale lock recovery must persist recoveredFrom metadata");
+
+	const acquireRunnerLock = compileNamedFunction("acquireRunnerLock", {
+		withRunnerLockGuard: async (_cwd, _missionId, work) => await work(),
+		readRunnerLock: () => ({
+			schemaVersion: 1,
+			missionId: "M1",
+			ownerPid: 123,
+			ownerSessionMarker: "pid-123",
+			acquiredAt: "2026-01-01T00:00:00.000Z",
+			heartbeatAt: "2026-01-01T00:00:00.000Z",
+			heartbeatTimeoutMs: 1,
+			status: "active",
+		}),
+		isSameLockOwner: () => false,
+		nowIso: () => "2026-01-01T00:01:00.000Z",
+		writeRunnerLock: () => {},
+		isPidAlive: () => false,
+		lockHeartbeatExpired: () => true,
+		RUNNER_HEARTBEAT_TIMEOUT_MS: 20_000,
+		parentSessionMarker: () => "pid-999",
+		process: { pid: 999 },
+	});
+	return acquireRunnerLock("/tmp", { id: "M1" }).then((result) => {
+		assert(result.ok, "acquireRunnerLock should recover stale lock");
+		assert(result.recoveredStale === true, "stale lock path must set recoveredStale true");
+		assert(result.lock.recoveredFrom?.ownerPid === 123, "stale lock recovery must preserve previous owner metadata");
+	});
 }
 
 function runMissionControlLifecycleCheck() {
@@ -132,6 +177,9 @@ function runMissionControlLifecycleCheck() {
 	autoOpenMissionControl(ctx, { id: "M1" }, {});
 	autoOpenMissionControl(ctx, { id: "M1" }, {});
 	assert(opened === 2, "Mission Control should support close/reopen lifecycle");
+	assert(source.includes("ctx.ui.custom()"), "Mission Control lifecycle docs must mention custom UI promise behavior");
+	assert(source.includes("void openMissionControl"), "Mission Control must open fire-and-forget rather than blocking runMission");
+	assert(source.includes("Closing\n// Mission Control only disposes the UI; it does not abort"), "Mission Control close semantics must preserve running mission and interactive session usability");
 	return new Promise((resolve) => setTimeout(resolve, 90)).then(() => {
 		assert(settled === 2, "all Mission Control instances should settle asynchronously");
 		assert(notifications.length === 0, "normal close/reopen should not emit warnings");
@@ -145,7 +193,7 @@ function runFeatureFlowAndRegressionChecks(computeRecoveryGatePlan) {
 		featureStatusById: (mission) => new Map(mission.features.map((f) => [f.id, f.status])),
 		missionFeatureList: (mission) => mission.features,
 		areFeatureDependenciesSatisfied: () => true,
-		milestoneForFeature: (mission, featureId) => mission.milestones[0] ?? { id: "features", title: "Features", features: mission.features, status: "pending" },
+		milestoneForFeature: (mission) => mission.milestones[0] ?? { id: "features", title: "Features", features: mission.features, status: "pending" },
 	});
 
 	const milestone = { id: "features", title: "Features", status: "running", features: [{ id: "F5", status: "running" }, { id: "F6", status: "pending" }] };
@@ -207,7 +255,7 @@ function runFeatureFlowAndRegressionChecks(computeRecoveryGatePlan) {
 
 runArtifactFailureCoverage();
 runCommandRoutingAndPauseChecks();
-runRunnerLockCoverage();
+await runRunnerLockCoverage();
 await runMissionControlLifecycleCheck();
 const { computeRecoveryGatePlan } = await loadRecoveryGateModule();
 runFeatureFlowAndRegressionChecks(computeRecoveryGatePlan);
