@@ -1129,15 +1129,19 @@ function ensureValidatorFailureReportArtifacts(runDir: string, milestone: Missio
 		milestoneId: milestone.id,
 		status: "fail",
 		summary: schemaError || finalText || "Validator exited without a parseable validation-report.json artifact.",
+		commandsRun: [] as Array<{ command: string; exitCode: number; notes?: string }>,
 		assertions: [],
-		issues: [
+		defects: [
 			{
+				id: "SYNTH-VALIDATOR-ARTIFACT",
+				severity: "critical",
 				title: "Missing or invalid validator report artifact",
-				details: schemaError || (finalText ? `Validator did not produce parseable JSON, but final response was: ${finalText.slice(0, 2000)}` : "The validator run did not produce a parseable validation-report.json file. See transcript.jsonl and stderr.txt for failure details."),
-				severity: "high"
+				description: schemaError || (finalText ? `Validator did not produce parseable JSON, but final response was: ${finalText.slice(0, 2000)}` : "The validator run did not produce a parseable validation-report.json file. See transcript.jsonl and stderr.txt for failure details."),
+				reproduction: "Inspect validation-report.json, validation-report.md, transcript.jsonl, and stderr.txt in this run directory."
 			}
 		],
-		commandsRun: [] as Array<{ command: string; exitCode: number; notes?: string }>,
+		procedureFindings: [],
+		recommendation: "fix",
 		risks: ["Validation output was synthesized by the orchestrator due to missing/invalid validator artifacts."]
 	};
 	writeJson(reportFile, synthesized);

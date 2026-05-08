@@ -19,27 +19,56 @@ function addIssue(issues: ArtifactValidationIssue[], path: string, message: stri
 	issues.push({ path, message });
 }
 
-function expectString(issues: ArtifactValidationIssue[], obj: Record<string, unknown>, key: string, required = false): void {
+function expectString(issues: ArtifactValidationIssue[], obj: Record<string, unknown>, key: string, required = false, basePath = ""): void {
+	const value = obj[key];
+	const path = `${basePath}/${key}`;
+	if (value === undefined) {
+		if (required) addIssue(issues, path, "is required");
+		return;
+	}
+	if (typeof value !== "string" || !value.trim()) addIssue(issues, path, "must be a non-empty string");
+}
+
+function expectBoolean(issues: ArtifactValidationIssue[], obj: Record<string, unknown>, key: string, required = false, basePath = ""): void {
+	const value = obj[key];
+	const path = `${basePath}/${key}`;
+	if (value === undefined) {
+		if (required) addIssue(issues, path, "is required");
+		return;
+	}
+	if (typeof value !== "boolean") addIssue(issues, path, "must be a boolean");
+}
+
+function expectStatus(issues: ArtifactValidationIssue[], obj: Record<string, unknown>, key: string, allowed: string[], required = true): void {
 	const value = obj[key];
 	if (value === undefined) {
 		if (required) addIssue(issues, `/${key}`, "is required");
 		return;
 	}
-	if (typeof value !== "string" || !value.trim()) addIssue(issues, `/${key}`, "must be a non-empty string");
+	if (typeof value !== "string" || !allowed.includes(value)) addIssue(issues, `/${key}`, `must be one of: ${allowed.join(", ")}`);
 }
 
-function expectStatus(issues: ArtifactValidationIssue[], obj: Record<string, unknown>, key: string, allowed: string[]): void {
+function expectStringArray(issues: ArtifactValidationIssue[], obj: Record<string, unknown>, key: string, required = false): void {
 	const value = obj[key];
-	if (typeof value !== "string") {
-		addIssue(issues, `/${key}`, `must be one of: ${allowed.join(", ")}`);
+	if (value === undefined) {
+		if (required) addIssue(issues, `/${key}`, "is required");
 		return;
 	}
-	if (!allowed.includes(value)) addIssue(issues, `/${key}`, `must be one of: ${allowed.join(", ")}`);
+	if (!Array.isArray(value)) {
+		addIssue(issues, `/${key}`, "must be an array");
+		return;
+	}
+	for (let i = 0; i < value.length; i += 1) {
+		if (typeof value[i] !== "string") addIssue(issues, `/${key}/${i}`, "must be a string");
+	}
 }
 
-function expectCommandArray(issues: ArtifactValidationIssue[], obj: Record<string, unknown>, key: string): void {
+function expectCommandArray(issues: ArtifactValidationIssue[], obj: Record<string, unknown>, key: string, required = false): void {
 	const value = obj[key];
-	if (value === undefined) return;
+	if (value === undefined) {
+		if (required) addIssue(issues, `/${key}`, "is required");
+		return;
+	}
 	if (!Array.isArray(value)) {
 		addIssue(issues, `/${key}`, "must be an array");
 		return;
@@ -50,9 +79,24 @@ function expectCommandArray(issues: ArtifactValidationIssue[], obj: Record<strin
 			addIssue(issues, `/${key}/${i}`, "must be an object");
 			continue;
 		}
-		expectString(issues, item, "command", true);
+		expectString(issues, item, "command", true, `/${key}/${i}`);
 		if (item.exitCode !== undefined && typeof item.exitCode !== "number") addIssue(issues, `/${key}/${i}/exitCode`, "must be a number");
 		if (item.notes !== undefined && typeof item.notes !== "string") addIssue(issues, `/${key}/${i}/notes`, "must be a string");
+	}
+}
+
+function expectObjectArray(issues: ArtifactValidationIssue[], obj: Record<string, unknown>, key: string, required = false): void {
+	const value = obj[key];
+	if (value === undefined) {
+		if (required) addIssue(issues, `/${key}`, "is required");
+		return;
+	}
+	if (!Array.isArray(value)) {
+		addIssue(issues, `/${key}`, "must be an array");
+		return;
+	}
+	for (let i = 0; i < value.length; i += 1) {
+		if (!isRecord(value[i])) addIssue(issues, `/${key}/${i}`, "must be an object");
 	}
 }
 
@@ -65,8 +109,21 @@ function validateWorkerHandoff(value: unknown): ArtifactValidationIssue[] {
 	expectString(issues, value, "featureId", true);
 	expectStatus(issues, value, "status", ["complete", "blocked", "failed"]);
 	expectString(issues, value, "summary", true);
-	expectString(issues, value, "commit");
-	expectCommandArray(issues, value, "commandsRun");
+	expectString(issues, value, "commit", true);
+	expectStringArray(issues, value, "implemented", true);
+	expectStringArray(issues, value, "leftUndone", true);
+	expectStringArray(issues, value, "filesChanged", true);
+	expectCommandArray(issues, value, "commandsRun", true);
+	expectStringArray(issues, value, "issuesDiscovered", true);
+	if (!isRecord(value.procedureCompliance)) addIssue(issues, "/procedureCompliance", "is required and must be an object");
+	else {
+		expectBoolean(issues, value.procedureCompliance, "readMissionContext", true, "/procedureCompliance");
+		expectBoolean(issues, value.procedureCompliance, "checkedGitStatusBeforeWork", true, "/procedureCompliance");
+		expectBoolean(issues, value.procedureCompliance, "ranRequiredValidation", true, "/procedureCompliance");
+		expectBoolean(issues, value.procedureCompliance, "committedChanges", true, "/procedureCompliance");
+		expectBoolean(issues, value.procedureCompliance, "updatedHandoff", true, "/procedureCompliance");
+	}
+	expectStringArray(issues, value, "risks", true);
 	return issues;
 }
 
@@ -79,7 +136,11 @@ function validateScrutinyValidationReport(value: unknown): ArtifactValidationIss
 	expectStatus(issues, value, "status", ["pass", "fail", "inconclusive"]);
 	expectString(issues, value, "summary", true);
 	expectString(issues, value, "featureId");
-	expectCommandArray(issues, value, "commandsRun");
+	expectCommandArray(issues, value, "commandsRun", true);
+	expectObjectArray(issues, value, "assertions", true);
+	expectObjectArray(issues, value, "defects", true);
+	expectObjectArray(issues, value, "procedureFindings", true);
+	expectStatus(issues, value, "recommendation", ["accept", "fix", "replan", "ask-user"]);
 	return issues;
 }
 
@@ -92,7 +153,7 @@ function validateUserTestingReport(value: unknown): ArtifactValidationIssue[] {
 	expectStatus(issues, value, "status", ["pass", "fail", "inconclusive"]);
 	expectString(issues, value, "summary", true);
 	expectString(issues, value, "featureId", true);
-	expectCommandArray(issues, value, "commandsRun");
+	expectCommandArray(issues, value, "commandsRun", true);
 	return issues;
 }
 
@@ -106,7 +167,7 @@ function validateReviewerReport(value: unknown): ArtifactValidationIssue[] {
 	expectStatus(issues, value, "status", ["pass", "fail", "inconclusive"]);
 	expectString(issues, value, "summary", true);
 	expectString(issues, value, "featureId", true);
-	expectCommandArray(issues, value, "commandsRun");
+	expectCommandArray(issues, value, "commandsRun", true);
 	return issues;
 }
 
