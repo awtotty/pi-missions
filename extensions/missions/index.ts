@@ -745,7 +745,7 @@ function hasRunnablePersistedPlan(cwd: string, mission: MissionState): boolean {
 }
 
 function isFeatureOnlyMission(mission: MissionState): boolean {
-	return Array.isArray(mission.features);
+	return Array.isArray(mission.features) && !Array.isArray(mission.milestones);
 }
 
 function missionFeatureList(mission: MissionState): MissionFeature[] {
@@ -754,6 +754,7 @@ function missionFeatureList(mission: MissionState): MissionFeature[] {
 }
 
 function missionMilestones(mission: MissionState): MissionMilestone[] {
+	if (Array.isArray(mission.milestones) && mission.milestones.length > 0) return mission.milestones;
 	if (Array.isArray(mission.features)) {
 		return [{
 			id: "features",
@@ -762,13 +763,20 @@ function missionMilestones(mission: MissionState): MissionMilestone[] {
 			features: mission.features,
 		}];
 	}
-	return Array.isArray(mission.milestones) ? mission.milestones : [];
+	return [];
 }
 
 function normalizeMissionShape(mission: MissionState): MissionState {
-	if (!Array.isArray(mission.features) && Array.isArray(mission.milestones)) mission.features = mission.milestones.flatMap((milestone) => milestone.features);
-	mission.milestones = undefined;
-	mission.currentMilestoneId = undefined;
+	if (!Array.isArray(mission.features) && Array.isArray(mission.milestones)) {
+		mission.features = mission.milestones.flatMap((milestone) => milestone.features);
+	}
+	if (Array.isArray(mission.features) && Array.isArray(mission.milestones)) {
+		const featureById = new Map(mission.features.map((feature) => [feature.id, feature]));
+		mission.milestones = mission.milestones.map((milestone) => ({
+			...milestone,
+			features: milestone.features.map((feature) => featureById.get(feature.id) ?? feature),
+		}));
+	}
 	return mission;
 }
 
@@ -2878,12 +2886,17 @@ function areFeatureDependenciesSatisfied(feature: MissionFeature, statuses: Map<
 	});
 }
 
+function milestoneForFeature(mission: MissionState, featureId: string): MissionMilestone {
+	return missionMilestones(mission).find((milestone) => milestone.features.some((feature) => feature.id === featureId))
+		?? missionMilestones(mission)[0]
+		?? { id: "features", title: "Features", status: "pending", features: missionFeatureList(mission) };
+}
+
 function findNextFeature(mission: MissionState): { milestone: MissionMilestone; feature: MissionFeature } | undefined {
 	const statuses = featureStatusById(mission);
-	for (const milestone of missionMilestones(mission)) {
-		if (milestone.status === "complete" || milestone.status === "failed" || milestone.status === "skipped") continue;
-		for (const feature of milestone.features) {
-			if (feature.status === "pending" && areFeatureDependenciesSatisfied(feature, statuses)) return { milestone, feature };
+	for (const feature of missionFeatureList(mission)) {
+		if (feature.status === "pending" && areFeatureDependenciesSatisfied(feature, statuses)) {
+			return { milestone: milestoneForFeature(mission, feature.id), feature };
 		}
 	}
 	return undefined;
@@ -2904,17 +2917,14 @@ function featureAwaitingValidation(mission: MissionState, feature: MissionFeatur
 
 function findFeatureAwaitingValidation(mission: MissionState): { milestone: MissionMilestone; feature: MissionFeature } | undefined {
 	const statuses = featureStatusById(mission);
-	for (const milestone of missionMilestones(mission)) {
-		if (milestone.status === "complete" || milestone.status === "failed" || milestone.status === "skipped") continue;
-		for (const feature of milestone.features) {
-			if (feature.status === "complete" || feature.status === "skipped") continue;
-			if (!areFeatureDependenciesSatisfied(feature, statuses)) return undefined;
-			if (featureAwaitingValidation(mission, feature)) return { milestone, feature };
-			// Sequential execution invariant: do not scan past an incomplete earlier
-			// feature. If it is not ready for validation, normal worker selection or
-			// no-runnable-work handling must deal with this feature before later ones.
-			return undefined;
-		}
+	for (const feature of missionFeatureList(mission)) {
+		if (feature.status === "complete" || feature.status === "skipped") continue;
+		if (!areFeatureDependenciesSatisfied(feature, statuses)) return undefined;
+		if (featureAwaitingValidation(mission, feature)) return { milestone: milestoneForFeature(mission, feature.id), feature };
+		// Sequential execution invariant: do not scan past an incomplete earlier
+		// feature. If it is not ready for validation, normal worker selection or
+		// no-runnable-work handling must deal with this feature before later ones.
+		return undefined;
 	}
 	return undefined;
 }
@@ -2922,15 +2932,13 @@ function findFeatureAwaitingValidation(mission: MissionState): { milestone: Miss
 function incompleteFeatures(mission: MissionState): Array<{ milestone: MissionMilestone; feature: MissionFeature; unsatisfiedDependencies: string[] }> {
 	const statuses = featureStatusById(mission);
 	const incomplete: Array<{ milestone: MissionMilestone; feature: MissionFeature; unsatisfiedDependencies: string[] }> = [];
-	for (const milestone of missionMilestones(mission)) {
-		for (const feature of milestone.features) {
-			if (feature.status === "complete" || feature.status === "skipped") continue;
-			const unsatisfiedDependencies = (feature.dependencies ?? []).filter((dependencyId) => {
-				const dependencyStatus = statuses.get(dependencyId);
-				return dependencyStatus !== "complete" && dependencyStatus !== "skipped";
-			});
-			incomplete.push({ milestone, feature, unsatisfiedDependencies });
-		}
+	for (const feature of missionFeatureList(mission)) {
+		if (feature.status === "complete" || feature.status === "skipped") continue;
+		const unsatisfiedDependencies = (feature.dependencies ?? []).filter((dependencyId) => {
+			const dependencyStatus = statuses.get(dependencyId);
+			return dependencyStatus !== "complete" && dependencyStatus !== "skipped";
+		});
+		incomplete.push({ milestone: milestoneForFeature(mission, feature.id), feature, unsatisfiedDependencies });
 	}
 	return incomplete;
 }
