@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import ts from "typescript";
 
-const file = new URL("../extensions/missions/index.ts", import.meta.url);
+const file = new URL("../extensions/missions/runtime-extension.ts", import.meta.url);
 const source = fs.readFileSync(file, "utf8");
-const sf = ts.createSourceFile("index.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+const sf = ts.createSourceFile("runtime-extension.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 
 function fail(message) {
   throw new Error(message);

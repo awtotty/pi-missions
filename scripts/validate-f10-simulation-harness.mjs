@@ -4,8 +4,8 @@ import ts from "typescript";
 function fail(message) { throw new Error(message); }
 function assert(condition, message) { if (!condition) fail(message); }
 
-const source = fs.readFileSync(new URL("../extensions/missions/index.ts", import.meta.url), "utf8");
-const sourceFile = ts.createSourceFile("index.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+const source = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
+const sourceFile = ts.createSourceFile("runtime-extension.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 
 function extractFunctionSource(name) {
 	for (const stmt of sourceFile.statements) {

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
-const sourceFile = path.join(repoRoot, "extensions", "missions", "index.ts");
+const sourceFile = path.join(repoRoot, "extensions", "missions", "runtime-extension.ts");
 const source = fs.readFileSync(sourceFile, "utf8");
 
 const checks = [

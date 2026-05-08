@@ -1,6 +1,6 @@
 import fs from "node:fs";
 
-const source = fs.readFileSync(new URL("../extensions/missions/index.ts", import.meta.url), "utf8");
+const source = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
 
 const checks = [
 	{
