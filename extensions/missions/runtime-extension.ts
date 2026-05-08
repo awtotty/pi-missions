@@ -2555,7 +2555,13 @@ async function openMissionControl(ctx: ExtensionContext, state: MissionOrchestra
 			if (closed) return;
 			closed = true;
 			clearInterval(poll);
-			done(undefined);
+			// Do not tear down the custom UI synchronously from inside its input
+			// handler. Deferring done() lets the TUI finish dispatching the close key
+			// before Mission Control is removed and focus is restored to the normal
+			// editor, avoiding a stale custom focus/input sink after completed missions.
+			setTimeout(() => {
+				done(undefined);
+			}, 0);
 		};
 		const close = () => {
 			finalize();

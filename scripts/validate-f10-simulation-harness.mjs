@@ -213,6 +213,7 @@ async function runMissionControlLifecycleCheck() {
 			},
 		};
 		const result = await openMissionControl(localCtx, undefined, undefined, {});
+		await new Promise((resolve) => setTimeout(resolve, 0));
 		assert(result.ok, "openMissionControl should resolve cleanly after user closes UI");
 		assert(doneCalls === 1, "closing Mission Control should finalize once and return control to interactive session");
 		assert(requestRenderCalls >= 0, "requestRender call accounting should remain valid");
