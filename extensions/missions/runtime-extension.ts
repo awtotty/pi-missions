@@ -1421,7 +1421,7 @@ function summarizeMission(mission: MissionState): string {
 		"",
 		...missionMilestones(mission).flatMap((m) => [
 			`${mark(m.status)} ${m.id}: ${m.title}${m.validationRunId ? ` [validator ${m.validationRunId}]` : ""}`,
-			...m.features.map((f) => `  ${mark(f.status)} ${f.id}: ${f.title}${f.runId ? ` [run ${f.runId}]` : ""}${f.reviewerPending ? " [awaiting reviewers]" : ""}${f.userTestingPending ? " [awaiting user-testing]" : ""}${f.commit ? ` (${f.commit})` : ""}`),
+			...m.features.map((f) => `  ${mark(f.status)} ${f.id}: ${f.title}${f.runId ? ` [run ${f.runId}]` : ""}${f.reviewerRunIds?.length ? ` [reviewers ${f.reviewerRunIds.join(",")}]` : ""}${f.reviewerPending ? " [awaiting reviewers]" : ""}${f.userTestingPending ? " [awaiting user-testing]" : ""}${f.commit ? ` (${f.commit})` : ""}`),
 		]),
 	].filter((line): line is string => line !== undefined).join("\n");
 }
@@ -1933,6 +1933,8 @@ function missionDetailsLines(selection: MissionControlSelection, run?: MissionRu
 		if (selection.feature.runId) lines.push(`Run: ${selection.feature.runId}`);
 		if (selection.feature.validationRunId) lines.push(`Validation run: ${selection.feature.validationRunId}`);
 		if (selection.feature.userTestingRunId) lines.push(`User-testing run: ${selection.feature.userTestingRunId}`);
+		if (selection.feature.reviewerRunIds?.length) lines.push(`Reviewer runs: ${selection.feature.reviewerRunIds.join(", ")}`);
+		lines.push(`Reviewer fanout required: ${isFeatureReviewRequired(selection.feature) ? "yes" : "no"}`);
 		lines.push(`User testing required: ${isFeatureUserTestingRequired(selection.feature) ? "yes" : "no"}`);
 		if (selection.feature.commit) lines.push(`Commit: ${selection.feature.commit}`);
 		lines.push(`Description: ${selection.feature.description}`);

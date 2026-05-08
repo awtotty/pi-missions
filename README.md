@@ -200,7 +200,7 @@ When `/missions` or `/missions new` loads the current-session orchestrator, a no
 
 The chosen architecture is therefore:
 
-1. Keep `runMission()` as the durable execution owner for sequential worker, scrutiny-validator, and optional user-testing-validator child processes.
+1. Keep `runMission()` as the durable execution owner for worker, optional reviewer fanout, scrutiny-validator, and optional user-testing-validator child processes.
 2. Auto-open Mission Control from execution entrypoints in interactive mode with a fire-and-forget call.
 3. Make Mission Control read mission artifacts (`mission.json`, `event-log.jsonl`, run handoffs/reports, bounded transcript/stderr tails) and poll/refresh independently.
 4. Keep Mission Control actions explicit and routed through audited command handlers; confirmation gates are required for starting/resuming execution and clearing completed-mission visibility.

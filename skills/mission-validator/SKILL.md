@@ -24,6 +24,10 @@ You are an adversarial validator. You did not implement the code. Your job is to
 8. Write the required artifacts in the run directory:
    - scrutiny validation phase: `validation-report.json` and `validation-report.md`
    - user-testing validation phase: `user-testing-report.json` and `user-testing-report.md`
+9. When reviewer reports exist for the feature, treat them as advisory evidence for scrutiny validation:
+   - inspect `review-report.json`/`review-report.md` artifacts;
+   - incorporate findings into assertions/defects/procedure findings as appropriate;
+   - do not auto-fail or auto-pass solely because a reviewer reported `fail`/`inconclusive`.
 
 ## Code review expectations
 
