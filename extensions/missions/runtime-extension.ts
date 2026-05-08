@@ -114,7 +114,7 @@ function parseTranscriptSessionIdentity(transcriptFile: string): { sessionId?: s
 	return {};
 }
 
-function nextChildAttemptNumber(cwd: string, missionId: string, role: "worker" | "validator", featureId: string | undefined): number {
+function nextChildAttemptNumber(cwd: string, missionId: string, role: "worker" | "validator" | "user-testing-validator", featureId: string | undefined): number {
 	const registry = readChildSessionRegistry(cwd, missionId);
 	return registry.records.filter((record) => record.role === role && record.featureId === featureId).length + 1;
 }
@@ -1019,6 +1019,18 @@ function missionRunContexts(mission: MissionState): MissionRunContext[] {
 					status: feature.status,
 				});
 			}
+			if (feature.userTestingRunId) {
+				recordedRunIds.add(feature.userTestingRunId);
+				contexts.push({
+					label: `${feature.status === "running" ? "Current" : "Last"} user-testing run`,
+					runId: feature.userTestingRunId,
+					runDir: path.join(missionDir(mission.cwd, mission.id), "runs", feature.userTestingRunId),
+					kind: "user-testing-validator",
+					itemId: feature.id,
+					itemTitle: feature.title,
+					status: feature.status,
+				});
+			}
 		}
 		if (milestone.validationRunId) {
 			recordedRunIds.add(milestone.validationRunId);
@@ -1056,7 +1068,7 @@ function isPidAlive(pid: number): boolean | undefined {
 }
 
 function runArtifactStatus(run: MissionRunContext): string | undefined {
-	const file = path.join(run.runDir, run.kind === "worker" ? "handoff.json" : "validation-report.json");
+	const file = path.join(run.runDir, run.kind === "worker" ? "handoff.json" : run.kind === "user-testing-validator" ? "user-testing-report.json" : "validation-report.json");
 	if (!fs.existsSync(file)) return undefined;
 	try {
 		const parsed = readJson<{ status?: unknown }>(file);
@@ -1364,7 +1376,7 @@ function formatMissionBlockMessage(block: MissionBlockSummary): string {
 		...(block.artifactPaths.length > 0 ? block.artifactPaths.map((file) => `- ${file}`) : ["- No handoff/report artifact found; inspect transcript/stderr in the run directory."]),
 		"",
 		"Suggested next inspection steps:",
-		block.kind === "worker" ? "1. Read handoff.json and handoff.md if present." : "1. Read validation-report.json and validation-report.md if present.",
+		block.kind === "worker" ? "1. Read handoff.json and handoff.md if present." : block.kind === "user-testing-validator" ? "1. Read user-testing-report.json and user-testing-report.md if present." : "1. Read validation-report.json and validation-report.md if present.",
 		"2. Inspect transcript.jsonl and stderr.txt in the run directory for the child-agent failure mode.",
 		"3. Check `git status --short` and review any relevant diffs/commits mentioned by the artifacts.",
 		"4. Decide whether this is an implementation defect, validation defect, planning issue, environmental/tooling issue, or procedural failure; revise/resume the mission only after the recovery path is clear.",
@@ -1631,6 +1643,9 @@ function eventLabel(type: string): string {
 		mission_control_action_failed: "control action failed",
 		handoff_parse_error: "handoff parse error",
 		validation_parse_error: "validation parse error",
+		user_testing_started: "user testing started",
+		user_testing_finished: "user testing finished",
+		user_testing_parse_error: "user testing parse error",
 		mission_complete: "mission complete",
 	};
 	return labels[type] ?? type.replace(/_/g, " ");
@@ -1680,8 +1695,8 @@ function formatMissionEventLine(event: MissionControlEvent, now = Date.now()): s
 }
 
 function runArtifactSummaryLines(run: MissionRunContext): string[] {
-	const jsonFile = path.join(run.runDir, run.kind === "worker" ? "handoff.json" : "validation-report.json");
-	const mdFile = path.join(run.runDir, run.kind === "worker" ? "handoff.md" : "validation-report.md");
+	const jsonFile = path.join(run.runDir, run.kind === "worker" ? "handoff.json" : run.kind === "user-testing-validator" ? "user-testing-report.json" : "validation-report.json");
+	const mdFile = path.join(run.runDir, run.kind === "worker" ? "handoff.md" : run.kind === "user-testing-validator" ? "user-testing-report.md" : "validation-report.md");
 	const transcriptFile = path.join(run.runDir, "transcript.jsonl");
 	const stderrFile = path.join(run.runDir, "stderr.txt");
 	const childSession = childSessionRecordForRun(run);
@@ -1700,13 +1715,13 @@ function runArtifactSummaryLines(run: MissionRunContext): string[] {
 	if (fs.existsSync(jsonFile)) {
 		try {
 			const artifact = readJson<Record<string, unknown>>(jsonFile);
-			const validation = validateMissionArtifact(run.kind === "worker" ? "worker-handoff" : "scrutiny-validation-report", artifact);
+			const validation = validateMissionArtifact(run.kind === "worker" ? "worker-handoff" : run.kind === "user-testing-validator" ? "user-testing-report" : "scrutiny-validation-report", artifact);
 			const status = typeof artifact.status === "string" ? artifact.status : undefined;
 			const commit = typeof artifact.commit === "string" ? artifact.commit : undefined;
 			const summary = typeof artifact.summary === "string" ? artifact.summary : undefined;
 			if (status || commit) lines.push(`Artifact status: ${[status, commit ? `commit ${commit}` : undefined].filter(Boolean).join(" · ")}`);
 			if (summary) lines.push(`Artifact summary: ${summary}`);
-			if (!validation.ok) lines.push(artifactValidationErrorSummary(run.kind === "worker" ? "worker-handoff" : "scrutiny-validation-report", validation.issues));
+			if (!validation.ok) lines.push(artifactValidationErrorSummary(run.kind === "worker" ? "worker-handoff" : run.kind === "user-testing-validator" ? "user-testing-report" : "scrutiny-validation-report", validation.issues));
 		} catch {
 			lines.push(`Artifact summary: ${jsonFile} could not be parsed`);
 		}
@@ -1858,10 +1873,12 @@ function missionControlPlaneLines(mission: MissionState): string[] {
 	const registry = readChildSessionRegistry(mission.cwd, mission.id);
 	const workerAttempts = currentFeatureId ? registry.records.filter((record) => record.role === "worker" && record.featureId === currentFeatureId).length : 0;
 	const validatorAttempts = currentFeatureId ? registry.records.filter((record) => record.role === "validator" && record.featureId === currentFeatureId).length : 0;
+	const userTestingAttempts = currentFeatureId ? registry.records.filter((record) => record.role === "user-testing-validator" && record.featureId === currentFeatureId).length : 0;
 	return [
 		lockLine,
 		`Current feature attempt: ${currentFeatureId ? `${currentFeatureId} #${Math.max(1, workerAttempts)}` : "none"}`,
 		`Current validation attempt: ${currentFeatureId ? `${currentFeatureId} #${Math.max(0, validatorAttempts)}` : "none"}`,
+		`Current user-testing attempt: ${currentFeatureId ? `${currentFeatureId} #${Math.max(0, userTestingAttempts)}` : "none"}`,
 		`Official orchestrator session: ${orchestrator?.sessionPath ? orchestrator.sessionPath : "not recorded"}`,
 		"Controls route via deterministic runner command API (p/s/x).",
 	];
@@ -1892,7 +1909,7 @@ function blockInspectionLines(block: MissionBlockMetadata): string[] {
 		...(block.status ? [`Reported status: ${block.status}`] : []),
 		...artifactLines,
 		"Suggested inspection steps:",
-		block.kind === "worker" ? "1. Read handoff.json and handoff.md if present." : "1. Read validation-report.json and validation-report.md if present.",
+		block.kind === "worker" ? "1. Read handoff.json and handoff.md if present." : block.kind === "user-testing-validator" ? "1. Read user-testing-report.json and user-testing-report.md if present." : "1. Read validation-report.json and validation-report.md if present.",
 		"2. Inspect transcript.jsonl and stderr.txt in the run directory if artifacts are missing or incomplete.",
 		"3. Decide whether to revise the mission plan, fix the implementation, or resume execution.",
 	];
@@ -1914,6 +1931,9 @@ function missionDetailsLines(selection: MissionControlSelection, run?: MissionRu
 		lines.push(`Feature: ${selection.feature.id} — ${selection.feature.title}`, `Status: ${selection.feature.status}`);
 		if (selection.feature.dependencies?.length) lines.push(`Dependencies: ${selection.feature.dependencies.join(", ")}`);
 		if (selection.feature.runId) lines.push(`Run: ${selection.feature.runId}`);
+		if (selection.feature.validationRunId) lines.push(`Validation run: ${selection.feature.validationRunId}`);
+		if (selection.feature.userTestingRunId) lines.push(`User-testing run: ${selection.feature.userTestingRunId}`);
+		lines.push(`User testing required: ${isFeatureUserTestingRequired(selection.feature) ? "yes" : "no"}`);
 		if (selection.feature.commit) lines.push(`Commit: ${selection.feature.commit}`);
 		lines.push(`Description: ${selection.feature.description}`);
 	}
@@ -2660,7 +2680,7 @@ function featureHandoffExists(mission: MissionState, feature: MissionFeature): b
 
 function featureAwaitingValidation(mission: MissionState, feature: MissionFeature): boolean {
 	if (!featureHandoffExists(mission, feature)) return false;
-	if (feature.status === "running") return true;
+	if (feature.status === "running") return !feature.validationRunId;
 	// Recovery repair may reset a worker-success feature to pending while preserving
 	// its run/commit. If it has not had any validation attempt yet, validate that
 	// existing implementation before launching later feature work.
@@ -2699,6 +2719,7 @@ function normalizeBlockedFeatureForRetry(mission: MissionState, feature: Mission
 	if (feature.status === "failed" || feature.status === "running") {
 		feature.status = "pending";
 		feature.validationRunId = undefined;
+		feature.userTestingRunId = undefined;
 		return true;
 	}
 	return false;
@@ -2771,6 +2792,15 @@ function transitionWorkerSuccessToValidatorRunning(mission: MissionState, milest
 	milestone.status = "running";
 }
 
+function isFeatureUserTestingRequired(feature: MissionFeature): boolean {
+	return feature.userTesting?.required === true;
+}
+
+function featureUserTestingInstructions(feature: MissionFeature): string | undefined {
+	const instructions = feature.userTesting?.instructions;
+	return typeof instructions === "string" && instructions.trim() ? instructions.trim() : undefined;
+}
+
 function transitionValidatorPassToFeatureComplete(mission: MissionState, milestone: MissionMilestone, feature: MissionFeature): void {
 	feature.status = "complete";
 	milestone.status = milestone.features.every((item) => item.status === "complete" || item.status === "skipped") ? "complete" : "pending";
@@ -2780,6 +2810,20 @@ function transitionValidatorPassToFeatureComplete(mission: MissionState, milesto
 function transitionValidatorFailToFeaturePendingForRetry(mission: MissionState, feature: MissionFeature): void {
 	feature.status = "pending";
 	mission.status = "running";
+}
+
+function transitionFeatureToUserTestingRunning(mission: MissionState, milestone: MissionMilestone, feature: MissionFeature, runId: string): void {
+	feature.userTestingRunId = runId;
+	feature.status = "running";
+	mission.status = "running";
+	mission.currentMilestoneId = milestone.id;
+	mission.currentFeatureId = feature.id;
+	milestone.status = "running";
+}
+
+function transitionUserTestingFailToFeaturePendingAndMissionBlocked(mission: MissionState, feature: MissionFeature): void {
+	feature.status = "pending";
+	mission.status = "blocked";
 }
 
 function transitionMissionPauseAfterCurrent(mission: MissionState, requestedAt: string): void {
@@ -3086,7 +3130,10 @@ Do not stop after stating that you will validate. Use tools to complete the vali
 	let block: MissionBlockSummary | undefined;
 	if (result.exitCode === 0 && report?.status === "pass") {
 		if (targetFeature) {
-			transitionValidatorPassToFeatureComplete(mission, milestone, targetFeature);
+			if (isFeatureUserTestingRequired(targetFeature)) {
+				targetFeature.status = "running";
+				mission.status = "running";
+			} else transitionValidatorPassToFeatureComplete(mission, milestone, targetFeature);
 		} else {
 			milestone.status = "complete";
 		}
@@ -3127,6 +3174,114 @@ Do not stop after stating that you will validate. Use tools to complete the vali
 	return block;
 }
 
+function ensureUserTestingFailureReportArtifacts(runDir: string, feature: MissionFeature, result: RunResult, report: any, schemaError?: string): any {
+	const reportFile = path.join(runDir, "user-testing-report.json");
+	const reportMdFile = path.join(runDir, "user-testing-report.md");
+	const hasStructuredReport = report && typeof report === "object" && typeof report.status === "string";
+	if (hasStructuredReport) return report;
+	const synthesized = {
+		featureId: feature.id,
+		status: "inconclusive",
+		summary: schemaError || result.finalText.trim() || "User-testing validator exited without a parseable user-testing-report.json artifact.",
+		commandsRun: [] as Array<{ command: string; exitCode: number; notes?: string }>,
+	};
+	writeJson(reportFile, synthesized);
+	if (!fs.existsSync(reportMdFile)) fs.writeFileSync(reportMdFile, `# User Testing Report\n\n- Feature: ${feature.id} - ${feature.title}\n- Status: inconclusive\n\n## Summary\n${synthesized.summary}\n`);
+	return synthesized;
+}
+
+async function runUserTestingValidator(ctx: ExtensionContext, mission: MissionState, milestone: MissionMilestone, feature: MissionFeature, signal?: AbortSignal): Promise<MissionBlockSummary | undefined> {
+	const dir = missionDir(mission.cwd, mission.id);
+	const runId = `${String(Date.now())}-user-testing-${feature.id}`;
+	const runDir = path.join(dir, "runs", runId);
+	ensureDir(runDir);
+	transitionFeatureToUserTestingRunning(mission, milestone, feature, runId);
+	const ownership = setActiveRunOwnership(mission, { kind: "user-testing-validator", itemId: feature.id, runId });
+	saveMission(ctx.cwd, mission);
+	persistRunOwnershipArtifact(runDir, ownership);
+	const validatorSessionRecord: MissionChildSessionRecord = {
+		schemaVersion: 1,
+		missionId: mission.id,
+		runId,
+		role: "user-testing-validator",
+		featureId: feature.id,
+		milestoneId: milestone.id,
+		attempt: nextChildAttemptNumber(mission.cwd, mission.id, "user-testing-validator", feature.id),
+		status: "running",
+		runDir,
+		transcriptPath: path.join(runDir, "transcript.jsonl"),
+		stderrPath: path.join(runDir, "stderr.txt"),
+		sessionId: parseRunOwnershipSessionId(runDir),
+		startedAt: nowIso(),
+	};
+	upsertChildSessionRecord(mission.cwd, mission.id, validatorSessionRecord);
+	updateWidget(ctx, mission);
+	appendEvent(dir, "user_testing_started", { milestoneId: milestone.id, featureId: feature.id, runId, ownership, childSession: validatorSessionRecord });
+	const instructions = featureUserTestingInstructions(feature);
+	const prompt = `Use the mission-validator skill and the mission-specific user-testing validator skill if present. Execute user-testing validation for exactly one feature implementation attempt.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\nFeature: ${feature.id} - ${feature.title}\n\nFeature description:\n${feature.description}\n\nRequired behavior:\n- Keep testing approach generic across CLI, TUI, API, web, docs/config, and other project types.\n- Do not assume browser-only workflows.\n- Use feature-specific instructions when provided.\n${instructions ? `\nFeature-specific user-testing instructions:\n${instructions}\n` : ""}\nWrite user-testing-report.json and user-testing-report.md in the run directory.\n\nDo not stop after stating that you will validate. Use tools to complete the validation before any final response. Your final response is allowed only after user-testing-report.json and user-testing-report.md exist.`;
+	const result = await runPiChild({
+		cwd: mission.cwd,
+		model: resolveRoleModel(mission.cwd, mission, "validator"),
+		systemPromptFiles: [BASE_SKILLS.validator, path.join(dir, "skills/validator-user-testing/SKILL.md")],
+		prompt,
+		transcriptFile: path.join(runDir, "transcript.jsonl"),
+		signal,
+		onUpdate: (text) => updateMissionRunStatus(ctx, `User-testing ${feature.id}`, text),
+	});
+	fs.writeFileSync(path.join(runDir, "stderr.txt"), result.stderr);
+	let report: any = undefined;
+	let reportSchemaError: string | undefined;
+	const reportFile = path.join(runDir, "user-testing-report.json");
+	if (fs.existsSync(reportFile)) {
+		try {
+			const parsed = readJson<any>(reportFile);
+			const validation = validateMissionArtifact("user-testing-report", parsed);
+			if (validation.ok) report = parsed;
+			else {
+				reportSchemaError = artifactValidationErrorSummary("user-testing-report", validation.issues);
+				appendEvent(dir, "user_testing_parse_error", { featureId: feature.id, error: reportSchemaError, issues: validation.issues });
+			}
+		} catch (error) {
+			reportSchemaError = `User-testing report parse error: ${String(error)}`;
+			appendEvent(dir, "user_testing_parse_error", { featureId: feature.id, error: String(error) });
+		}
+	}
+	if (!(result.exitCode === 0 && report?.status === "pass")) report = ensureUserTestingFailureReportArtifacts(runDir, feature, result, report, reportSchemaError);
+	appendEvent(dir, "user_testing_finished", { milestoneId: milestone.id, featureId: feature.id, runId, exitCode: result.exitCode, status: report?.status });
+	let block: MissionBlockSummary | undefined;
+	if (result.exitCode === 0 && report?.status === "pass") transitionValidatorPassToFeatureComplete(mission, milestone, feature);
+	else {
+		transitionUserTestingFailToFeaturePendingAndMissionBlocked(mission, feature);
+		block = {
+			kind: "user-testing-validator",
+			missionId: mission.id,
+			missionTitle: mission.title,
+			milestoneId: milestone.id,
+			milestoneTitle: milestone.title,
+			featureId: feature.id,
+			featureTitle: feature.title,
+			runId,
+			runDir,
+			exitCode: result.exitCode,
+			status: report?.status ?? "missing user-testing report",
+			artifactPaths: existingPaths([reportFile, path.join(runDir, "user-testing-report.md"), path.join(runDir, "transcript.jsonl"), path.join(runDir, "stderr.txt")]),
+		};
+	}
+	if (block) persistMissionBlock(dir, mission, block, classifyValidatorBlock(result, report));
+	const validatorTranscriptSession = parseTranscriptSessionIdentity(path.join(runDir, "transcript.jsonl"));
+	upsertChildSessionRecord(mission.cwd, mission.id, {
+		...validatorSessionRecord,
+		status: report?.status ?? (block ? "failed" : "pass"),
+		sessionId: validatorTranscriptSession.sessionId ?? validatorSessionRecord.sessionId ?? parseRunOwnershipSessionId(runDir),
+		sessionPath: validatorTranscriptSession.sessionPath ?? validatorSessionRecord.sessionPath,
+		finishedAt: nowIso(),
+	});
+	clearActiveRunOwnership(mission);
+	saveMission(ctx.cwd, mission);
+	updateWidget(ctx, mission);
+	return block;
+}
+
 // Mission Control concurrency/control decision (F1/F7/F11): ctx.ui.custom()
 // returns a Promise that settles only when the custom component calls
 // done()/closes, so awaiting it before or during runMission would make mission
@@ -3149,10 +3304,11 @@ function autoOpenMissionControl(ctx: ExtensionContext, mission: MissionState, pi
 
 function transitionInterruptedOrStaleRunToPausedForResume(mission: MissionState, run?: MissionRunContext): void {
 	for (const milestone of missionMilestones(mission)) {
-		if (run?.kind === "validator" && milestone.id === run.itemId && milestone.status === "running") milestone.status = "pending";
+		if ((run?.kind === "validator" || run?.kind === "user-testing-validator") && milestone.id === run.itemId && milestone.status === "running") milestone.status = "pending";
 		for (const feature of milestone.features) {
 			if (run?.kind === "worker" && feature.id === run.itemId && feature.status === "running") feature.status = "pending";
 			if (run?.kind === "validator" && feature.validationRunId === run.runId && feature.status === "running") feature.status = "pending";
+			if (run?.kind === "user-testing-validator" && feature.userTestingRunId === run.runId && feature.status === "running") feature.status = "pending";
 		}
 		if (milestone.status === "running" && !milestone.features.some((feature) => feature.status === "running")) milestone.status = "pending";
 	}
@@ -3240,6 +3396,7 @@ function executeRunnerCommand(input: RunnerCommandInput, ctx: ExtensionContext, 
 		feature.status = "pending";
 		feature.runId = undefined;
 		feature.validationRunId = undefined;
+		feature.userTestingRunId = undefined;
 		mission.status = "blocked";
 		mission.updatedAt = nowIso();
 		saveMission(ctx.cwd, mission);
@@ -3314,7 +3471,19 @@ class MissionExecutionRunner {
 				clearMissionRunStatus(this.ctx);
 				return;
 			}
-			if (applyPauseAfterCurrentIfRequested(this.ctx, this.missionId, `validator:${next.feature.id}`)) return;
+			if (isFeatureUserTestingRequired(feature)) {
+				const updatedMilestone = missionMilestones(mission).find((m) => m.id === milestone.id)!;
+				const updatedFeature = updatedMilestone.features.find((f) => f.id === feature.id)!;
+				const userTestingBlock = await runUserTestingValidator(this.ctx, mission, updatedMilestone, updatedFeature, this.childSignal);
+				mission = loadMission(this.ctx.cwd, this.missionId);
+				if (mission.status === "blocked" || mission.status === "failed") {
+					if (userTestingBlock) emitMissionBlockMessage(this.pi, userTestingBlock);
+					this.ctx.ui.notify(`User testing blocked mission. See ${this.dir}`, "error");
+					clearMissionRunStatus(this.ctx);
+					return;
+				}
+				if (applyPauseAfterCurrentIfRequested(this.ctx, this.missionId, `user-testing:${next.feature.id}`)) return;
+			} else if (applyPauseAfterCurrentIfRequested(this.ctx, this.missionId, `validator:${next.feature.id}`)) return;
 		}
 		const mission = loadMission(this.ctx.cwd, this.missionId);
 		const pending = incompleteFeatures(mission);

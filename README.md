@@ -16,7 +16,8 @@ This is an early prototype inspired by Factory Missions, with a different design
 - sequential worker execution, one fresh child process per feature
 - required worker handoff files
 - required git commit per completed feature
-- feature-level validator child process
+- feature-level scrutiny validator child process
+- optional feature-level user-testing validator child process after scrutiny pass
 - dedicated Mission Control dashboard/control TUI (`/mission-control`) and `/missions status`
 - compact mission footer/status indicator via `ctx.ui.setStatus("missions", ...)` instead of the old rich always-on widget
 
@@ -101,7 +102,7 @@ When opened without an id, Mission Control prefers the active mission. If there 
 
 The layout is responsive. Wide terminals show side-by-side dashboard panels, medium and narrow terminals stack sections in priority order, and very narrow terminals use compact status/footer text. Rendering uses width-aware clipping/truncation so dashboard lines remain within terminal width.
 
-Mission execution auto-opens Mission Control in interactive mode when started or resumed through `/missions run` or `mission_start_execution`. Closing Mission Control with `q` or `esc` only closes the UI and returns to the normal session; it does not stop worker/validator execution or change mission state.
+Mission execution auto-opens Mission Control in interactive mode when started or resumed through `/missions run` or `mission_start_execution`. Closing Mission Control with `q` or `esc` only closes the UI and returns to the normal session; it does not stop worker/validator/user-testing execution or change mission state.
 
 Keyboard controls:
 
@@ -148,6 +149,8 @@ Mission Control replaces the old rich always-on active mission widget. The exten
       handoff.md
       validation-report.json
       validation-report.md
+      user-testing-report.json
+      user-testing-report.md
 ```
 
 ## Role model defaults
@@ -193,7 +196,7 @@ When `/missions` or `/missions new` loads the current-session orchestrator, a no
 
 The chosen architecture is therefore:
 
-1. Keep `runMission()` as the durable execution owner for sequential worker and validator child processes.
+1. Keep `runMission()` as the durable execution owner for sequential worker, scrutiny-validator, and optional user-testing-validator child processes.
 2. Auto-open Mission Control from execution entrypoints in interactive mode with a fire-and-forget call.
 3. Make Mission Control read mission artifacts (`mission.json`, `event-log.jsonl`, run handoffs/reports, bounded transcript/stderr tails) and poll/refresh independently.
 4. Keep Mission Control actions explicit and routed through audited command handlers; confirmation gates are required for starting/resuming execution and clearing completed-mission visibility.

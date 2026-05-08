@@ -21,7 +21,9 @@ You are an adversarial validator. You did not implement the code. Your job is to
 5. For app/UI missions, act like a QA engineer: launch the app if practical, navigate flows, and verify user-visible behavior.
 6. Validate assertions independently of implementation approach, mapping evidence to the validation contract.
 7. Report both code-review defects and procedure findings. Treat missing handoffs, missing commits, dirty worktrees, unrun required validation, misleading summaries, and unsupported claims as procedure findings.
-8. Write `validation-report.json` and `validation-report.md` in the run directory.
+8. Write the required artifacts in the run directory:
+   - scrutiny validation phase: `validation-report.json` and `validation-report.md`
+   - user-testing validation phase: `user-testing-report.json` and `user-testing-report.md`
 
 ## Code review expectations
 

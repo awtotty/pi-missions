@@ -68,7 +68,20 @@ Use this shape:
 }
 ```
 
-Statuses: `planned`, `running`, `paused`, `blocked`, `complete`, `failed` for missions; `pending`, `running`, `complete`, `failed`, `skipped` for features. Features are complete only after worker handoff and feature-level validation both pass.
+Statuses: `planned`, `running`, `paused`, `blocked`, `complete`, `failed` for missions; `pending`, `running`, `complete`, `failed`, `skipped` for features. Features are complete only after worker handoff and required validation phases pass.
+
+When a feature needs explicit user testing, include optional metadata on that feature:
+
+```json
+{
+  "userTesting": {
+    "required": true,
+    "instructions": "Flexible QA steps for this specific feature."
+  }
+}
+```
+
+`instructions` should stay generic across CLI, TUI, API, web, docs/config, and other project types.
 
 ## Validation contract
 
