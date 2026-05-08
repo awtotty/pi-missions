@@ -142,6 +142,30 @@ interface MissionOrchestratorSessionRecord {
 	active: boolean;
 }
 
+interface MissionChildSessionRecord {
+	schemaVersion: 1;
+	missionId: string;
+	runId: string;
+	role: "worker" | "validator";
+	featureId?: string;
+	milestoneId: string;
+	attempt: number;
+	status: string;
+	runDir: string;
+	transcriptPath: string;
+	stderrPath: string;
+	sessionId?: string;
+	sessionPath?: string;
+	startedAt: string;
+	finishedAt?: string;
+}
+
+interface MissionChildSessionRegistry {
+	schemaVersion: 1;
+	updatedAt: string;
+	records: MissionChildSessionRecord[];
+}
+
 const ORCHESTRATOR_STATE_ENTRY = "missions-orchestrator-state";
 const PLANNING_KICKOFF_ENTRY = "missions-planning-kickoff";
 const LEGACY_ACTIVE_PLANNING_ENTRY = "missions-active-planning";
@@ -270,6 +294,63 @@ function globalSettingsFile(cwd: string): string {
 
 function orchestratorSessionRecordFile(cwd: string, missionId: string): string {
 	return path.join(missionDir(cwd, missionId), "orchestrator-session.json");
+}
+
+function childSessionRegistryFile(cwd: string, missionId: string): string {
+	return path.join(missionDir(cwd, missionId), "child-sessions.json");
+}
+
+function readChildSessionRegistry(cwd: string, missionId: string): MissionChildSessionRegistry {
+	const file = childSessionRegistryFile(cwd, missionId);
+	if (!fs.existsSync(file)) return { schemaVersion: 1, updatedAt: nowIso(), records: [] };
+	try {
+		const parsed = readJson<MissionChildSessionRegistry>(file);
+		if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.records)) return { schemaVersion: 1, updatedAt: nowIso(), records: [] };
+		return { schemaVersion: 1, updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : nowIso(), records: parsed.records.filter((item) => item && typeof item === "object") };
+	} catch {
+		return { schemaVersion: 1, updatedAt: nowIso(), records: [] };
+	}
+}
+
+function writeChildSessionRegistry(cwd: string, missionId: string, records: MissionChildSessionRecord[]): void {
+	writeJson(childSessionRegistryFile(cwd, missionId), { schemaVersion: 1, updatedAt: nowIso(), records });
+}
+
+function parseRunOwnershipSessionId(runDir: string): string | undefined {
+	const file = path.join(runDir, "run-ownership.json");
+	if (!fs.existsSync(file)) return undefined;
+	try {
+		const ownership = readJson<{ parentSessionMarker?: unknown }>(file);
+		if (typeof ownership.parentSessionMarker === "string" && ownership.parentSessionMarker.trim()) return ownership.parentSessionMarker;
+	} catch {
+		return undefined;
+	}
+	return undefined;
+}
+
+function nextChildAttemptNumber(cwd: string, missionId: string, role: "worker" | "validator", featureId: string | undefined): number {
+	const registry = readChildSessionRegistry(cwd, missionId);
+	return registry.records.filter((record) => record.role === role && record.featureId === featureId).length + 1;
+}
+
+function upsertChildSessionRecord(cwd: string, missionId: string, record: MissionChildSessionRecord): void {
+	const registry = readChildSessionRegistry(cwd, missionId);
+	const next = registry.records.filter((item) => item.runId !== record.runId);
+	next.push(record);
+	writeChildSessionRegistry(cwd, missionId, next.sort((a, b) => a.startedAt.localeCompare(b.startedAt)));
+}
+
+function childSessionRecordForRun(run: MissionRunContext): MissionChildSessionRecord | undefined {
+	const missionPath = path.dirname(path.dirname(run.runDir));
+	const file = path.join(missionPath, "child-sessions.json");
+	if (!fs.existsSync(file)) return undefined;
+	try {
+		const parsed = readJson<MissionChildSessionRegistry>(file);
+		if (!Array.isArray(parsed?.records)) return undefined;
+		return parsed.records.find((item) => item.runId === run.runId);
+	} catch {
+		return undefined;
+	}
 }
 
 function readOrchestratorSessionRecord(cwd: string, missionId: string): MissionOrchestratorSessionRecord | undefined {
@@ -1734,10 +1815,17 @@ function runArtifactSummaryLines(run: MissionRunContext): string[] {
 	const mdFile = path.join(run.runDir, run.kind === "worker" ? "handoff.md" : "validation-report.md");
 	const transcriptFile = path.join(run.runDir, "transcript.jsonl");
 	const stderrFile = path.join(run.runDir, "stderr.txt");
+	const childSession = childSessionRecordForRun(run);
 	const lines = [
 		`${path.basename(jsonFile)}: ${fs.existsSync(jsonFile) ? jsonFile : "not available"}`,
 		`${path.basename(mdFile)}: ${fs.existsSync(mdFile) ? mdFile : "not available"}`,
 	];
+	if (childSession) {
+		lines.push(`Child session: ${childSession.role} ${childSession.featureId ?? childSession.milestoneId} attempt ${childSession.attempt} · ${childSession.status}`);
+		if (childSession.sessionId) lines.push(`Child session id: ${childSession.sessionId}`);
+		if (childSession.sessionPath) lines.push(`Child session path: ${childSession.sessionPath}`);
+		lines.push(`Child transcript: ${childSession.transcriptPath}`);
+	}
 	if (fs.existsSync(transcriptFile)) lines.push(`transcript: ${transcriptFile}`);
 	if (fs.existsSync(stderrFile)) lines.push(`stderr: ${stderrFile}`);
 	if (fs.existsSync(jsonFile)) {
@@ -2805,8 +2893,24 @@ async function runWorker(ctx: ExtensionContext, mission: MissionState, milestone
 	const ownership = setActiveRunOwnership(mission, { kind: "worker", itemId: feature.id, runId });
 	saveMission(ctx.cwd, mission);
 	persistRunOwnershipArtifact(runDir, ownership);
+	const workerSessionRecord: MissionChildSessionRecord = {
+		schemaVersion: 1,
+		missionId: mission.id,
+		runId,
+		role: "worker",
+		featureId: feature.id,
+		milestoneId: milestone.id,
+		attempt: nextChildAttemptNumber(mission.cwd, mission.id, "worker", feature.id),
+		status: "running",
+		runDir,
+		transcriptPath: path.join(runDir, "transcript.jsonl"),
+		stderrPath: path.join(runDir, "stderr.txt"),
+		sessionId: parseRunOwnershipSessionId(runDir),
+		startedAt: nowIso(),
+	};
+	upsertChildSessionRecord(mission.cwd, mission.id, workerSessionRecord);
 	updateWidget(ctx, mission);
-	appendEvent(dir, "worker_started", { milestoneId: milestone.id, featureId: feature.id, runId, ownership });
+	appendEvent(dir, "worker_started", { milestoneId: milestone.id, featureId: feature.id, runId, ownership, childSession: workerSessionRecord });
 
 	const prompt = `Use the mission-worker skill and the mission-specific worker skill if present. Implement exactly one mission feature.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\nFeature: ${feature.id} - ${feature.title}\n\nFeature description:\n${feature.description}\n\nRequired outputs: commit code changes with git, then write handoff.json and handoff.md in the run directory. If blocked, write handoff files explaining why.
 
@@ -2878,6 +2982,12 @@ Do not stop after stating that you will implement. Use tools to complete the wor
 		};
 	}
 	if (block) persistMissionBlock(dir, mission, block, classifyWorkerBlock(result, handoff, dirty));
+	upsertChildSessionRecord(mission.cwd, mission.id, {
+		...workerSessionRecord,
+		status: block ? (block.status ?? "failed") : "complete",
+		sessionId: workerSessionRecord.sessionId ?? parseRunOwnershipSessionId(runDir),
+		finishedAt: nowIso(),
+	});
 	clearActiveRunOwnership(mission);
 	saveMission(ctx.cwd, mission);
 	updateWidget(ctx, mission);
@@ -2919,8 +3029,24 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 	const ownership = setActiveRunOwnership(mission, { kind: "validator", itemId: targetFeature?.id ?? milestone.id, runId });
 	saveMission(ctx.cwd, mission);
 	persistRunOwnershipArtifact(runDir, ownership);
+	const validatorSessionRecord: MissionChildSessionRecord = {
+		schemaVersion: 1,
+		missionId: mission.id,
+		runId,
+		role: "validator",
+		featureId: targetFeature?.id,
+		milestoneId: milestone.id,
+		attempt: nextChildAttemptNumber(mission.cwd, mission.id, "validator", targetFeature?.id),
+		status: "running",
+		runDir,
+		transcriptPath: path.join(runDir, "transcript.jsonl"),
+		stderrPath: path.join(runDir, "stderr.txt"),
+		sessionId: parseRunOwnershipSessionId(runDir),
+		startedAt: nowIso(),
+	};
+	upsertChildSessionRecord(mission.cwd, mission.id, validatorSessionRecord);
 	updateWidget(ctx, mission);
-	appendEvent(dir, "validator_started", { milestoneId: milestone.id, featureId: targetFeature?.id, runId, ownership });
+	appendEvent(dir, "validator_started", { milestoneId: milestone.id, featureId: targetFeature?.id, runId, ownership, childSession: validatorSessionRecord });
 	const featureReviewContext = targetFeature
 		? [`Feature attempt available for validation:`, `- ${targetFeature.id} - ${targetFeature.title}`, `  status: ${targetFeature.status}`, `  commit: ${targetFeature.commit ?? "not recorded"}`, `  worker run: ${targetFeature.runId ?? "not recorded"}`, `  run directory: ${targetFeature.runId ? path.join(dir, "runs", targetFeature.runId) : "not recorded"}`].join("\n")
 		: completedFeatureReviewContext(dir, milestone);
@@ -2979,6 +3105,12 @@ Do not stop after stating that you will validate. Use tools to complete the vali
 	}
 	if (block) persistMissionBlock(dir, mission, block, classifyValidatorBlock(result, report));
 	appendEvent(dir, "validator_finished", { milestoneId: milestone.id, featureId: targetFeature?.id, runId, exitCode: result.exitCode, status: report?.status });
+	upsertChildSessionRecord(mission.cwd, mission.id, {
+		...validatorSessionRecord,
+		status: report?.status ?? (block ? "failed" : "pass"),
+		sessionId: validatorSessionRecord.sessionId ?? parseRunOwnershipSessionId(runDir),
+		finishedAt: nowIso(),
+	});
 	clearActiveRunOwnership(mission);
 	saveMission(ctx.cwd, mission);
 	updateWidget(ctx, mission);
