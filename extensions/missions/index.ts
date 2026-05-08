@@ -176,6 +176,14 @@ interface MissionRunContext {
 	status?: string;
 }
 
+type MissionRunLifecycleState = "active" | "completed" | "blocked" | "interrupted";
+
+interface MissionRunLifecycleClassification {
+	state: MissionRunLifecycleState;
+	run?: MissionRunContext;
+	reason: string;
+}
+
 interface ValidationContractAssertion {
 	id?: string;
 	category?: string;
@@ -836,6 +844,52 @@ function currentOrLastRunContext(mission: MissionState): MissionRunContext | und
 	return contexts.filter((ctx) => ctx.status === "running").at(-1) ?? contexts.at(-1);
 }
 
+function isPidAlive(pid: number): boolean | undefined {
+	if (!Number.isInteger(pid) || pid <= 0) return undefined;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ESRCH") return false;
+		if (code === "EPERM") return true;
+		return undefined;
+	}
+}
+
+function runArtifactStatus(run: MissionRunContext): string | undefined {
+	const file = path.join(run.runDir, run.kind === "worker" ? "handoff.json" : "validation-report.json");
+	if (!fs.existsSync(file)) return undefined;
+	try {
+		const parsed = readJson<{ status?: unknown }>(file);
+		return typeof parsed.status === "string" && parsed.status.trim() ? parsed.status.trim() : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function classifyMissionRunLifecycle(cwd: string, mission: MissionState): MissionRunLifecycleClassification {
+	const run = currentOrLastRunContext(mission);
+	const artifactStatus = run ? runArtifactStatus(run) : undefined;
+	const block = latestBlockFromArtifacts(mission);
+	if (block && run && block.runId === run.runId) return { state: "blocked", run, reason: "mission block artifact recorded" };
+	if (mission.status === "blocked") return { state: "blocked", run, reason: "mission status is blocked" };
+	if (mission.status === "complete") return { state: "completed", run, reason: "mission status is complete" };
+	if (artifactStatus === "complete") return { state: "completed", run, reason: "terminal run artifact status is complete" };
+	if (artifactStatus === "blocked" || artifactStatus === "failed") return { state: "blocked", run, reason: `terminal run artifact status is ${artifactStatus}` };
+	if (!run) return { state: mission.status === "running" ? "interrupted" : "completed", reason: mission.status === "running" ? "mission marked running without recorded run context" : "no active run context" };
+	const ownership = mission.activeRun;
+	if (ownership && ownership.runId === run.runId && mission.status === "running") {
+		if (isMissionRunActive(cwd, mission.id)) return { state: "active", run, reason: "runtime has an active mission execution lock" };
+		const alive = isPidAlive(ownership.parentPid);
+		if (alive === true) return { state: "active", run, reason: `owner pid ${ownership.parentPid} appears alive` };
+		if (alive === undefined) return { state: "active", run, reason: "owner liveness check unavailable; conservatively treating run as active" };
+		return { state: "interrupted", run, reason: `owner pid ${ownership.parentPid} is not alive and no terminal artifact was found` };
+	}
+	if (run.status === "running" || mission.status === "running") return { state: "interrupted", run, reason: "running status persisted without live ownership evidence" };
+	return { state: "completed", run, reason: "latest run context is not running" };
+}
+
 function describeBlock(block: MissionBlockMetadata): string {
 	return `${block.reasonCategory} on ${block.kind} ${block.failedItemId} (${block.failedItemTitle}); run ${block.runId}${block.status ? ` reported ${block.status}` : ""}`;
 }
@@ -963,6 +1017,7 @@ function summarizeMission(mission: MissionState): string {
 	const features = mission.milestones.flatMap((m) => m.features);
 	const done = features.filter((f) => f.status === "complete" || f.status === "skipped").length;
 	const run = currentOrLastRunContext(mission);
+	const lifecycle = classifyMissionRunLifecycle(mission.cwd, mission);
 	const block = latestBlockFromArtifacts(mission);
 	return [
 		`Mission: ${mission.title}`,
@@ -970,6 +1025,7 @@ function summarizeMission(mission: MissionState): string {
 		`Status: ${mission.status}`,
 		`Progress: ${done}/${features.length} features`,
 		`Dir: ${missionDir(mission.cwd, mission.id)}`,
+		`Run lifecycle: ${lifecycle.state}${lifecycle.reason ? ` (${lifecycle.reason})` : ""}`,
 		run ? `${run.label}: ${run.runId}` : "Current/last run: none recorded",
 		run ? `Run item: ${run.kind} ${run.itemId} — ${run.itemTitle}` : undefined,
 		run ? `Run artifacts: ${run.runDir}` : undefined,
