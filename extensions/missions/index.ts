@@ -2243,7 +2243,6 @@ function missionControlHelpLines(): string[] {
 		"x: cancel current worker/validator child if supported (confirmation required)",
 		"c: clear completed missions from default visibility (confirmation required; artifacts are not deleted)",
 		"?: toggle this help",
-		"o: open dedicated orchestrator chat with /mission-orchestrator",
 		"q/esc: close Mission Control only",
 		"Mutating Mission Control actions use explicit shortcuts, audit events, notifications, and confirmation when required.",
 	];
@@ -2251,9 +2250,9 @@ function missionControlHelpLines(): string[] {
 
 function missionControlFooter(width: number): string {
 	const mode = missionControlLayoutMode(width);
-	if (mode === "compact") return "q close · ↑/↓ move · p pause · s start · x cancel · o orch · c clear · r refresh · ? help";
-	if (mode === "narrow") return "q/esc close · ↑/↓ move · p pause · s start/resume · x cancel child · o orchestrator · c clear done · r refresh · ? help";
-	return `q/esc close · ↑/↓/j/k move selection · tab focus · p pause-after-current · s start/resume · x cancel current child · o orchestrator chat · c clear completed · r refresh · ? help · confirmed actions only · auto-refresh ${MISSION_CONTROL_POLL_MS / 1000}s`;
+	if (mode === "compact") return "q close · ↑/↓ move · p pause · s start · x cancel · c clear · r refresh · ? help";
+	if (mode === "narrow") return "q/esc close · ↑/↓ move · p pause · s start/resume · x cancel child · c clear done · r refresh · ? help";
+	return `q/esc close · ↑/↓/j/k move selection · tab focus · p pause-after-current · s start/resume · x cancel current child · c clear completed · r refresh · ? help · confirmed actions only · auto-refresh ${MISSION_CONTROL_POLL_MS / 1000}s`;
 }
 
 function visibleCompletedMissionsToClear(cwd: string): MissionState[] {
@@ -2553,20 +2552,6 @@ async function openMissionControl(ctx: ExtensionContext, state: MissionOrchestra
 				}
 				if (data === "r") {
 					tui.requestRender();
-					return;
-				}
-				if (data === "o") {
-					if (!active) {
-						ctx.ui.notify("No active mission to open orchestrator session.", "warning");
-						return;
-					}
-					if (!hasSessionSwitchControls(ctx)) {
-						ctx.ui.notify("Open the dedicated orchestrator chat with /mission-orchestrator" + (active ? ` ${active.id}` : ""), "info");
-						return;
-					}
-					void openOrSwitchMissionOrchestratorSession(ctx, active).catch((error) => {
-						ctx.ui.notify(`Failed to open orchestrator session: ${error instanceof Error ? error.message : String(error)}`, "error");
-					});
 					return;
 				}
 				if (data === "?") {
