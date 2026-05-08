@@ -2075,6 +2075,30 @@ function missionControlHeader(mission: MissionState, width: number): string[] {
 	];
 }
 
+function missionControlPlaneLines(mission: MissionState): string[] {
+	const lock = readRunnerLock(mission.cwd, mission.id);
+	const orchestrator = readOrchestratorSessionRecord(mission.cwd, mission.id);
+	const now = Date.now();
+	const lockLine = (() => {
+		if (!lock) return "Runner lock: none";
+		const heartbeat = relativeEventTime(lock.heartbeatAt, now);
+		const owner = `pid ${lock.ownerPid} (${lock.ownerSessionMarker})`;
+		const lockState = lock.status === "active" && !lockHeartbeatExpired(lock) ? "active" : lock.status;
+		return `Runner lock: ${lockState} · ${owner} · heartbeat ${heartbeat}`;
+	})();
+	const currentFeatureId = mission.currentFeatureId;
+	const registry = readChildSessionRegistry(mission.cwd, mission.id);
+	const workerAttempts = currentFeatureId ? registry.records.filter((record) => record.role === "worker" && record.featureId === currentFeatureId).length : 0;
+	const validatorAttempts = currentFeatureId ? registry.records.filter((record) => record.role === "validator" && record.featureId === currentFeatureId).length : 0;
+	return [
+		lockLine,
+		`Current feature attempt: ${currentFeatureId ? `${currentFeatureId} #${Math.max(1, workerAttempts)}` : "none"}`,
+		`Current validation attempt: ${currentFeatureId ? `${currentFeatureId} #${Math.max(0, validatorAttempts)}` : "none"}`,
+		`Official orchestrator session: ${orchestrator?.sessionPath ? orchestrator.sessionPath : "not recorded"}`,
+		"Controls route via deterministic runner command API (p/s/x).",
+	];
+}
+
 function missionTreeLines(mission: MissionState, selection: MissionControlSelection, block?: MissionBlockMetadata): string[] {
 	const selectedId = selectionId(selection);
 	const lines = ["Mission tree", `${selectedId === mission.id ? ">" : " "} ${mark(mission.status)} ${mission.id}`];
@@ -2387,18 +2411,19 @@ function missionControlDashboardLines(mission: MissionState, selection: MissionC
 	const header = mode === "compact" ? compactMissionControlHeader(mission, width) : missionControlHeader(mission, width);
 	const currentPanel = panelLines("Current Item", currentItemLines(selection, run, block), width);
 	const featuresPanel = panelLines("Features", mode === "compact" ? compactGroupedFeatureLines(mission, selection, block) : groupedFeatureLines(mission, selection, block), width);
+	const controlPlanePanel = panelLines("Runner & Orchestrator", missionControlPlaneLines(mission), width);
 	const progressPanel = panelLines("Progress Log", progressLogLines(mission), width);
 	const childPanel = limitLines(panelLines("Child Output", childOutputLines(run), width), CHILD_OUTPUT_MAX_PANEL_LINES + 1, width);
 	const lines = [
 		...header,
 		"",
 		...(mode === "wide"
-			? [...columnLines(currentPanel, featuresPanel, width), "", ...columnLines(progressPanel, childPanel, width)]
+			? [...columnLines(currentPanel, featuresPanel, width), "", ...columnLines(controlPlanePanel, progressPanel, width), "", ...childPanel]
 			: mode === "medium"
-				? [...currentPanel, "", ...featuresPanel, "", ...columnLines(progressPanel, childPanel, width)]
+				? [...currentPanel, "", ...featuresPanel, "", ...controlPlanePanel, "", ...columnLines(progressPanel, childPanel, width)]
 				: mode === "narrow"
-					? [...limitLines(currentPanel, 8, width), "", ...featuresPanel, "", ...limitLines(progressPanel, 8, width), "", ...limitLines(childPanel, 5, width)]
-					: [...featuresPanel, "", ...limitLines(progressPanel, 6, width)]),
+					? [...limitLines(currentPanel, 8, width), "", ...featuresPanel, "", ...limitLines(controlPlanePanel, 7, width), "", ...limitLines(progressPanel, 7, width), "", ...limitLines(childPanel, 5, width)]
+					: [...featuresPanel, "", ...limitLines(controlPlanePanel, 6, width), "", ...limitLines(progressPanel, 6, width)]),
 	];
 	return lines.map((line) => clipLine(line, width));
 }
@@ -2730,17 +2755,20 @@ async function openMissionControl(ctx: ExtensionContext, state: MissionOrchestra
 		const poll = setInterval(() => {
 			if (!closed) tui.requestRender();
 		}, MISSION_CONTROL_POLL_MS);
-		const close = () => {
+		const finalize = () => {
+			if (closed) return;
 			closed = true;
 			clearInterval(poll);
 			done(undefined);
+		};
+		const close = () => {
+			finalize();
 		};
 		return {
 			render: (width: number) => missionControlLines(ctx.cwd, state, width, view, targetMissionId),
 			invalidate: () => undefined,
 			dispose: () => {
-				closed = true;
-				clearInterval(poll);
+				finalize();
 			},
 			handleInput: (data: string) => {
 				let active: MissionState | undefined;
