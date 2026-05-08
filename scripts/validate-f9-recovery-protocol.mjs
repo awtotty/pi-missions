@@ -1,6 +1,20 @@
 import fs from "node:fs";
 import ts from "typescript";
 
+async function loadRecoveryGateModule() {
+  const gateFile = new URL("../extensions/missions/recovery-gate.ts", import.meta.url);
+  const gateSource = fs.readFileSync(gateFile, "utf8");
+  const transpiled = ts.transpileModule(gateSource, {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ES2022,
+    },
+    fileName: "recovery-gate.ts",
+  }).outputText;
+  const dataUrl = `data:text/javascript;base64,${Buffer.from(transpiled).toString("base64")}`;
+  return import(dataUrl);
+}
+
 const file = new URL("../extensions/missions/index.ts", import.meta.url);
 const source = fs.readFileSync(file, "utf8");
 const sf = ts.createSourceFile("index.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -34,34 +48,23 @@ if (!repairText.includes("const activeItemId = mission.activeRun.itemId")) {
   fail("recovery repair must reconcile stale activeRun using mission.activeRun.itemId for both worker and validator runs.");
 }
 
-// Executable regression: when latestBlock is F5 but mission state points at F6,
-// recovery must keep F5 as the execution gate and clear stale activeRun.
+// Executable regression: use production helper logic for gate repair planning.
+const { computeRecoveryGatePlan } = await loadRecoveryGateModule();
 (function runRecoveryRegression() {
-  const features = [
-    { id: "F5", status: "failed" },
-    { id: "F6", status: "pending" },
-  ];
-  const mission = {
+  const plan = computeRecoveryGatePlan({
+    featureOrder: ["F5", "F6"],
+    featureStatusById: { F5: "failed", F6: "pending" },
+    blockedFeatureId: "F5",
     currentFeatureId: "F6",
-    activeRun: { kind: "validator", itemId: "F6", runId: "run-f6-validator" },
-    status: "running",
-  };
-  const gateId = "F5";
-  const indexById = new Map(features.map((feature, index) => [feature.id, index]));
-  const gateFeature = features.find((feature) => feature.id === gateId);
-  if (!gateFeature) fail("test setup failed: gate feature missing");
+    activeRunItemId: "F6",
+    missionStatus: "running",
+  });
 
-  if (gateFeature.status === "failed" || gateFeature.status === "running") gateFeature.status = "pending";
-  mission.currentFeatureId = gateFeature.id;
-  const activeIdx = indexById.get(mission.activeRun.itemId);
-  const gateIdx = indexById.get(gateFeature.id);
-  if (activeIdx !== undefined && gateIdx !== undefined && activeIdx > gateIdx) mission.activeRun = undefined;
-  mission.status = "blocked";
-
-  if (mission.currentFeatureId !== "F5") fail("regression failed: recovery must reset gate to F5.");
-  if (mission.activeRun) fail("regression failed: stale activeRun for F6 must be cleared.");
-  if (mission.status !== "blocked") fail("regression failed: mission must be blocked pending F5 recovery.");
-  if (features[0].status !== "pending") fail("regression failed: failed gate feature must be normalized to pending.");
+  if (plan.gateFeatureId !== "F5") fail("regression failed: recovery must keep F5 as the execution gate.");
+  if (!plan.normalizeGateToPending) fail("regression failed: failed gate feature must normalize to pending.");
+  if (!plan.setCurrentFeatureToGate) fail("regression failed: currentFeatureId must be reset to F5.");
+  if (!plan.clearActiveRun) fail("regression failed: stale activeRun for F6 must be cleared.");
+  if (!plan.forceBlockedStatus) fail("regression failed: mission must be blocked pending F5 recovery.");
 })();
 
 const runMissionFn = findFunction("runMission");

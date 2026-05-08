@@ -6,6 +6,7 @@ import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { computeRecoveryGatePlan } from "./recovery-gate.js";
 
 const EXTENSION_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(EXTENSION_DIR, "../..");
@@ -2956,43 +2957,42 @@ function repairMissionExecutionGateState(_cwd: string, mission: MissionState): {
 	const reasons: string[] = [];
 	let changed = false;
 	const features = missionFeatureList(mission);
-	const indexById = new Map(features.map((feature, index) => [feature.id, index]));
 	const block = latestBlockFromArtifacts(mission);
-	const blockedFeature = block?.featureId ? features.find((feature) => feature.id === block.featureId) : undefined;
-	const firstIncomplete = features.find((feature) => feature.status !== "complete" && feature.status !== "skipped");
-	const gateFeature = blockedFeature && blockedFeature.status !== "complete" && blockedFeature.status !== "skipped" ? blockedFeature : firstIncomplete;
+	const recoveryPlan = computeRecoveryGatePlan({
+		featureOrder: features.map((feature) => feature.id),
+		featureStatusById: Object.fromEntries(features.map((feature) => [feature.id, feature.status])),
+		blockedFeatureId: block?.featureId,
+		currentFeatureId: mission.currentFeatureId,
+		activeRunItemId: mission.activeRun?.itemId,
+		missionStatus: mission.status,
+	});
+	if (!recoveryPlan.gateFeatureId) return { changed: false, reasons };
+	const gateFeature = features.find((feature) => feature.id === recoveryPlan.gateFeatureId);
 	if (!gateFeature) return { changed: false, reasons };
 	const gateMilestone = milestoneForFeature(mission, gateFeature.id);
-	if (normalizeBlockedFeatureForRetry(mission, gateFeature)) {
+	if (recoveryPlan.normalizeGateToPending && normalizeBlockedFeatureForRetry(mission, gateFeature)) {
 		changed = true;
 		reasons.push(`reset gate feature ${gateFeature.id} status to pending for retry`);
 	}
-	if (mission.currentFeatureId !== gateFeature.id) {
-		const currentIdx = mission.currentFeatureId ? indexById.get(mission.currentFeatureId) : undefined;
-		const gateIdx = indexById.get(gateFeature.id);
-		if (currentIdx === undefined || (gateIdx !== undefined && currentIdx > gateIdx) || block?.featureId === gateFeature.id) {
-			mission.currentFeatureId = gateFeature.id;
-			changed = true;
-			reasons.push(`set currentFeatureId to gate feature ${gateFeature.id}`);
-		}
+	if (recoveryPlan.setCurrentFeatureToGate) {
+		mission.currentFeatureId = gateFeature.id;
+		changed = true;
+		reasons.push(`set currentFeatureId to gate feature ${gateFeature.id}`);
 	}
 	if (mission.currentMilestoneId !== gateMilestone.id) {
 		mission.currentMilestoneId = gateMilestone.id;
 		changed = true;
 		reasons.push(`set currentMilestoneId to ${gateMilestone.id}`);
 	}
-	if (mission.activeRun) {
+	if (mission.activeRun && recoveryPlan.clearActiveRun) {
 		const staleRunId = mission.activeRun.runId;
 		const activeItemId = mission.activeRun.itemId;
-		const activeIdx = activeItemId ? indexById.get(activeItemId) : undefined;
-		const gateIdx = indexById.get(gateFeature.id);
-		if (activeIdx !== undefined && gateIdx !== undefined && activeIdx > gateIdx) {
-			clearActiveRunOwnership(mission);
-			changed = true;
-			reasons.push(`cleared stale activeRun ${staleRunId} beyond gate feature ${gateFeature.id}`);
-		}
+		clearActiveRunOwnership(mission);
+		changed = true;
+		reasons.push(`cleared stale activeRun ${staleRunId} beyond gate feature ${gateFeature.id}`);
+		reasons.push(`reconciled active run item ${activeItemId} to blocked gate ${gateFeature.id}`);
 	}
-	if (mission.status === "running" || mission.status === "paused") {
+	if (recoveryPlan.forceBlockedStatus) {
 		mission.status = "blocked";
 		changed = true;
 		reasons.push(`forced mission status to blocked until gate feature ${gateFeature.id} passes validation`);
