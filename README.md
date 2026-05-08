@@ -18,10 +18,11 @@ This is an early prototype inspired by Factory Missions, with a different design
 - required git commit per completed feature
 - feature-level scrutiny validator child process
 - optional feature-level user-testing validator child process after scrutiny pass
+- optional feature-level read-only reviewer fanout before scrutiny validation
 - dedicated Mission Control dashboard/control TUI (`/mission-control`) and `/missions status`
 - compact mission footer/status indicator via `ctx.ui.setStatus("missions", ...)` instead of the old rich always-on widget
 
-Parallel write agents are intentionally out of scope. Future read-only reviewer/validator fanout can be added safely later.
+Parallel write agents are intentionally out of scope. Only read-only reviewer fanout is supported in parallel.
 
 ## Install for local testing
 
@@ -141,6 +142,7 @@ Mission Control replaces the old rich always-on active mission widget. The exten
     worker/SKILL.md
     validator-scrutiny/SKILL.md
     validator-user-testing/SKILL.md
+    reviewer/SKILL.md
   runs/
     <run-id>/
       transcript.jsonl
@@ -151,6 +153,8 @@ Mission Control replaces the old rich always-on active mission widget. The exten
       validation-report.md
       user-testing-report.json
       user-testing-report.md
+      review-report.json
+      review-report.md
 ```
 
 ## Role model defaults

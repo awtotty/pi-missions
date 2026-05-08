@@ -10,6 +10,7 @@ export const BASE_SKILLS = {
 	orchestrator: path.join(PACKAGE_ROOT, "skills/mission-orchestrator/SKILL.md"),
 	worker: path.join(PACKAGE_ROOT, "skills/mission-worker/SKILL.md"),
 	validator: path.join(PACKAGE_ROOT, "skills/mission-validator/SKILL.md"),
+	reviewer: path.join(PACKAGE_ROOT, "skills/mission-reviewer/SKILL.md"),
 };
 
 export function nowIso(): string {

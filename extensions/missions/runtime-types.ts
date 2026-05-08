@@ -3,6 +3,12 @@ export type ItemStatus = "pending" | "running" | "complete" | "failed" | "skippe
 export type MissionRole = "orchestrator" | "worker" | "validator";
 export type MissionRoleModels = Record<MissionRole, string>;
 
+export interface MissionFeatureReviewer {
+	id: string;
+	focusAreas?: string;
+	instructions?: string;
+}
+
 export interface MissionFeature {
 	id: string;
 	title: string;
@@ -12,12 +18,15 @@ export interface MissionFeature {
 	runId?: string;
 	validationRunId?: string;
 	userTestingRunId?: string;
+	reviewerRunIds?: string[];
 	commit?: string;
 	userTesting?: {
 		required?: boolean;
 		instructions?: string;
 	};
+	reviewers?: MissionFeatureReviewer[];
 	userTestingPending?: boolean;
+	reviewerPending?: boolean;
 }
 
 export interface MissionMilestone {
@@ -30,7 +39,7 @@ export interface MissionMilestone {
 	validationRunId?: string;
 }
 
-export type MissionRunKind = "worker" | "validator" | "user-testing-validator";
+export type MissionRunKind = "worker" | "validator" | "user-testing-validator" | "reviewer";
 export interface MissionActiveRunOwnership {
 	schemaVersion: 1;
 	kind: MissionRunKind;
@@ -129,7 +138,9 @@ export interface MissionChildSessionRecord {
 	schemaVersion: 1;
 	missionId: string;
 	runId: string;
-	role: "worker" | "validator" | "user-testing-validator";	featureId?: string;
+	role: "worker" | "validator" | "user-testing-validator" | "reviewer";
+	reviewerId?: string;
+	featureId?: string;
 	milestoneId: string;
 	attempt: number;
 	status: string;
