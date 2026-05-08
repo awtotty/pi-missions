@@ -2822,9 +2822,9 @@ function transitionValidatorPassToFeatureComplete(mission: MissionState, milesto
 	mission.status = "running";
 }
 
-function transitionValidatorFailToFeaturePendingAndMissionBlocked(mission: MissionState, feature: MissionFeature): void {
+function transitionValidatorFailToFeaturePendingForRetry(mission: MissionState, feature: MissionFeature): void {
 	feature.status = "pending";
-	mission.status = "blocked";
+	mission.status = "running";
 }
 
 function transitionMissionPauseAfterCurrent(mission: MissionState, requestedAt: string): void {
@@ -2971,9 +2971,10 @@ Do not stop after stating that you will implement. Use tools to complete the wor
 	feature.commit = handoff?.commit || head;
 	let block: MissionBlockSummary | undefined;
 	if (result.exitCode !== 0 || !handoff || dirty) {
-		feature.status = "failed";
-		mission.status = "blocked";
-		appendEvent(dir, "worker_failed", { featureId: feature.id, dirty, hasHandoff: Boolean(handoff) });
+		const autoRetry = result.exitCode === 0 && !handoff && !dirty;
+		feature.status = autoRetry ? "pending" : "failed";
+		mission.status = autoRetry ? "running" : "blocked";
+		appendEvent(dir, autoRetry ? "worker_missing_handoff_auto_retry" : "worker_failed", { featureId: feature.id, dirty, hasHandoff: Boolean(handoff), autoRetry });
 		block = {
 			kind: "worker",
 			missionId: mission.id,
@@ -3113,7 +3114,7 @@ Do not stop after stating that you will validate. Use tools to complete the vali
 			milestone.status = "complete";
 		}
 	} else {
-		if (targetFeature) transitionValidatorFailToFeaturePendingAndMissionBlocked(mission, targetFeature);
+		if (targetFeature) transitionValidatorFailToFeaturePendingForRetry(mission, targetFeature);
 		else {
 			milestone.status = "failed";
 			mission.status = "blocked";
@@ -3308,6 +3309,7 @@ class MissionExecutionRunner {
 					clearMissionRunStatus(this.ctx);
 					return;
 				}
+				if (validatorBlock) appendEvent(this.dir, "feature_validation_failed_auto_retry", { featureId: awaitingValidation.feature.id, runId: validatorBlock.runId, status: validatorBlock.status });
 				if (applyPauseAfterCurrentIfRequested(this.ctx, this.missionId, `validator:${awaitingValidation.feature.id}`)) return;
 				continue;
 			}
@@ -3321,6 +3323,7 @@ class MissionExecutionRunner {
 				clearMissionRunStatus(this.ctx);
 				return;
 			}
+			if (workerBlock) appendEvent(this.dir, "worker_failure_auto_retry", { featureId: next.feature.id, runId: workerBlock.runId, status: workerBlock.status });
 			if (applyPauseAfterCurrentIfRequested(this.ctx, this.missionId, `worker:${next.feature.id}`)) return;
 			const milestone = missionMilestones(mission).find((m) => m.id === next.milestone.id)!;
 			const feature = milestone.features.find((f) => f.id === next.feature.id)!;
