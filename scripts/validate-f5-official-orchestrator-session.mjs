@@ -13,8 +13,8 @@ const checks = [
 	},
 	{
 		id: "MISSION_ORCHESTRATOR_REUSES_OFFICIAL_SESSION",
-		ok: source.includes("if (existing?.active && fs.existsSync(existing.sessionPath))") && source.includes("ctx.switchSession(existing.sessionPath"),
-		error: "/mission-orchestrator must switch to the active official orchestrator session when available.",
+		ok: source.includes("if (existing?.sessionPath && fs.existsSync(existing.sessionPath))") && source.includes("ctx.switchSession(existing.sessionPath"),
+		error: "/mission-orchestrator must switch to the official orchestrator session when available.",
 	},
 	{
 		id: "ACTIVE_MISSION_ENSURES_OFFICIAL_RECORD",

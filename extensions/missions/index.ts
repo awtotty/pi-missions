@@ -2653,7 +2653,15 @@ function hasSessionSwitchControls(ctx: ExtensionContext): ctx is ExtensionComman
 async function openOrSwitchMissionOrchestratorSession(ctx: ExtensionCommandContext, mission: MissionState): Promise<void> {
 	const existing = readOrchestratorSessionRecord(ctx.cwd, mission.id);
 	const content = runningMissionOrchestratorContext(ctx.cwd, mission);
-	if (existing?.active && fs.existsSync(existing.sessionPath)) {
+	if (existing?.sessionPath && fs.existsSync(existing.sessionPath)) {
+		if (!existing.active) {
+			writeOrchestratorSessionRecord(ctx.cwd, mission.id, {
+				sessionId: existing.sessionId,
+				sessionPath: existing.sessionPath,
+				createdAt: existing.createdAt,
+				active: true,
+			});
+		}
 		await ctx.switchSession(existing.sessionPath, {
 			withSession: async (nextCtx) => {
 				await nextCtx.sendMessage({ customType: "missions-running-orchestrator", display: true, content, details: { missionId: mission.id, missionDir: missionDir(ctx.cwd, mission.id), reusedSession: true } }, { deliverAs: "followUp" });
