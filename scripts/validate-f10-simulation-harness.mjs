@@ -220,6 +220,18 @@ async function runMissionControlLifecycleCheck() {
 	}
 }
 
+function runResponsiveLayoutChecks() {
+	const missionControlLayoutMode = compileNamedFunction("missionControlLayoutMode", {});
+	const missionControlFooter = compileNamedFunction("missionControlFooter", { missionControlLayoutMode, MISSION_CONTROL_POLL_MS: 1500 });
+
+	assert(missionControlLayoutMode(130) === "wide", "layout should be wide at >=120 columns");
+	assert(missionControlLayoutMode(100) === "medium", "layout should be medium at >=90 and <120 columns");
+	assert(missionControlLayoutMode(70) === "narrow", "layout should be narrow at >=62 and <90 columns");
+	assert(missionControlLayoutMode(40) === "compact", "layout should be compact below 62 columns");
+	assert(missionControlFooter(40).includes("q close") && missionControlFooter(40).includes("tab"), "compact footer should keep close + navigation hints");
+	assert(source.includes("...limitLines(currentPanel, 5, width)"), "compact layout must retain a condensed Current Item panel");
+}
+
 function runFeatureFlowAndRegressionChecks(computeRecoveryGatePlan) {
 	const transitionValidatorFailToFeaturePendingForRetry = compileNamedFunction("transitionValidatorFailToFeaturePendingForRetry", {});
 	const transitionValidatorPassToFeatureComplete = compileNamedFunction("transitionValidatorPassToFeatureComplete", {});
@@ -291,6 +303,7 @@ runArtifactFailureCoverage();
 runCommandRoutingAndPauseChecks();
 await runRunnerLockCoverage();
 await runMissionControlLifecycleCheck();
+runResponsiveLayoutChecks();
 const { computeRecoveryGatePlan } = await loadRecoveryGateModule();
 runFeatureFlowAndRegressionChecks(computeRecoveryGatePlan);
 

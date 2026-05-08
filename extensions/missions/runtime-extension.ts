@@ -2183,9 +2183,9 @@ function childOutputLines(run?: MissionRunContext): string[] {
 type MissionControlLayoutMode = "wide" | "medium" | "narrow" | "compact";
 
 function missionControlLayoutMode(width: number): MissionControlLayoutMode {
-	if (width >= 100) return "wide";
-	if (width >= 72) return "medium";
-	if (width >= 44) return "narrow";
+	if (width >= 120) return "wide";
+	if (width >= 90) return "medium";
+	if (width >= 62) return "narrow";
 	return "compact";
 }
 
@@ -2242,8 +2242,8 @@ function missionControlDashboardLines(mission: MissionState, selection: MissionC
 			: mode === "medium"
 				? [...currentPanel, "", ...featuresPanel, "", ...controlPlanePanel, "", ...progressPanel]
 				: mode === "narrow"
-					? [...limitLines(currentPanel, 8, width), "", ...featuresPanel, "", ...limitLines(controlPlanePanel, 7, width), "", ...limitLines(progressPanel, 7, width)]
-					: [...featuresPanel, "", ...limitLines(controlPlanePanel, 6, width), "", ...limitLines(progressPanel, 6, width)]),
+					? [...limitLines(currentPanel, 8, width), "", ...featuresPanel, "", ...limitLines(controlPlanePanel, 6, width), "", ...limitLines(progressPanel, 6, width)]
+					: [...limitLines(currentPanel, 5, width), "", ...featuresPanel, "", ...limitLines(controlPlanePanel, 5, width), "", ...limitLines(progressPanel, 5, width)]),
 		"",
 		...limitLines(childPanel, mode === "narrow" ? 7 : mode === "compact" ? 6 : CHILD_OUTPUT_MAX_PANEL_LINES + 1, width),
 	];
@@ -2321,7 +2321,7 @@ function missionControlHelpLines(): string[] {
 
 function missionControlFooter(width: number): string {
 	const mode = missionControlLayoutMode(width);
-	if (mode === "compact") return "q close · tab view · ↑/↓ move · p pause · s start · x cancel · c clear · r refresh · ?";
+	if (mode === "compact") return "q close · tab · ↑/↓ · p pause · s start · x cancel · c clear · r · ?";
 	if (mode === "narrow") return "q/esc close · tab view · ↑/↓ move · p pause · s start/resume · x cancel · c clear · r · ?";
 	return `q/esc close · tab view · ↑/↓/j/k move · p pause · s start/resume · x cancel child · c clear done · r refresh · ? help · ${MISSION_CONTROL_POLL_MS / 1000}s poll`;
 }
