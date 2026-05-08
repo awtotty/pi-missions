@@ -55,13 +55,15 @@ Use these scenarios for release-style checks of mission flows. They complement, 
 
 ### New mission flow: schemas, optional user-testing, and reviewer advisory routing
 
-1. In a disposable branch, run a feature with reviewer fanout and user-testing required in its feature metadata.
-2. Confirm reviewer runs produce `review-report.json/md`; scrutiny still runs and treats reviewer output as advisory evidence rather than final pass/fail.
-3. Confirm scrutiny pass with `userTesting.required: false` marks the feature complete (user-testing is skipped).
-4. Confirm scrutiny pass with `userTesting.required: true` moves the feature into user-testing pending/running.
-5. Confirm user-testing `pass` marks feature complete; `fail` or `inconclusive` blocks the mission and resets the feature to pending for retry.
-6. Corrupt one of `handoff.json`, `validation-report.json`, `user-testing-report.json`, or `review-report.json` in a run directory and confirm the mission records a clear schema parse/validation failure with field-path details and block metadata.
-7. Verify existing mission controls still behave the same (`/missions run`, `/missions status`, Mission Control controls, `mission_start_execution`, and `mission_runner_command`).
+1. Confirm `extensions/missions/index.ts` remains runtime bootstrap glue (`import missionsExtension from "./runtime-extension.js"` + `export default missionsExtension;`) and the primary runtime logic stays in `runtime-extension.ts`/split modules.
+2. In a disposable branch, run a feature with reviewer fanout and user-testing required in its feature metadata.
+3. Confirm reviewer runs produce `review-report.json/md`; scrutiny still runs and treats reviewer output as advisory evidence rather than final pass/fail.
+4. Confirm scrutiny pass with `userTesting.required: false` marks the feature complete (user-testing is skipped).
+5. Confirm scrutiny pass with `userTesting.required: true` moves the feature into user-testing pending/running.
+6. Confirm user-testing `pass` marks feature complete; `fail` or `inconclusive` blocks the mission and resets the feature to pending for retry.
+7. Corrupt one of `handoff.json`, `validation-report.json`, `user-testing-report.json`, or `review-report.json` in a run directory and confirm the mission records a clear schema parse/validation failure with field-path details and block metadata.
+8. Verify existing mission controls still behave the same (`/missions run`, `/missions status`, Mission Control controls, `mission_start_execution`, and `mission_runner_command`).
+9. Integrated Mission Control orchestrator-chat shortcut tuning (including the `o` shortcut) is intentionally deferred in this mission; do not treat dedicated orchestrator chat UX changes as part of this validation pass.
 
 ### Block injection and recovery context
 

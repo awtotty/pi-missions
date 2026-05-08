@@ -10,6 +10,7 @@ function assertIncludes(haystack, needle, message) {
 
 const indexSource = fs.readFileSync(new URL("../extensions/missions/index.ts", import.meta.url), "utf8");
 const runtimeSource = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
+const readmeSource = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
 
 // Module split coverage: index.ts should stay bootstrap-only.
 assertIncludes(indexSource, 'import missionsExtension from "./runtime-extension.js";', "index.ts must import runtime-extension bootstrap module.");
@@ -65,6 +66,20 @@ for (const token of [
 	'if (input.command === "unblock")',
 ]) {
 	assertIncludes(runtimeSource, token, `missing command/tool compatibility token: ${token}`);
+}
+
+// Documentation/manual validation coverage for this flow.
+for (const token of [
+	"### New mission flow: schemas, optional user-testing, and reviewer advisory routing",
+	"Confirm `extensions/missions/index.ts` remains runtime bootstrap glue",
+	"Corrupt one of `handoff.json`, `validation-report.json`, `user-testing-report.json`, or `review-report.json`",
+	"Confirm scrutiny pass with `userTesting.required: false` marks the feature complete (user-testing is skipped).",
+	"Confirm user-testing `pass` marks feature complete; `fail` or `inconclusive` blocks the mission",
+	"treats reviewer output as advisory evidence rather than final pass/fail.",
+	"Verify existing mission controls still behave the same",
+	"Integrated Mission Control orchestrator-chat shortcut tuning (including the `o` shortcut) is intentionally deferred",
+]) {
+	assertIncludes(readmeSource, token, `missing README/manual validation coverage token: ${token}`);
 }
 
 console.log("F4 mission-flow coverage checks passed.");
