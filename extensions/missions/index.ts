@@ -2295,11 +2295,18 @@ function missionControlAvailableActions(context: MissionControlActionContext): M
 			kind: "mutation",
 			severity: "execution",
 			requiresConfirmation: true,
-			confirmation: ({ mission }) => ({
-				title: mission?.status === "paused" ? "Resume mission execution?" : "Start mission execution?",
-				message: mission ? `${mission.title}\n\nThis will run mission ${mission.id}. Workers may modify files and create commits.` : "Start or resume the selected mission.",
-			}),
-			isAvailable: ({ mission, ctx }) => Boolean(mission && (mission.status === "planned" || mission.status === "paused" || mission.status === "blocked") && !isMissionRunActive(ctx.cwd, mission.id)),
+			confirmation: ({ mission, ctx }) => {
+				const lifecycle = mission ? classifyMissionRunLifecycle(ctx.cwd, mission) : undefined;
+				return {
+					title: lifecycle?.state === "interrupted" ? "Resume interrupted mission?" : mission?.status === "paused" ? "Resume mission execution?" : "Start mission execution?",
+					message: mission ? `${mission.title}\n\nThis will run mission ${mission.id}. Workers may modify files and create commits.` : "Start or resume the selected mission.",
+				};
+			},
+			isAvailable: ({ mission, ctx }) => {
+				if (!mission || isMissionRunActive(ctx.cwd, mission.id)) return false;
+				if (mission.status === "planned" || mission.status === "paused" || mission.status === "blocked") return true;
+				return mission.status === "running" && classifyMissionRunLifecycle(ctx.cwd, mission).state === "interrupted";
+			},
 			run: ({ ctx, pi, mission, state }) => executeRunnerCommand({ command: "start", missionId: mission?.id, source: "mission_control" }, ctx, pi, state),
 		},
 		{
