@@ -6,7 +6,7 @@ Missions is a system that combines delegation, creator-verifier, broadcast, and 
 
 1. Describes a software goal
 2. Scope the goals through conversation
-3. Start the reviewed plan with an explicit run confirmation
+3. Approve the plan
 4. Missions handles execution
 
 ## Roles
@@ -49,9 +49,7 @@ This is slower on paper than parallelism, but for multi-day runs, correctness co
 
 ## Mission Control
 
-A dedicated dashboard/control surface for multi-day autonomous work. It shows mission header/progress, current work, milestone-grouped features, progress log, and a bounded child-output panel for recent transcript/stderr evidence.
-
-Mission Control can perform safe, explicit operations: request pause-after-current, start/resume when no run is already active or pause is pending, refresh artifacts, and hide completed missions from default visibility. Closing the UI with `q`/`esc` is never a kill switch; workers and validators continue under the durable run loop. The dashboard collapses responsively for narrower terminals and keeps rendered lines width-safe.
+A dedicated view for multi-day autonomous work. Monitor, redirect, or come back tomorrow.
 
 ## Model Config Per Role
 
