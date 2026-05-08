@@ -1294,6 +1294,42 @@ function runArtifactStatus(run: MissionRunContext): string | undefined {
 	}
 }
 
+function synthesizeWorkerHandoffArtifacts(runDir: string, feature: MissionFeature, result: RunResult, commit: string | undefined): any {
+	const handoffFile = path.join(runDir, "handoff.json");
+	const handoffMdFile = path.join(runDir, "handoff.md");
+	const synthesized = {
+		featureId: feature.id,
+		status: result.exitCode === 0 ? "complete" : "blocked",
+		commit,
+		summary: "Worker exited without handoff artifacts; orchestrator synthesized this handoff from runner metadata so validation/retry flow can continue.",
+		filesChanged: [] as string[],
+		commandsRun: [] as Array<{ command: string; exitCode?: number; notes?: string }>,
+		risks: ["Original worker did not produce required handoff.json/handoff.md; inspect transcript.jsonl for details."],
+		synthesizedByOrchestrator: true,
+		exitCode: result.exitCode,
+	};
+	writeJson(handoffFile, synthesized);
+	fs.writeFileSync(handoffMdFile, [
+		`# ${feature.id} Handoff`,
+		"",
+		"## Status",
+		String(synthesized.status),
+		"",
+		"## Summary",
+		synthesized.summary,
+		"",
+		"## Commit",
+		commit ?? "not recorded",
+		"",
+		"## Risks",
+		`- ${synthesized.risks[0]}`,
+		"",
+		"## Follow-up",
+		"Inspect this run's transcript.jsonl and stderr.txt. Treat this as lower-confidence than a worker-authored handoff.",
+	].join("\n"));
+	return synthesized;
+}
+
 function ensureValidatorFailureReportArtifacts(runDir: string, milestone: MissionMilestone, result: RunResult, report: any): any {
 	const reportFile = path.join(runDir, "validation-report.json");
 	const reportMdFile = path.join(runDir, "validation-report.md");
@@ -1306,15 +1342,16 @@ function ensureValidatorFailureReportArtifacts(runDir: string, milestone: Missio
 		}
 		return report;
 	}
+	const finalText = result.finalText.trim();
 	const synthesized = {
 		milestoneId: milestone.id,
 		status: "fail",
-		summary: "Validator exited without a parseable validation-report.json artifact.",
+		summary: finalText || "Validator exited without a parseable validation-report.json artifact.",
 		assertions: [],
 		issues: [
 			{
 				title: "Missing or invalid validator report artifact",
-				details: "The validator run did not produce a parseable validation-report.json file. See transcript.jsonl and stderr.txt for failure details.",
+				details: finalText ? `Validator did not produce parseable JSON, but final response was: ${finalText.slice(0, 2000)}` : "The validator run did not produce a parseable validation-report.json file. See transcript.jsonl and stderr.txt for failure details.",
 				severity: "high"
 			}
 		],
@@ -2968,6 +3005,10 @@ Do not stop after stating that you will implement. Use tools to complete the wor
 	}
 	const dirty = await gitPorcelain(mission.cwd);
 	const head = await gitHead(mission.cwd);
+	if (!handoff && result.exitCode === 0 && !dirty) {
+		handoff = synthesizeWorkerHandoffArtifacts(runDir, feature, result, head);
+		appendEvent(dir, "worker_handoff_synthesized", { featureId: feature.id, runId, commit: head });
+	}
 	feature.commit = handoff?.commit || head;
 	let block: MissionBlockSummary | undefined;
 	if (result.exitCode !== 0 || !handoff || dirty) {
