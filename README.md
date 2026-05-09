@@ -9,7 +9,7 @@ It adds long-running, sequential mission orchestration to pi: plan in chat, pers
 ## What it does
 
 - Chat-first mission planning with an orchestrator skill.
-- Persisted mission artifacts under `.pi/missions/<mission-id>/`.
+- Persisted mission artifacts under a global `~/.pi/missions/<mission-id>/` store.
 - Sequential worker execution, one feature at a time.
 - Required worker handoffs and git commits.
 - Scrutiny validation against a pre-written validation contract.
@@ -86,8 +86,10 @@ Mission Control actions route through deterministic runner commands and preserve
 
 ## Artifact layout
 
+Mission data is stored globally so target repositories do not need `.gitignore` changes and future Mission Control versions can monitor missions across repositories. Set `PI_MISSIONS_HOME` to override the storage root.
+
 ```text
-.pi/missions/<mission-id>/
+~/.pi/missions/<mission-id>/
   mission.json
   event-log.jsonl
   plan/

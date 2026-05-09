@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_ROLE_MODELS, MISSION_ROLES, type MissionRole, type MissionRoleModels } from "./runtime-types.js";
@@ -30,8 +31,8 @@ export function isMissionRole(value: string): value is MissionRole {
 	return (MISSION_ROLES as string[]).includes(value);
 }
 
-export function missionRoot(cwd: string): string {
-	return path.join(cwd, ".pi", "missions");
+export function missionRoot(_cwd: string): string {
+	return process.env.PI_MISSIONS_HOME || path.join(os.homedir(), ".pi", "missions");
 }
 
 export function missionDir(cwd: string, id: string): string {
