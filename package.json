@@ -1,10 +1,20 @@
 {
   "name": "pi-missions",
-  "version": "0.0.1",
-  "description": "Long-running sequential mission orchestration for pi.",
+  "version": "0.1.0",
+  "description": "Unofficial pi port of Factory-style long-running mission orchestration.",
   "type": "module",
   "keywords": ["pi-package", "pi", "missions", "orchestration"],
   "license": "MIT",
+  "files": [
+    "README.md",
+    "LICENSE",
+    "extensions/",
+    "skills/",
+    "prompts/",
+    "scripts/",
+    "docs/",
+    "tsconfig.json"
+  ],
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",

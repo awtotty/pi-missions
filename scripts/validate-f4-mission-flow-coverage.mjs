@@ -10,7 +10,7 @@ function assertIncludes(haystack, needle, message) {
 
 const indexSource = fs.readFileSync(new URL("../extensions/missions/index.ts", import.meta.url), "utf8");
 const runtimeSource = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
-const readmeSource = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
+const manualValidationSource = fs.readFileSync(new URL("../docs/release-validation.md", import.meta.url), "utf8");
 
 // Module split coverage: index.ts should stay bootstrap-only.
 assertIncludes(indexSource, 'import missionsExtension from "./runtime-extension.js";', "index.ts must import runtime-extension bootstrap module.");
@@ -79,7 +79,7 @@ for (const token of [
 	"Verify existing mission controls still behave the same",
 	"Integrated Mission Control orchestrator-chat shortcut tuning (including the `o` shortcut) is intentionally deferred",
 ]) {
-	assertIncludes(readmeSource, token, `missing README/manual validation coverage token: ${token}`);
+	assertIncludes(manualValidationSource, token, `missing release-validation/manual coverage token: ${token}`);
 }
 
 console.log("F4 mission-flow coverage checks passed.");
