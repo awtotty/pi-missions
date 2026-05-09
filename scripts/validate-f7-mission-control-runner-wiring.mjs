@@ -30,7 +30,9 @@ const checks = [
 		error: "Mission Control disposal must finalize and release control back to the interactive session.",
 	},
 	{
-		ok: source.includes('panelLines("Child Output", childOutputLines(run), width)') && source.includes("transcript stream"),
+		ok: (source.includes('panelLines("Child Output", childOutputLines(run), width)')
+			|| source.includes('limitedPanelLines("Child Output", childOutputLines(run), width'))
+			&& source.includes("transcript stream"),
 		error: "Mission Control must show child transcript stream output.",
 	},
 ];

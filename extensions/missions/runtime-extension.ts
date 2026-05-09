@@ -1501,6 +1501,15 @@ function padLineToWidth(line: string, width: number): string {
 	return `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
 }
 
+function exactClipLine(line: string, width: number): string {
+	return truncateToWidth(line, Math.max(1, width));
+}
+
+function exactPadLineToWidth(line: string, width: number): string {
+	const clipped = exactClipLine(line, width);
+	return `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
+}
+
 function missionFeatureCounts(mission: MissionState): { done: number; total: number; running: number; failed: number; pending: number } {
 	const features = missionFeatureList(mission);
 	const done = features.filter((f) => f.status === "complete" || f.status === "skipped").length;
@@ -1533,15 +1542,15 @@ function dividerLine(label: string, width: number): string {
 	const remaining = Math.max(0, innerWidth - titleWidth);
 	const left = "─".repeat(Math.floor(remaining / 2));
 	const right = "─".repeat(Math.ceil(remaining / 2));
-	return clipLine(`┌${left}${title}${right}┐`, safeWidth);
+	return exactClipLine(`┌${left}${title}${right}┐`, safeWidth);
 }
 
 function panelLines(title: string, body: string[], width: number): string[] {
 	const safeWidth = Math.max(20, width);
 	const innerWidth = Math.max(1, safeWidth - 2);
 	const header = dividerLine(title, safeWidth);
-	const clippedBody = body.length > 0 ? body.map((line) => clipLine(line, innerWidth)) : [clipLine("(no data)", innerWidth)];
-	return [header, ...clippedBody.map((line) => clipLine(`│${padLineToWidth(line, innerWidth)}│`, safeWidth)), clipLine(`└${"─".repeat(innerWidth)}┘`, safeWidth)];
+	const clippedBody = body.length > 0 ? body.map((line) => exactClipLine(line, innerWidth)) : [exactClipLine("(no data)", innerWidth)];
+	return [header, ...clippedBody.map((line) => exactClipLine(`│${exactPadLineToWidth(line, innerWidth)}│`, safeWidth)), exactClipLine(`└${"─".repeat(innerWidth)}┘`, safeWidth)];
 }
 
 interface MissionControlEvent {
@@ -1862,15 +1871,15 @@ function missionControlHeader(mission: MissionState, width: number): string[] {
 	const progressStrip = ` PROGRESS ${progressText(mission)} ${percentText(counts.done, counts.total)} · ${counts.running} running · ${counts.pending} pending · ${counts.failed} failed `;
 	const line = (content: string): string => {
 		const innerWidth = Math.max(1, width - 2);
-		return clipLine(`│${padLineToWidth(content, innerWidth)}│`, width);
+		return exactClipLine(`│${exactPadLineToWidth(content, innerWidth)}│`, width);
 	};
 	return [
-		clipLine(`┌${"═".repeat(Math.max(1, width - 2))}┐`, width),
+		exactClipLine(`┌${"═".repeat(Math.max(1, width - 2))}┐`, width),
 		line(titleStrip),
 		line(statusStrip),
 		line(`${progressStrip}[${progressBar(counts.done, counts.total, barWidth)}]`),
 		line(` RUN ${runText} `),
-		clipLine(`└${"═".repeat(Math.max(1, width - 2))}┘`, width),
+		exactClipLine(`└${"═".repeat(Math.max(1, width - 2))}┘`, width),
 	];
 }
 
@@ -2190,9 +2199,17 @@ function missionControlLayoutMode(width: number): MissionControlLayoutMode {
 }
 
 function limitLines(lines: string[], maxLines: number, width: number): string[] {
-	if (lines.length <= maxLines) return lines.map((line) => clipLine(line, width));
+	if (lines.length <= maxLines) return lines.map((line) => exactClipLine(line, width));
 	const hidden = lines.length - maxLines + 1;
-	return [...lines.slice(0, Math.max(0, maxLines - 1)), `… ${hidden} more line${hidden === 1 ? "" : "s"}`].map((line) => clipLine(line, width));
+	return [...lines.slice(0, Math.max(0, maxLines - 1)), `… ${hidden} more line${hidden === 1 ? "" : "s"}`].map((line) => exactClipLine(line, width));
+}
+
+function limitedPanelLines(title: string, body: string[], width: number, maxPanelLines: number): string[] {
+	const maxBodyLines = Math.max(1, maxPanelLines - 2);
+	if (body.length <= maxBodyLines) return panelLines(title, body, width);
+	const visibleBodyLines = Math.max(0, maxBodyLines - 1);
+	const hidden = body.length - visibleBodyLines;
+	return panelLines(title, [...body.slice(0, visibleBodyLines), `… ${hidden} more line${hidden === 1 ? "" : "s"}`], width);
 }
 
 function compactMissionControlHeader(mission: MissionState, width: number): string[] {
@@ -2227,13 +2244,24 @@ function missionControlDashboardLines(mission: MissionState, selection: MissionC
 	const mode = missionControlLayoutMode(width);
 	const run = currentOrLastRunContext(mission);
 	const header = mode === "compact" ? compactMissionControlHeader(mission, width) : missionControlHeader(mission, width);
-	const currentPanel = panelLines("Current Item", currentItemLines(selection, run, block), width);
 	const featuresTitle = focus === "tree" ? "Features [active]" : "Features";
 	const progressTitle = focus === "timeline" ? "Progress Log [active]" : "Progress Log";
-	const featuresPanel = panelLines(featuresTitle, mode === "compact" ? compactGroupedFeatureLines(mission, selection, block) : groupedFeatureLines(mission, selection, block), width);
-	const controlPlanePanel = panelLines("Runner & Orchestrator", missionControlPlaneLines(mission), width);
-	const progressPanel = panelLines(progressTitle, progressLogLines(mission), width);
-	const childPanel = limitLines(panelLines("Child Output", childOutputLines(run), width), CHILD_OUTPUT_MAX_PANEL_LINES + 1, width);
+
+	let currentPanel = panelLines("Current Item", currentItemLines(selection, run, block), width);
+	let featuresPanel = panelLines(featuresTitle, mode === "compact" ? compactGroupedFeatureLines(mission, selection, block) : groupedFeatureLines(mission, selection, block), width);
+	let controlPlanePanel = panelLines("Runner & Orchestrator", missionControlPlaneLines(mission), width);
+	let progressPanel = panelLines(progressTitle, progressLogLines(mission), width);
+	const childPanelMaxLines = mode === "narrow" ? 7 : mode === "compact" ? 6 : CHILD_OUTPUT_MAX_PANEL_LINES + 1;
+	const childPanel = limitedPanelLines("Child Output", childOutputLines(run), width, childPanelMaxLines);
+
+	if (mode === "wide") {
+		const { leftWidth, rightWidth } = missionControlColumnWidths(width);
+		currentPanel = panelLines("Current Item", currentItemLines(selection, run, block), leftWidth);
+		controlPlanePanel = panelLines("Runner & Orchestrator", missionControlPlaneLines(mission), leftWidth);
+		featuresPanel = panelLines(featuresTitle, groupedFeatureLines(mission, selection, block), rightWidth);
+		progressPanel = panelLines(progressTitle, progressLogLines(mission), rightWidth);
+	}
+
 	const lines = [
 		...header,
 		"",
@@ -2245,21 +2273,30 @@ function missionControlDashboardLines(mission: MissionState, selection: MissionC
 					? [...limitLines(currentPanel, 8, width), "", ...featuresPanel, "", ...limitLines(controlPlanePanel, 6, width), "", ...limitLines(progressPanel, 6, width)]
 					: [...limitLines(currentPanel, 5, width), "", ...featuresPanel, "", ...limitLines(controlPlanePanel, 5, width), "", ...limitLines(progressPanel, 5, width)]),
 		"",
-		...limitLines(childPanel, mode === "narrow" ? 7 : mode === "compact" ? 6 : CHILD_OUTPUT_MAX_PANEL_LINES + 1, width),
+		...childPanel,
 	];
-	return lines.map((line) => clipLine(line, width));
+	return lines.map((line) => exactClipLine(line, width));
+}
+
+function missionControlColumnWidths(width: number): { leftWidth: number; rightWidth: number } {
+	const gap = 2;
+	const available = Math.max(1, width - gap);
+	// Use percentage-based responsive sizing for wide mode.
+	const leftWidth = Math.max(36, Math.min(available - 24, Math.floor(available * 0.58)));
+	const rightWidth = Math.max(24, available - leftWidth);
+	return { leftWidth, rightWidth };
 }
 
 function columnLines(left: string[], right: string[], width: number): string[] {
-	if (width < 80) return [...left, "", ...right].map((line) => clipLine(line, width));
+	if (width < 110) return [...left, "", ...right].map((line) => exactClipLine(line, width));
 	const gap = "  ";
-	const leftWidth = Math.max(28, Math.floor((width - gap.length) * 0.42));
-	const rightWidth = Math.max(20, width - leftWidth - gap.length);
+	const { leftWidth, rightWidth } = missionControlColumnWidths(width);
 	const rows = Math.max(left.length, right.length);
 	const lines: string[] = [];
 	for (let i = 0; i < rows; i += 1) {
-		const leftText = padLineToWidth(left[i] ?? "", leftWidth);
-		lines.push(clipLine(`${leftText}${gap}${clipLine(right[i] ?? "", rightWidth)}`, width));
+		const leftText = exactPadLineToWidth(left[i] ?? "", leftWidth);
+		const rightText = exactClipLine(right[i] ?? "", rightWidth);
+		lines.push(exactClipLine(`${leftText}${gap}${rightText}`, width));
 	}
 	return lines;
 }
@@ -2468,11 +2505,11 @@ function missionControlTarget(cwd: string, state: MissionOrchestratorSessionStat
 }
 
 function fitToViewport(lines: string[], width: number, height?: number): string[] {
-	const clipped = lines.map((line) => clipLine(line, width));
+	const filled = lines.map((line) => exactPadLineToWidth(line, width));
 	const target = typeof height === "number" && Number.isFinite(height) ? Math.max(1, Math.floor(height)) : undefined;
-	if (!target) return clipped;
-	if (clipped.length >= target) return clipped.slice(0, target);
-	return [...clipped, ...Array.from({ length: target - clipped.length }, () => "")];
+	if (!target) return filled;
+	if (filled.length >= target) return filled.slice(0, target);
+	return [...filled, ...Array.from({ length: target - filled.length }, () => " ".repeat(Math.max(1, width)))];
 }
 
 function missionControlLines(cwd: string, state: MissionOrchestratorSessionState | undefined, width: number, height: number | undefined, view: MissionControlViewState, targetMissionId?: string): string[] {
@@ -2607,7 +2644,14 @@ async function openMissionControl(ctx: ExtensionContext, state: MissionOrchestra
 			finalize();
 		};
 		return {
-			render: (width: number) => missionControlLines(ctx.cwd, state, width, (tui as { rows?: number }).rows, view, targetMissionId),
+			render: (width: number) => missionControlLines(
+				ctx.cwd,
+				state,
+				width,
+				((tui as { terminal?: { rows?: number } }).terminal?.rows) ?? (tui as { rows?: number }).rows,
+				view,
+				targetMissionId,
+			),
 			invalidate: () => undefined,
 			dispose: () => {
 				finalize();
@@ -2652,6 +2696,16 @@ async function openMissionControl(ctx: ExtensionContext, state: MissionOrchestra
 				}
 			},
 		};
+	}, {
+		overlay: true,
+		overlayOptions: {
+			width: "100%",
+			maxHeight: "100%",
+			anchor: "top-left",
+			row: 0,
+			col: 0,
+			margin: 0,
+		},
 	});
 	return { ok: true, text: "Mission Control closed." };
 }
