@@ -247,7 +247,7 @@ function applyPauseAfterCurrentIfRequested(ctx: ExtensionContext, missionId: str
 	const mission = loadMission(ctx.cwd, missionId);
 	if (mission.status === "complete" || mission.status === "failed" || mission.status === "blocked") return false;
 	transitionMissionPauseAfterCurrent(mission, request.requestedAt);
-	saveMission(ctx.cwd, mission);
+	saveMission(mission.cwd, mission);
 	appendEvent(missionDir(ctx.cwd, missionId), "mission_paused_after_current", { missionId, requestedAt: request.requestedAt, completedUnit });
 	updateWidget(ctx, mission);
 	clearMissionRunStatus(ctx);
@@ -558,12 +558,18 @@ function listMissions(cwd: string): MissionState[] {
 		.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+function isMissionForCwd(mission: MissionState, cwd: string): boolean {
+	return path.resolve(mission.cwd) === path.resolve(cwd);
+}
+
 function latestMission(cwd: string): MissionState | undefined {
-	return listMissions(cwd)[0];
+	const missions = listMissions(cwd);
+	return missions.find((mission) => isMissionForCwd(mission, cwd)) ?? missions[0];
 }
 
 function latestVisibleMission(cwd: string): MissionState | undefined {
-	return listMissions(cwd).find((mission) => !isMissionCleared(cwd, mission.id));
+	const missions = listMissions(cwd).filter((mission) => !isMissionCleared(cwd, mission.id));
+	return missions.find((mission) => isMissionForCwd(mission, cwd)) ?? missions[0];
 }
 
 function isActiveMissionStatus(status: Status): boolean {
@@ -580,7 +586,8 @@ function activeMissionFromState(cwd: string, state?: MissionOrchestratorSessionS
 			// Ignore stale session entries that point at missions no longer present in this checkout.
 		}
 	}
-	return listMissions(cwd).find((mission) => isActiveMissionStatus(mission.status));
+	const active = listMissions(cwd).filter((mission) => isActiveMissionStatus(mission.status));
+	return active.find((mission) => isMissionForCwd(mission, cwd)) ?? active[0];
 }
 
 function buildOrchestratorState(cwd: string, mission?: MissionState, overrides: Partial<MissionOrchestratorSessionState> = {}): MissionOrchestratorSessionState {
@@ -3082,7 +3089,7 @@ async function runWorker(ctx: ExtensionContext, mission: MissionState, milestone
 	ensureDir(runDir);
 	transitionFeaturePendingToWorkerRunning(mission, milestone, feature, runId);
 	const ownership = setActiveRunOwnership(mission, { kind: "worker", itemId: feature.id, runId });
-	saveMission(ctx.cwd, mission);
+	saveMission(mission.cwd, mission);
 	persistRunOwnershipArtifact(runDir, ownership);
 	const workerSessionRecord: MissionChildSessionRecord = {
 		schemaVersion: 1,
@@ -3196,7 +3203,7 @@ Do not stop after stating that you will implement. Use tools to complete the wor
 		finishedAt: nowIso(),
 	});
 	clearActiveRunOwnership(mission);
-	saveMission(ctx.cwd, mission);
+	saveMission(mission.cwd, mission);
 	updateWidget(ctx, mission);
 	return block;
 }
@@ -3221,7 +3228,7 @@ async function runReviewerFanout(ctx: ExtensionContext, mission: MissionState, m
 	const reviewers = reviewerConfig(feature);
 	if (reviewers.length === 0) {
 		feature.reviewerPending = false;
-		saveMission(ctx.cwd, mission);
+		saveMission(mission.cwd, mission);
 		return undefined;
 	}
 	const runs = await Promise.all(reviewers.map(async (reviewer) => {
@@ -3278,7 +3285,7 @@ async function runReviewerFanout(ctx: ExtensionContext, mission: MissionState, m
 	}));
 	feature.reviewerRunIds = runs.map((run) => run.runId);
 	feature.reviewerPending = false;
-	saveMission(ctx.cwd, mission);
+	saveMission(mission.cwd, mission);
 	const failed = runs.find((run) => run.exitCode !== 0 || !run.reportOk);
 	if (!failed) return undefined;
 	mission.status = "blocked";
@@ -3297,7 +3304,7 @@ async function runReviewerFanout(ctx: ExtensionContext, mission: MissionState, m
 		artifactPaths: existingPaths([path.join(failed.runDir, "review-report.json"), path.join(failed.runDir, "review-report.md"), path.join(failed.runDir, "transcript.jsonl"), path.join(failed.runDir, "stderr.txt")]),
 	};
 	persistMissionBlock(dir, mission, block, "reviewer_infrastructure_failure");
-	saveMission(ctx.cwd, mission);
+	saveMission(mission.cwd, mission);
 	return block;
 }
 
@@ -3334,7 +3341,7 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 		mission.currentFeatureId = undefined;
 	}
 	const ownership = setActiveRunOwnership(mission, { kind: "validator", itemId: targetFeature?.id ?? milestone.id, runId });
-	saveMission(ctx.cwd, mission);
+	saveMission(mission.cwd, mission);
 	persistRunOwnershipArtifact(runDir, ownership);
 	const validatorSessionRecord: MissionChildSessionRecord = {
 		schemaVersion: 1,
@@ -3433,7 +3440,7 @@ Do not stop after stating that you will validate. Use tools to complete the vali
 		finishedAt: nowIso(),
 	});
 	clearActiveRunOwnership(mission);
-	saveMission(ctx.cwd, mission);
+	saveMission(mission.cwd, mission);
 	updateWidget(ctx, mission);
 	return block;
 }
@@ -3461,7 +3468,7 @@ async function runUserTestingValidator(ctx: ExtensionContext, mission: MissionSt
 	ensureDir(runDir);
 	transitionFeatureToUserTestingRunning(mission, milestone, feature, runId);
 	const ownership = setActiveRunOwnership(mission, { kind: "user-testing-validator", itemId: feature.id, runId });
-	saveMission(ctx.cwd, mission);
+	saveMission(mission.cwd, mission);
 	persistRunOwnershipArtifact(runDir, ownership);
 	const validatorSessionRecord: MissionChildSessionRecord = {
 		schemaVersion: 1,
@@ -3541,7 +3548,7 @@ async function runUserTestingValidator(ctx: ExtensionContext, mission: MissionSt
 		finishedAt: nowIso(),
 	});
 	clearActiveRunOwnership(mission);
-	saveMission(ctx.cwd, mission);
+	saveMission(mission.cwd, mission);
 	updateWidget(ctx, mission);
 	return block;
 }
@@ -3584,7 +3591,7 @@ function transitionInterruptedOrStaleRunToPausedForResume(mission: MissionState,
 }
 
 function resetInterruptedRunForResume(ctx: ExtensionContext, mission: MissionState, lifecycle: MissionRunLifecycleClassification): MissionState {
-	const dir = missionDir(ctx.cwd, mission.id);
+	const dir = missionDir(mission.cwd, mission.id);
 	const run = lifecycle.run;
 	const before = {
 		status: mission.status,
@@ -3600,29 +3607,30 @@ function resetInterruptedRunForResume(ctx: ExtensionContext, mission: MissionSta
 	mission.updatedAt = nowIso();
 	appendEvent(dir, "mission_interrupted_run_reset_for_resume", { missionId: mission.id, before });
 	clearMissionRunStatus(ctx);
-	saveMission(ctx.cwd, mission);
+	saveMission(mission.cwd, mission);
 	updateWidget(ctx, mission);
 	return mission;
 }
 
 function startMissionInBackground(missionId: string, ctx: ExtensionContext, pi: ExtensionAPI, source: string): MissionCommandResult {
 	const existing = loadMission(ctx.cwd, missionId);
-	const lifecycle = classifyMissionRunLifecycle(ctx.cwd, existing);
-	if (isMissionRunActive(ctx.cwd, missionId)) return { ok: false, text: `Mission execution is already active for ${missionId}.` };
-	const lockCheck = readRunnerLock(ctx.cwd, missionId);
+	const missionCwd = existing.cwd;
+	const lifecycle = classifyMissionRunLifecycle(missionCwd, existing);
+	if (isMissionRunActive(missionCwd, missionId)) return { ok: false, text: `Mission execution is already active for ${missionId}.` };
+	const lockCheck = readRunnerLock(missionCwd, missionId);
 	if (lockCheck?.status === "active" && !isSameLockOwner(lockCheck) && !lockHeartbeatExpired(lockCheck) && isPidAlive(lockCheck.ownerPid) !== false) {
 		return { ok: false, text: `Mission execution is already owned by pid ${lockCheck.ownerPid} (${lockCheck.ownerSessionMarker}); heartbeat ${lockCheck.heartbeatAt}.` };
 	}
 	if (existing.status === "running" && lifecycle.state === "interrupted") resetInterruptedRunForResume(ctx, existing, lifecycle);
-	const dir = missionDir(ctx.cwd, missionId);
+	const dir = missionDir(missionCwd, missionId);
 	appendEvent(dir, "mission_background_execution_requested", { missionId, source });
 	void runMission(missionId, ctx, pi, { detached: true }).catch((error) => {
 		const message = error instanceof Error ? error.message : String(error);
 		try {
-			const mission = loadMission(ctx.cwd, missionId);
+			const mission = loadMission(missionCwd, missionId);
 			mission.status = mission.status === "complete" ? mission.status : "blocked";
 			clearActiveRunOwnership(mission);
-			saveMission(ctx.cwd, mission);
+			saveMission(mission.cwd, mission);
 			appendEvent(dir, "mission_background_execution_failed", { missionId, source, error: message });
 			updateWidget(ctx, mission);
 		} catch {
@@ -3638,24 +3646,25 @@ function executeRunnerCommand(input: RunnerCommandInput, ctx: ExtensionContext, 
 	const missionId = input.missionId || activeMissionFromState(ctx.cwd, state)?.id || latestMission(ctx.cwd)?.id;
 	if (!missionId) return { ok: false, text: "No mission found." };
 	const mission = loadMission(ctx.cwd, missionId);
-	const dir = missionDir(ctx.cwd, missionId);
+	const missionCwd = mission.cwd;
+	const dir = missionDir(missionCwd, missionId);
 	if (input.command === "status") return { ok: true, text: summarizeMission(mission), details: { missionId } };
 	if (input.command === "start" || input.command === "resume") {
 		return startMissionInBackground(missionId, ctx, pi, input.source);
 	}
 	if (input.command === "pause-after-current") {
 		if (mission.status !== "running") return { ok: false, text: `Mission ${missionId} is not running.` };
-		return requestMissionPauseAfterCurrent(ctx.cwd, mission, input.source);
+		return requestMissionPauseAfterCurrent(missionCwd, mission, input.source);
 	}
 	if (input.command === "cancel-current-child") {
-		const canceled = tryCancelCurrentChild(ctx.cwd, missionId);
+		const canceled = tryCancelCurrentChild(missionCwd, missionId);
 		appendEvent(dir, "mission_current_child_cancel_requested", { missionId, source: input.source, canceled });
 		return canceled
 			? { ok: true, text: `Cancellation requested for current child of ${missionId}.` }
 			: { ok: false, text: `No cancelable child is active for ${missionId}.` };
 	}
 	if (input.command === "retry-feature") {
-		if (isMissionRunActive(ctx.cwd, missionId)) return { ok: false, text: `Mission ${missionId} is currently running.` };
+		if (isMissionRunActive(missionCwd, missionId)) return { ok: false, text: `Mission ${missionId} is currently running.` };
 		const featureId = input.featureId || mission.currentFeatureId;
 		if (!featureId) return { ok: false, text: "No feature id provided for retry." };
 		const feature = missionFeatureList(mission).find((item) => item.id === featureId);
@@ -3669,24 +3678,24 @@ function executeRunnerCommand(input: RunnerCommandInput, ctx: ExtensionContext, 
 		feature.reviewerPending = false;
 		mission.status = "blocked";
 		mission.updatedAt = nowIso();
-		saveMission(ctx.cwd, mission);
+		saveMission(missionCwd, mission);
 		appendEvent(dir, "mission_feature_retry_requested", { missionId, featureId, source: input.source });
 		return { ok: true, text: `Feature ${featureId} reset to pending for retry.` };
 	}
 	if (input.command === "block") {
-		if (isMissionRunActive(ctx.cwd, missionId)) return { ok: false, text: `Mission ${missionId} is currently running.` };
+		if (isMissionRunActive(missionCwd, missionId)) return { ok: false, text: `Mission ${missionId} is currently running.` };
 		mission.status = "blocked";
 		mission.updatedAt = nowIso();
-		saveMission(ctx.cwd, mission);
+		saveMission(missionCwd, mission);
 		appendEvent(dir, "mission_block_manual", { missionId, source: input.source, reason: input.reason });
 		return { ok: true, text: `Mission ${missionId} marked blocked.` };
 	}
 	if (input.command === "unblock") {
-		if (isMissionRunActive(ctx.cwd, missionId)) return { ok: false, text: `Mission ${missionId} is currently running.` };
+		if (isMissionRunActive(missionCwd, missionId)) return { ok: false, text: `Mission ${missionId} is currently running.` };
 		if (mission.status !== "blocked") return { ok: false, text: `Mission ${missionId} is not blocked.` };
 		mission.status = "paused";
 		mission.updatedAt = nowIso();
-		saveMission(ctx.cwd, mission);
+		saveMission(missionCwd, mission);
 		appendEvent(dir, "mission_unblock_manual", { missionId, source: input.source, reason: input.reason });
 		return { ok: true, text: `Mission ${missionId} unblocked to paused state.` };
 	}
@@ -3823,10 +3832,11 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 		return;
 	}
 	let mission = loadMission(ctx.cwd, id);
-	const dir = missionDir(ctx.cwd, id);
-	const gateRepair = repairMissionExecutionGateState(ctx.cwd, mission);
+	const missionCwd = mission.cwd;
+	const dir = missionDir(missionCwd, id);
+	const gateRepair = repairMissionExecutionGateState(missionCwd, mission);
 	if (gateRepair.changed) {
-		saveMission(ctx.cwd, mission);
+		saveMission(missionCwd, mission);
 		appendEvent(dir, "mission_recovery_gate_repaired", { missionId: mission.id, reasons: gateRepair.reasons, latestBlock: mission.latestBlock });
 		ctx.ui.notify(`Mission recovery repaired execution gate: ${gateRepair.reasons.join("; ")}`, "warning");
 	}
@@ -3839,22 +3849,22 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 		return;
 	}
 	if (mission.status === "running") {
-		const lifecycle = classifyMissionRunLifecycle(ctx.cwd, mission);
+		const lifecycle = classifyMissionRunLifecycle(missionCwd, mission);
 		if (lifecycle.state === "interrupted") {
 			mission = resetInterruptedRunForResume(ctx, mission, lifecycle);
 			ctx.ui.notify(`Interrupted mission run reset for resume: ${lifecycle.reason}`, "warning");
 		} else {
-			const pendingPause = readMissionPauseRequest(ctx.cwd, mission.id);
+			const pendingPause = readMissionPauseRequest(missionCwd, mission.id);
 			ctx.ui.notify(pendingPause ? "Mission is running with a pending pause-after-current request. Wait for the current worker/validator to finish before resuming." : "Mission is already running.", "warning");
 			return;
 		}
 	}
-	const runKey = activeMissionRunKey(ctx.cwd, id);
+	const runKey = activeMissionRunKey(missionCwd, id);
 	if (ACTIVE_MISSION_RUNS.has(runKey)) {
 		ctx.ui.notify("Mission execution is already active for this mission.", "warning");
 		return;
 	}
-	const lockAcquire = await acquireRunnerLock(ctx.cwd, mission);
+	const lockAcquire = await acquireRunnerLock(missionCwd, mission);
 	if (!lockAcquire.ok) {
 		ctx.ui.notify(lockAcquire.reason, "warning");
 		return;
@@ -3865,7 +3875,7 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 	ACTIVE_MISSION_RUNS.add(runKey);
 	const heartbeat = setInterval(() => {
 		try {
-			upsertRunnerLockHeartbeat(ctx.cwd, id);
+			upsertRunnerLockHeartbeat(missionCwd, id);
 		} catch {
 			// Best effort heartbeat persistence.
 		}
@@ -3875,18 +3885,18 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 			const ok = await ctx.ui.confirm("Dirty git status", "Repository has uncommitted changes. Continue anyway? Workers must leave it clean after each feature.");
 			if (!ok) return;
 		}
-		if (!hasMissionExecutionStarted(ctx.cwd, mission)) {
+		if (!hasMissionExecutionStarted(missionCwd, mission)) {
 			mission = markMissionExecutionStarted(mission);
-			saveMission(ctx.cwd, mission);
+			saveMission(missionCwd, mission);
 			appendEvent(dir, "mission_execution_started", { missionId: mission.id });
 		}
-		if (hasMissionPauseRequest(ctx.cwd, mission.id)) {
-			clearMissionPauseRequest(ctx.cwd, mission.id);
+		if (hasMissionPauseRequest(missionCwd, mission.id)) {
+			clearMissionPauseRequest(missionCwd, mission.id);
 			appendEvent(dir, "mission_resume_requested", { missionId: mission.id, source: "runMission" });
 		}
 		if (mission.status === "paused") {
 			transitionMissionResumeFromPause(mission);
-			saveMission(ctx.cwd, mission);
+			saveMission(missionCwd, mission);
 		}
 		autoOpenMissionControl(ctx, mission, pi);
 		ctx.ui.notify(`Running mission ${mission.title}`, "info");
@@ -3902,7 +3912,7 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 		await runner.run();
 	} finally {
 		clearInterval(heartbeat);
-		releaseRunnerLock(ctx.cwd, id, "runMission_finished");
+		releaseRunnerLock(missionCwd, id, "runMission_finished");
 		ACTIVE_MISSION_CHILD_ABORTERS.delete(runKey);
 		ACTIVE_MISSION_RUNS.delete(runKey);
 	}
@@ -4027,7 +4037,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			ensureDir(path.join(dir, "skills/reviewer"));
 			const mission = normalizeMissionShape(params.mission as MissionState);
 			mission.id = missionId;
-			mission.cwd = ctx.cwd;
+			mission.cwd = existingMission?.cwd || (typeof requestedMission.cwd === "string" && requestedMission.cwd.trim() ? requestedMission.cwd.trim() : ctx.cwd);
 			mission.schemaVersion = 1;
 			mission.status = persistedPlanStatus(mission.status, existingMission);
 			mission.updatedAt = nowIso();
