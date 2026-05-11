@@ -942,6 +942,7 @@ async function gitHead(cwd: string): Promise<string | undefined> {
 }
 
 function latestBlockFromArtifacts(mission: MissionState): MissionBlockMetadata | undefined {
+	if (mission.status === "complete") return undefined;
 	if (mission.latestBlock) return mission.latestBlock;
 	const logFile = path.join(missionDir(mission.cwd, mission.id), "event-log.jsonl");
 	if (!fs.existsSync(logFile)) return undefined;
@@ -2978,10 +2979,17 @@ function featureUserTestingInstructions(feature: MissionFeature): string | undef
 	return typeof instructions === "string" && instructions.trim() ? instructions.trim() : undefined;
 }
 
+function clearResolvedFeatureBlock(mission: MissionState, featureId: string): void {
+	if (mission.latestBlock?.featureId === featureId || mission.latestBlock?.failedItemId === featureId) {
+		mission.latestBlock = undefined;
+	}
+}
+
 function transitionValidatorPassToFeatureComplete(mission: MissionState, milestone: MissionMilestone, feature: MissionFeature): void {
 	feature.status = "complete";
 	feature.userTestingPending = false;
 	feature.reviewerPending = false;
+	clearResolvedFeatureBlock(mission, feature.id);
 	milestone.status = milestone.features.every((item) => item.status === "complete" || item.status === "skipped") ? "complete" : "pending";
 	mission.status = "running";
 }
@@ -3027,6 +3035,7 @@ function transitionMissionNoRunnablePendingWorkToBlocked(mission: MissionState):
 
 function transitionMissionToComplete(mission: MissionState): void {
 	mission.status = "complete";
+	mission.latestBlock = undefined;
 	for (const milestone of missionMilestones(mission)) {
 		if (milestone.status !== "complete") milestone.status = "complete";
 	}
