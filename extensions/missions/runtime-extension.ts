@@ -2359,7 +2359,7 @@ function missionControlHelpLines(): string[] {
 		"c: clear completed missions from default visibility (confirmation required; artifacts are not deleted)",
 		"?: toggle this help",
 		"q/esc: close Mission Control only",
-		"Mutating Mission Control actions use explicit shortcuts, audit events, notifications, and confirmation when required.",
+		"Mutating Mission Control actions use explicit shortcuts, audit events, and notifications.",
 	];
 }
 
@@ -2409,14 +2409,7 @@ function missionControlAvailableActions(context: MissionControlActionContext): M
 			description: "Start or resume mission execution using the existing runMission path.",
 			kind: "mutation",
 			severity: "execution",
-			requiresConfirmation: true,
-			confirmation: ({ mission, ctx }) => {
-				const lifecycle = mission ? classifyMissionRunLifecycle(ctx.cwd, mission) : undefined;
-				return {
-					title: lifecycle?.state === "interrupted" ? "Resume interrupted mission?" : mission?.status === "paused" ? "Resume mission execution?" : "Start mission execution?",
-					message: mission ? `${mission.title}\n\nThis will run mission ${mission.id}. Workers may modify files and create commits.` : "Start or resume the selected mission.",
-				};
-			},
+			requiresConfirmation: false,
 			isAvailable: ({ mission, ctx }) => {
 				if (!mission || isMissionRunActive(ctx.cwd, mission.id)) return false;
 				if (mission.status === "planned" || mission.status === "paused" || mission.status === "blocked") return true;
@@ -2477,17 +2470,7 @@ async function dispatchMissionControlAction(data: string, context: MissionContro
 	}
 	const dir = context.mission ? missionDir(context.ctx.cwd, context.mission.id) : undefined;
 	if (action.requiresConfirmation) {
-		if (!context.ctx.hasUI) {
-			context.ctx.ui.notify(`Mission Control action requires confirmation: ${action.label}`, "warning");
-			return true;
-		}
-		const confirmation = action.confirmation?.(context) ?? { title: `Confirm ${action.label}?`, message: action.description };
-		const ok = await context.ctx.ui.confirm(confirmation.title, confirmation.message);
-		if (!ok) {
-			if (dir) appendEvent(dir, "mission_control_action_canceled", missionControlActionEventData(context, action));
-			context.ctx.ui.notify(`Mission Control action canceled: ${action.label}`, "info");
-			return true;
-		}
+		if (dir) appendEvent(dir, "mission_control_action_confirmation_bypassed", missionControlActionEventData(context, action));
 	}
 	context.view.pendingActionId = action.id;
 	if (dir) appendEvent(dir, "mission_control_action_started", missionControlActionEventData(context, action));
@@ -2733,12 +2716,21 @@ async function startMissionOrchestrator(args: string, ctx: ExtensionCommandConte
 function persistedPlanStatus(incomingStatus: Status | undefined, existingMission?: MissionState): Status {
 	const existingIsStartedOrTerminal = existingMission && existingMission.status !== "planning" && existingMission.status !== "planned";
 	if (!existingIsStartedOrTerminal) return "planned";
-	if (!incomingStatus || incomingStatus === "planning" || incomingStatus === "planned") return existingMission.status;
+	if (!incomingStatus || incomingStatus === "planning" || incomingStatus === "planned") {
+		if (existingMission.status === "complete" || existingMission.status === "failed") return "planned";
+		return existingMission.status;
+	}
 	return incomingStatus;
 }
 
+function createMissionId(): string {
+	const ts = new Date().toISOString().replace(/[-:.TZ]/g, "");
+	const rand = Math.random().toString(36).slice(2, 8);
+	return `mission-${ts}-${rand}`;
+}
+
 function createPlanningMission(cwd: string, requestedId?: string): MissionState {
-	const id = requestedId || `mission-${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
+	const id = requestedId || createMissionId();
 	return {
 		schemaVersion: 1,
 		id,
@@ -4026,7 +4018,17 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const active = activeMissionFromState(ctx.cwd, orchestratorState);
 			const requestedMission = params.mission as Partial<MissionState>;
-			const missionId = params.missionId || activePlanningId || activeMissionId || active?.id || requestedMission.id || createPlanningMission(ctx.cwd).id;
+			const explicitMissionId = params.missionId || requestedMission.id;
+			const activeCandidateId = activePlanningId || activeMissionId || active?.id;
+			let missionId = explicitMissionId || activeCandidateId || createPlanningMission(ctx.cwd).id;
+			if (!explicitMissionId && activeCandidateId) {
+				try {
+					const candidate = loadMission(ctx.cwd, activeCandidateId);
+					if (candidate.status === "complete" || candidate.status === "failed") missionId = createPlanningMission(ctx.cwd).id;
+				} catch {
+					// Ignore missing candidate and continue with generated/new id.
+				}
+			}
 			const dir = missionDir(ctx.cwd, missionId);
 			const existingMission = fs.existsSync(path.join(dir, "mission.json")) ? loadMission(ctx.cwd, missionId) : undefined;
 			const seedMission = existingMission ?? createPlanningMission(ctx.cwd, missionId);
@@ -4043,7 +4045,13 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			mission.updatedAt = nowIso();
 			if (!mission.createdAt) mission.createdAt = seedMission.createdAt;
 			mission.models = normalizeRoleModels(mission.models ?? seedMission.models);
-			if (existingMission && !mission.executionStartedAt && hasMissionExecutionStarted(ctx.cwd, existingMission)) mission.executionStartedAt = existingMission.executionStartedAt ?? nowIso();
+			if (
+				existingMission &&
+				mission.status !== "planned" &&
+				mission.status !== "planning" &&
+				!mission.executionStartedAt &&
+				hasMissionExecutionStarted(ctx.cwd, existingMission)
+			) mission.executionStartedAt = existingMission.executionStartedAt ?? nowIso();
 			if (!existingMission) {
 				const globalModels = readMissionGlobalSettings(ctx.cwd).models;
 				for (const role of MISSION_ROLES) if (mission.models[role] === "default") mission.models[role] = globalModels[role];
