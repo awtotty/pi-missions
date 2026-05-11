@@ -569,7 +569,7 @@ function latestMission(cwd: string): MissionState | undefined {
 }
 
 function latestVisibleMission(cwd: string): MissionState | undefined {
-	const missions = listMissions(cwd).filter((mission) => !isMissionCleared(cwd, mission.id));
+	const missions = listMissions(cwd).filter((mission) => mission.status !== "complete" && !isMissionCleared(cwd, mission.id));
 	return missions.find((mission) => isMissionForCwd(mission, cwd)) ?? missions[0];
 }
 
@@ -587,7 +587,7 @@ function activeMissionFromState(cwd: string, state?: MissionOrchestratorSessionS
 			// Ignore stale session entries that point at missions no longer present in this checkout.
 		}
 	}
-	const active = listMissions(cwd).filter((mission) => isActiveMissionStatus(mission.status));
+	const active = listMissions(cwd).filter((mission) => isActiveMissionStatus(mission.status) && !isMissionCleared(cwd, mission.id));
 	return active.find((mission) => isMissionForCwd(mission, cwd)) ?? active[0];
 }
 
@@ -1234,10 +1234,10 @@ function updateWidget(ctx: ExtensionContext, mission?: MissionState): void {
 	// widget so stale rich mission UI cannot survive reload, clear, block, or
 	// completion transitions.
 	ctx.ui.setWidget("missions", undefined);
-	if (!mission || (mission.status === "complete" && isMissionCleared(mission.cwd, mission.id))) {
-		ctx.ui.setStatus("missions", undefined);
-		return;
-	}
+	// Clear first so stale footer text from an older active/cleared mission cannot
+	// survive if anything below throws while reconciling disk artifacts.
+	ctx.ui.setStatus("missions", undefined);
+	if (!mission || mission.status === "complete" || isMissionCleared(mission.cwd, mission.id)) return;
 	const features = missionFeatureList(mission);
 	const done = features.filter((f) => f.status === "complete" || f.status === "skipped").length;
 	const run = currentOrLastRunContext(mission);
