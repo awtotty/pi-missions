@@ -422,7 +422,8 @@ async function acquireRunnerLock(cwd: string, mission: MissionState): Promise<{ 
 				return { ok: true, lock: existing, recoveredStale: false };
 			}
 			const alive = isPidAlive(existing.ownerPid);
-			const stale = alive === false || lockHeartbeatExpired(existing);
+			const orphanedPlannedLock = mission.status === "planned" && !hasMissionExecutionStarted(cwd, mission);
+			const stale = alive === false || lockHeartbeatExpired(existing) || orphanedPlannedLock;
 			if (!stale) return { ok: false, reason: `Mission ${mission.id} is already owned by pid ${existing.ownerPid} (${existing.ownerSessionMarker}) with recent heartbeat ${existing.heartbeatAt}.`, lock: existing };
 			const recovered: MissionRunnerLockArtifact = {
 				schemaVersion: 1,
@@ -2415,7 +2416,12 @@ function missionControlAvailableActions(context: MissionControlActionContext): M
 				if (mission.status === "planned" || mission.status === "paused" || mission.status === "blocked") return true;
 				return mission.status === "running" && classifyMissionRunLifecycle(ctx.cwd, mission).state === "interrupted";
 			},
-			run: ({ ctx, pi, mission, state }) => executeRunnerCommand({ command: "start", missionId: mission?.id, source: "mission_control" }, ctx, pi, state),
+			run: ({ pi, mission }) => {
+				const missionId = mission?.id;
+				if (!missionId) return { ok: false, text: "No mission selected." };
+				pi.sendUserMessage(`/missions run ${missionId}`, { deliverAs: "followUp" });
+				return { ok: true, text: `Queued /missions run ${missionId}.` };
+			},
 		},
 		{
 			id: "clear-completed",
@@ -2659,7 +2665,25 @@ async function openMissionControl(ctx: ExtensionContext, state: MissionOrchestra
 					return;
 				}
 				const actionContext = { ctx, pi, state, view, targetMissionId, mission: active };
-				if (missionControlAvailableActions(actionContext).some((action) => matchesMissionControlActionKey(data, action))) {
+				const matchedAction = missionControlAvailableActions(actionContext).find((action) => matchesMissionControlActionKey(data, action));
+				if (matchedAction) {
+					if (matchedAction.id === "start-resume") {
+						const missionId = active?.id;
+						if (!missionId) {
+							ctx.ui.notify("No mission selected to start.", "warning");
+							return;
+						}
+						// Starting a mission from inside a focused custom overlay can leave the
+						// terminal input pipeline wedged if the agent loop begins while Mission
+						// Control still owns focus. Close Mission Control first, then enqueue the
+						// normal /missions run command on the next tick so execution starts from
+						// pi's regular command path with the standard editor restored.
+						close();
+						setTimeout(() => {
+							pi.sendUserMessage(`/missions run ${missionId}`);
+						}, 25);
+						return;
+					}
 					void dispatchMissionControlAction(data, actionContext).then(() => {
 						if (!closed) tui.requestRender();
 					});
@@ -3609,10 +3633,6 @@ function startMissionInBackground(missionId: string, ctx: ExtensionContext, pi: 
 	const missionCwd = existing.cwd;
 	const lifecycle = classifyMissionRunLifecycle(missionCwd, existing);
 	if (isMissionRunActive(missionCwd, missionId)) return { ok: false, text: `Mission execution is already active for ${missionId}.` };
-	const lockCheck = readRunnerLock(missionCwd, missionId);
-	if (lockCheck?.status === "active" && !isSameLockOwner(lockCheck) && !lockHeartbeatExpired(lockCheck) && isPidAlive(lockCheck.ownerPid) !== false) {
-		return { ok: false, text: `Mission execution is already owned by pid ${lockCheck.ownerPid} (${lockCheck.ownerSessionMarker}); heartbeat ${lockCheck.heartbeatAt}.` };
-	}
 	if (existing.status === "running" && lifecycle.state === "interrupted") resetInterruptedRunForResume(ctx, existing, lifecycle);
 	const dir = missionDir(missionCwd, missionId);
 	appendEvent(dir, "mission_background_execution_requested", { missionId, source });
