@@ -28,7 +28,7 @@ const checks = [
 		error: "Mission Control input handling must not call modal ctx.ui.confirm.",
 	},
 	{
-		ok: source.includes('missionControlPaneTitle("Features", "features"') && source.includes('missionControlPaneTitle("Current Item", "details"') && source.includes('missionControlPaneTitle("Progress Log", "activity"') && source.includes('missionControlPaneTitle("Child Output", "child-output"'),
+		ok: source.includes('missionControlPaneTitle("Features", "features"') && source.includes('missionControlPaneTitle("Details", "details"') && source.includes('missionControlPaneTitle("Progress Log", "activity"') && source.includes('missionControlPaneTitle("Child Output", "child-output"'),
 		error: "Mission Control must render focus affordances for all stable panes.",
 	},
 ];

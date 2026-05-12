@@ -223,7 +223,7 @@ function runResponsiveLayoutChecks() {
 	assert(missionControlLayoutMode(70) === "narrow", "layout should be narrow at >=62 and <90 columns");
 	assert(missionControlLayoutMode(40) === "compact", "layout should be compact below 62 columns");
 	assert(missionControlFooter(40).includes("q close") && missionControlFooter(40).includes("tab"), "compact footer should keep close + navigation hints");
-	assert(source.includes("...limitLines(currentPanel, 5, width)"), "compact layout must retain a condensed Current Item panel");
+	assert(source.includes("...featuresPanel, \"\", ...limitLines(detailsPanel, 5, width)"), "compact layout must keep Features before condensed Details");
 }
 
 function runFeatureFlowAndRegressionChecks(computeRecoveryGatePlan) {

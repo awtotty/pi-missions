@@ -1998,19 +1998,24 @@ function progressLogLines(mission: MissionState): string[] {
 	return lines;
 }
 
+function conciseArtifactSummary(run?: MissionRunContext): string {
+	if (!run) return "Artifacts: none yet";
+	const summary = runArtifactSummaryLines(run).find((line) => line.startsWith("Artifact status:") || line.startsWith("Artifact summary:"));
+	return summary ? `Artifacts: ${summary.replace(/^Artifact (status|summary):\s*/, "")}` : `Artifacts: run ${run.runId} recorded`;
+}
+
 function currentItemLines(selection: MissionControlSelection, run?: MissionRunContext, block?: MissionBlockMetadata): string[] {
+	const lifecycle = classifyMissionRunLifecycle(selection.mission.cwd, selection.mission);
+	const nextAction = `Next action: ${nextSuggestedAction(selection.mission, lifecycle, run, block)}`;
 	if (selection.kind === "mission") {
-		const lifecycle = classifyMissionRunLifecycle(selection.mission.cwd, selection.mission);
+		const counts = missionFeatureCounts(selection.mission);
 		return [
-			`${mark(selection.mission.status)} Mission: ${selection.mission.title}`,
-			`Status: ${selection.mission.status}`,
-			`Run lifecycle: ${lifecycle.state}${lifecycle.reason ? ` (${lifecycle.reason})` : ""}`,
+			`${mark(selection.mission.status)} Mission ${selection.mission.id}`,
+			`Status: ${selection.mission.status} · lifecycle ${lifecycle.state}`,
+			`Progress: ${progressText(selection.mission)} ${percentText(counts.done, counts.total)}`,
 			`Current feature: ${selection.mission.currentFeatureId ?? "not set"}`,
-			`Created: ${selection.mission.createdAt}`,
-			`Expected: ${selection.mission.status === "complete" ? "all features complete" : "execute features sequentially with validation after each feature"}`,
-			...(lifecycle.state === "interrupted" ? [nextSuggestedAction(selection.mission, lifecycle, run, block)] : []),
-			...verificationHintLines(selection.mission, ["current-work", "compatibility"]),
-			...currentWorkArtifactLines(run),
+			nextAction,
+			conciseArtifactSummary(run),
 		];
 	}
 	if (selection.kind === "block") return blockInspectionLines(selection.block).slice(1, 10);
@@ -2018,30 +2023,28 @@ function currentItemLines(selection: MissionControlSelection, run?: MissionRunCo
 		const done = selection.milestone.features.filter((f) => f.status === "complete" || f.status === "skipped").length;
 		const validatorRun = run?.kind === "validator" && run.itemId === selection.milestone.id ? run : milestoneValidationRunContext(selection.mission, selection.milestone);
 		return [
-			`${mark(selection.milestone.status)} ${validatorRun ? "Validator" : "Milestone"} ${selection.milestone.id}: ${selection.milestone.title}`,
-			`Role/skill: validator · ${missionSkillPath(selection.mission, "validator")}`,
-			`Milestone: ${selection.milestone.id} — ${selection.milestone.title}`,
-			`Status: ${selection.milestone.status} · Features ${done}/${selection.milestone.features.length}`,
-			...validatorPreconditionLines(selection.milestone),
-			...(selection.milestone.objective ? [`Description: ${selection.milestone.objective}`] : []),
+			`${mark(selection.milestone.status)} Milestone ${selection.milestone.id}`,
+			`Status: ${selection.milestone.status} · features ${done}/${selection.milestone.features.length}`,
+			...(selection.milestone.validationRunId ? [`Attempts: validator run ${selection.milestone.validationRunId}`] : ["Attempts: validator not started"]),
 			...(selection.milestone.validation ? [`Expected: ${selection.milestone.validation}`] : []),
-			...verificationHintLines(selection.mission, ["current-work", "observability", "type-safety"]),
-			...currentWorkArtifactLines(validatorRun),
+			nextAction,
+			conciseArtifactSummary(validatorRun),
 		];
 	}
 	const featureRun = run?.kind === "worker" && run.itemId === selection.feature.id ? run : featureRunContext(selection.mission, selection.feature);
+	const registry = readChildSessionRegistry(selection.mission.cwd, selection.mission.id);
+	const workerAttempts = registry.records.filter((record) => record.role === "worker" && record.featureId === selection.feature.id).length;
+	const validatorAttempts = registry.records.filter((record) => record.role === "validator" && record.featureId === selection.feature.id).length;
+	const userTestingAttempts = registry.records.filter((record) => record.role === "user-testing-validator" && record.featureId === selection.feature.id).length;
 	const lines = [
-		`${mark(selection.feature.status)} Feature ${selection.feature.id}: ${selection.feature.title}`,
-		`Role/skill: worker · ${missionSkillPath(selection.mission, "worker")}`,
+		`${mark(selection.feature.status)} Feature ${selection.feature.id}`,
 		`Status: ${selection.feature.status}`,
-		...featureDependencyLines(selection.mission, selection.feature),
-		`Description: ${selection.feature.description}`,
-		...(selection.milestone.validation ? [`Expected: ${selection.milestone.validation}`] : []),
-		...verificationHintLines(selection.mission, ["current-work", "observability", "ui"]),
-		...currentWorkArtifactLines(featureRun),
-		...(selection.feature.commit ? [`Commit: ${selection.feature.commit}`] : []),
+		`Attempts: worker ${workerAttempts} · validator ${validatorAttempts} · user-testing ${userTestingAttempts}`,
+		...(selection.feature.commit ? [`Commit: ${selection.feature.commit}`] : ["Commit: not recorded"]),
+		conciseArtifactSummary(featureRun),
+		nextAction,
+		...(selection.feature.description ? [`Summary: ${selection.feature.description}`] : []),
 	];
-	if (run && !featureRun) lines.push(`Related run context: ${run.label} ${run.runId} · ${run.kind} ${run.itemId}`);
 	if (block) lines.push(`Block: ${block.reasonCategory} on ${block.failedItemId}`);
 	return lines;
 }
@@ -2254,12 +2257,12 @@ function missionControlDashboardLines(mission: MissionState, selection: MissionC
 	const run = currentOrLastRunContext(mission);
 	const header = mode === "compact" ? compactMissionControlHeader(mission, width) : missionControlHeader(mission, width);
 	const featuresTitle = missionControlPaneTitle("Features", "features", view.focusedPane);
-	const detailsTitle = missionControlPaneTitle("Current Item", "details", view.focusedPane);
+	const detailsTitle = missionControlPaneTitle("Details", "details", view.focusedPane);
 	const activityTitle = missionControlPaneTitle("Progress Log", "activity", view.focusedPane);
 	const childOutputTitle = missionControlPaneTitle("Child Output", "child-output", view.focusedPane);
 
-	let currentPanel = panelLines(detailsTitle, currentItemLines(selection, run, block), width);
 	let featuresPanel = panelLines(featuresTitle, mode === "compact" ? compactGroupedFeatureLines(mission, selection, block) : groupedFeatureLines(mission, selection, block), width);
+	let detailsPanel = panelLines(detailsTitle, currentItemLines(selection, run, block), width);
 	let controlPlanePanel = panelLines("Runner & Orchestrator", missionControlPlaneLines(mission), width);
 	let progressPanel = panelLines(activityTitle, progressLogLines(mission), width);
 	const childPanelMaxLines = mode === "narrow" ? 7 : mode === "compact" ? 6 : CHILD_OUTPUT_MAX_PANEL_LINES + 1;
@@ -2267,22 +2270,22 @@ function missionControlDashboardLines(mission: MissionState, selection: MissionC
 
 	if (mode === "wide") {
 		const { leftWidth, rightWidth } = missionControlColumnWidths(width);
-		currentPanel = panelLines(detailsTitle, currentItemLines(selection, run, block), leftWidth);
-		controlPlanePanel = panelLines("Runner & Orchestrator", missionControlPlaneLines(mission), leftWidth);
-		featuresPanel = panelLines(featuresTitle, groupedFeatureLines(mission, selection, block), rightWidth);
-		progressPanel = panelLines(activityTitle, progressLogLines(mission), rightWidth);
+		featuresPanel = panelLines(featuresTitle, groupedFeatureLines(mission, selection, block), leftWidth);
+		progressPanel = panelLines(activityTitle, progressLogLines(mission), leftWidth);
+		detailsPanel = panelLines(detailsTitle, currentItemLines(selection, run, block), rightWidth);
+		controlPlanePanel = panelLines("Runner & Orchestrator", missionControlPlaneLines(mission), rightWidth);
 	}
 
 	const lines = [
 		...header,
 		"",
 		...(mode === "wide"
-			? [...columnLines([...currentPanel, "", ...controlPlanePanel], [...featuresPanel, "", ...progressPanel], width)]
+			? [...columnLines([...featuresPanel, "", ...progressPanel], [...detailsPanel, "", ...controlPlanePanel], width)]
 			: mode === "medium"
-				? [...currentPanel, "", ...featuresPanel, "", ...controlPlanePanel, "", ...progressPanel]
+				? [...featuresPanel, "", ...detailsPanel, "", ...progressPanel, "", ...controlPlanePanel]
 				: mode === "narrow"
-					? [...limitLines(currentPanel, 8, width), "", ...featuresPanel, "", ...limitLines(controlPlanePanel, 6, width), "", ...limitLines(progressPanel, 6, width)]
-					: [...limitLines(currentPanel, 5, width), "", ...featuresPanel, "", ...limitLines(controlPlanePanel, 5, width), "", ...limitLines(progressPanel, 5, width)]),
+					? [...featuresPanel, "", ...limitLines(detailsPanel, 8, width), "", ...limitLines(progressPanel, 6, width), "", ...limitLines(controlPlanePanel, 6, width)]
+					: [...featuresPanel, "", ...limitLines(detailsPanel, 5, width), "", ...limitLines(progressPanel, 5, width), "", ...limitLines(controlPlanePanel, 5, width)]),
 		"",
 		...childPanel,
 	];
