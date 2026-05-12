@@ -71,15 +71,20 @@ After local edits, use `/reload` inside pi.
 Useful keys:
 
 ```text
-q / esc        Close Mission Control only; execution continues
-↑ / ↓ or j / k Move selection
-tab            Switch focus hint
-r              Refresh artifacts
-p              Pause after current worker/validator
-s              Start or resume when safe
-x              Cancel current child when supported
-c              Clear completed missions from default visibility
-?              Toggle help
+q / esc             Close Mission Control only; execution continues
+↑ / ↓ or j / k      Move mission-tree selection
+tab / shift-tab     Cycle focused pane
+1 / 2 / 3 / 4       Jump to Features / Details / Activity / Child Output pane
+pgup / pgdn         Scroll focused pane
+ctrl-u / ctrl-d     Half-page scroll focused pane
+g / G               Jump to top / bottom of focused pane
+i or enter          Toggle inspect mode for the focused pane
+r                   Refresh artifacts
+p                   Pause after current worker/validator
+s                   Start or resume when safe
+x                   Cancel current child when supported
+c                   Clear completed missions from default visibility
+?                   Toggle help
 ```
 
 Mission Control actions route through deterministic runner commands and preserve confirmation gates for execution-starting or destructive visibility actions.

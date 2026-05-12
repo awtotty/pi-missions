@@ -2216,12 +2216,24 @@ function limitLines(lines: string[], maxLines: number, width: number): string[] 
 	return [...lines.slice(0, Math.max(0, maxLines - 1)), `… ${hidden} more line${hidden === 1 ? "" : "s"}`].map((line) => exactClipLine(line, width));
 }
 
-function limitedPanelLines(title: string, body: string[], width: number, maxPanelLines: number): string[] {
+function scrollWindow(lines: string[], offset: number, maxBodyLines: number): { body: string[]; maxOffset: number; clampedOffset: number } {
+	const maxOffset = Math.max(0, lines.length - maxBodyLines);
+	const clampedOffset = Math.max(0, Math.min(offset, maxOffset));
+	const body = lines.slice(clampedOffset, clampedOffset + maxBodyLines);
+	return { body, maxOffset, clampedOffset };
+}
+
+function limitedPanelLines(title: string, body: string[], width: number, maxPanelLines: number, offset = 0): { lines: string[]; maxOffset: number; clampedOffset: number } {
 	const maxBodyLines = Math.max(1, maxPanelLines - 2);
-	if (body.length <= maxBodyLines) return panelLines(title, body, width);
-	const visibleBodyLines = Math.max(0, maxBodyLines - 1);
-	const hidden = body.length - visibleBodyLines;
-	return panelLines(title, [...body.slice(0, visibleBodyLines), `… ${hidden} more line${hidden === 1 ? "" : "s"}`], width);
+	const windowed = scrollWindow(body, offset, maxBodyLines);
+	const suffix = windowed.maxOffset > 0
+		? [`… ${windowed.clampedOffset + 1}-${Math.min(body.length, windowed.clampedOffset + maxBodyLines)} / ${body.length}`]
+		: [];
+	return {
+		lines: panelLines(title, [...windowed.body, ...suffix], width),
+		maxOffset: windowed.maxOffset,
+		clampedOffset: windowed.clampedOffset,
+	};
 }
 
 function compactMissionControlHeader(mission: MissionState, width: number): string[] {
@@ -2252,40 +2264,51 @@ function compactGroupedFeatureLines(mission: MissionState, selection: MissionCon
 	return lines;
 }
 
+function missionControlPaneBodyLines(pane: MissionControlPaneId, mission: MissionState, selection: MissionControlSelection, run: MissionRunContext | undefined, block: MissionBlockMetadata | undefined, mode: MissionControlLayoutMode): string[] {
+	if (pane === "features") return mode === "compact" ? compactGroupedFeatureLines(mission, selection, block) : groupedFeatureLines(mission, selection, block);
+	if (pane === "details") return currentItemLines(selection, run, block);
+	if (pane === "activity") return progressLogLines(mission);
+	return childOutputLines(run);
+}
+
 function missionControlDashboardLines(mission: MissionState, selection: MissionControlSelection, width: number, view: MissionControlViewState, block?: MissionBlockMetadata): string[] {
 	const mode = missionControlLayoutMode(width);
 	const run = currentOrLastRunContext(mission);
 	const header = mode === "compact" ? compactMissionControlHeader(mission, width) : missionControlHeader(mission, width);
-	const featuresTitle = missionControlPaneTitle("Features", "features", view.focusedPane);
-	const detailsTitle = missionControlPaneTitle("Details", "details", view.focusedPane);
-	const activityTitle = missionControlPaneTitle("Progress Log", "activity", view.focusedPane);
-	const childOutputTitle = missionControlPaneTitle("Child Output", "child-output", view.focusedPane);
-
-	let featuresPanel = panelLines(featuresTitle, mode === "compact" ? compactGroupedFeatureLines(mission, selection, block) : groupedFeatureLines(mission, selection, block), width);
-	let detailsPanel = panelLines(detailsTitle, currentItemLines(selection, run, block), width);
-	let controlPlanePanel = panelLines("Runner & Orchestrator", missionControlPlaneLines(mission), width);
-	let progressPanel = panelLines(activityTitle, progressLogLines(mission), width);
-	const childPanelMaxLines = mode === "narrow" ? 7 : mode === "compact" ? 6 : CHILD_OUTPUT_MAX_PANEL_LINES + 1;
-	const childPanel = limitedPanelLines(childOutputTitle, childOutputLines(run), width, childPanelMaxLines);
-
-	if (mode === "wide") {
-		const { leftWidth, rightWidth } = missionControlColumnWidths(width);
-		featuresPanel = panelLines(featuresTitle, groupedFeatureLines(mission, selection, block), leftWidth);
-		progressPanel = panelLines(activityTitle, progressLogLines(mission), leftWidth);
-		detailsPanel = panelLines(detailsTitle, currentItemLines(selection, run, block), rightWidth);
-		controlPlanePanel = panelLines("Runner & Orchestrator", missionControlPlaneLines(mission), rightWidth);
+	const titleByPane: Record<MissionControlPaneId, string> = {
+		features: missionControlPaneTitle("Features", "features", view.focusedPane),
+		details: missionControlPaneTitle("Details", "details", view.focusedPane),
+		activity: missionControlPaneTitle("Progress Log", "activity", view.focusedPane),
+		"child-output": missionControlPaneTitle("Child Output", "child-output", view.focusedPane),
+	};
+	const panelHeightByPane: Record<MissionControlPaneId, number> = {
+		features: mode === "compact" ? 7 : mode === "narrow" ? 9 : 14,
+		details: mode === "compact" ? 7 : mode === "narrow" ? 9 : 14,
+		activity: mode === "compact" ? 7 : mode === "narrow" ? 9 : 12,
+		"child-output": mode === "compact" ? 7 : mode === "narrow" ? 8 : CHILD_OUTPUT_MAX_PANEL_LINES + 1,
+	};
+	const paneLines = (pane: MissionControlPaneId, panelWidth: number): string[] => {
+		const body = missionControlPaneBodyLines(pane, mission, selection, run, block, mode);
+		const rendered = limitedPanelLines(titleByPane[pane], body, panelWidth, panelHeightByPane[pane], view.scrollOffsets[pane] ?? 0);
+		view.scrollOffsets[pane] = rendered.clampedOffset;
+		return rendered.lines;
+	};
+	if (view.viewMode === "inspect") {
+		const inspectPane = view.focusedPane;
+		const inspectLines = paneLines(inspectPane, width);
+		return [...header, "", ...inspectLines].map((line) => exactClipLine(line, width));
 	}
-
+	const featuresPanel = paneLines("features", mode === "wide" ? missionControlColumnWidths(width).leftWidth : width);
+	const detailsPanel = paneLines("details", mode === "wide" ? missionControlColumnWidths(width).rightWidth : width);
+	const progressPanel = paneLines("activity", mode === "wide" ? missionControlColumnWidths(width).leftWidth : width);
+	const childPanel = paneLines("child-output", width);
+	const controlPlanePanel = limitedPanelLines("Runner & Orchestrator", missionControlPlaneLines(mission), mode === "wide" ? missionControlColumnWidths(width).rightWidth : width, mode === "compact" ? 6 : 8).lines;
 	const lines = [
 		...header,
 		"",
 		...(mode === "wide"
 			? [...columnLines([...featuresPanel, "", ...progressPanel], [...detailsPanel, "", ...controlPlanePanel], width)]
-			: mode === "medium"
-				? [...featuresPanel, "", ...detailsPanel, "", ...progressPanel, "", ...controlPlanePanel]
-				: mode === "narrow"
-					? [...featuresPanel, "", ...limitLines(detailsPanel, 8, width), "", ...limitLines(progressPanel, 6, width), "", ...limitLines(controlPlanePanel, 6, width)]
-					: [...featuresPanel, "", ...limitLines(detailsPanel, 5, width), "", ...limitLines(progressPanel, 5, width), "", ...limitLines(controlPlanePanel, 5, width)]),
+			: [...featuresPanel, "", ...detailsPanel, "", ...progressPanel, "", ...controlPlanePanel]),
 		"",
 		...childPanel,
 	];
@@ -2385,28 +2408,33 @@ const MISSION_CONTROL_POLL_MS = 1500;
 function missionControlHelpLines(): string[] {
 	return [
 		"Help",
-		"Dashboard: header/progress, current work, grouped features, progress log, bounded child output",
-		"Layout: panels collapse responsively; rendered lines are width-clipped",
-		"Focus panes: Features, Details, Activity, Child Output",
-		"↑/k: select previous mission/milestone/feature item",
-		"↓/j: select next mission/milestone/feature item",
-		"tab: cycle active pane focus",
+		"Dashboard: header/progress, current work, grouped features, progress log, bounded child-output tails",
+		"Inspect mode: focused pane expands with independent scroll context",
+		"Focus panes: tab / shift-tab, or 1-4 jump (Features, Details, Activity, Child Output)",
+		"Selection: ↑/↓/j/k move mission tree selection",
+		"Pane scroll: pgup/pgdn, ctrl-u/ctrl-d, g/G (top/bottom)",
+		"i or enter: toggle inspect mode",
 		"r: refresh mission artifacts",
 		"p: request pause-after-current (does not kill current worker/validator)",
-		"s: start/resume mission execution (confirmation required)",
-		"x: cancel current worker/validator child if supported (confirmation required)",
-		"c: clear completed missions from default visibility (confirmation required; artifacts are not deleted)",
+		"s: start/resume mission execution",
+		"x: cancel current worker/validator child if supported",
+		"c: clear completed missions from default visibility (artifacts are not deleted)",
 		"?: toggle this help",
 		"q/esc: close Mission Control only",
-		"Mutating Mission Control actions use explicit shortcuts, audit events, and notifications.",
+		"Mutating actions use explicit shortcuts, audit events, and notifications.",
 	];
 }
 
-function missionControlFooter(width: number): string {
-	const mode = missionControlLayoutMode(width);
-	if (mode === "compact") return "q close · tab pane · ↑/↓ · p pause · s start · x cancel · c clear · r · ?";
-	if (mode === "narrow") return "q/esc close · tab pane · ↑/↓ move · p pause · s start/resume · x cancel · c clear · r · ?";
-	return `q/esc close · tab pane · ↑/↓/j/k move · p pause · s start/resume · x cancel child · c clear done · r refresh · ? help · ${MISSION_CONTROL_POLL_MS / 1000}s poll`;
+function missionControlFooter(width: number, view: MissionControlViewState, selection?: MissionControlSelection, mission?: MissionState): string {
+	const lifecycle = mission ? classifyMissionRunLifecycle(mission.cwd, mission).state : "idle";
+	const scope = selection ? `${selection.kind}` : "recent";
+	const pane = view.focusedPane;
+	const inspectHint = view.viewMode === "inspect" ? "enter/i dashboard" : "enter/i inspect";
+	const base = `q close · tab/shift-tab pane · 1-4 jump · ${inspectHint} · pgup/pgdn scroll · g/G`;
+	if (pane === "features") return `${base} · ↑/↓ select · scope ${scope} · ${lifecycle}`;
+	if (pane === "details") return `${base} · inspect selected ${scope} · ${lifecycle}`;
+	if (pane === "activity") return `${base} · log inspect · ${lifecycle}`;
+	return `${base} · child output inspect · ${lifecycle}`;
 }
 
 function visibleCompletedMissionsToClear(cwd: string): MissionState[] {
@@ -2574,7 +2602,7 @@ function missionControlLines(cwd: string, state: MissionOrchestratorSessionState
 			focusText,
 			...(view.showHelp ? ["", ...missionControlHelpLines()] : []),
 			"",
-			missionControlFooter(safeWidth),
+			missionControlFooter(safeWidth, view, selection, active),
 		], safeWidth, height);
 	}
 	const lines = ["Mission Control", "", "No active mission.", ""];
@@ -2660,9 +2688,46 @@ function missionControlInputMoveDelta(data: string): number {
 	return 0;
 }
 
+function missionControlScrollDelta(data: string): number {
+	if (data === "\u001b[5~") return -10;
+	if (data === "\u001b[6~") return 10;
+	if (matchesKey(data, "ctrl+u")) return -5;
+	if (matchesKey(data, "ctrl+d")) return 5;
+	return 0;
+}
+
+function missionControlPaneJump(data: string): MissionControlPaneId | undefined {
+	if (data === "1") return "features";
+	if (data === "2") return "details";
+	if (data === "3") return "activity";
+	if (data === "4") return "child-output";
+	return undefined;
+}
+
 function dispatchMissionControlInput(data: string, context: MissionControlInputDispatchContext): MissionControlInputDispatchResult {
 	if (data === "q" || matchesKey(data, "escape")) {
 		context.close();
+		return "handled";
+	}
+	if (data === "\t" || matchesKey(data, "tab")) {
+		context.view.focusedPane = moveMissionControlFocus(context.view.focusedPane, 1);
+		context.requestRender();
+		return "handled";
+	}
+	if (data === "\u001b[Z" || matchesKey(data, "shift+tab")) {
+		context.view.focusedPane = moveMissionControlFocus(context.view.focusedPane, -1);
+		context.requestRender();
+		return "handled";
+	}
+	const paneJump = missionControlPaneJump(data);
+	if (paneJump) {
+		context.view.focusedPane = paneJump;
+		context.requestRender();
+		return "handled";
+	}
+	if (data === "i" || matchesKey(data, "enter")) {
+		context.view.viewMode = context.view.viewMode === "dashboard" ? "inspect" : "dashboard";
+		context.requestRender();
 		return "handled";
 	}
 
@@ -2675,11 +2740,6 @@ function dispatchMissionControlInput(data: string, context: MissionControlInputD
 				context.ctx.ui.notify("No mission selected to start.", "warning");
 				return "handled";
 			}
-			// Starting a mission from inside a focused custom overlay can leave the
-			// terminal input pipeline wedged if the agent loop begins while Mission
-			// Control still owns focus. Close Mission Control first, then enqueue the
-			// normal /missions run command on the next tick so execution starts from
-			// pi's regular command path with the standard editor restored.
 			context.close();
 			setTimeout(() => {
 				context.pi.sendUserMessage(`/missions run ${missionId}`);
@@ -2699,8 +2759,20 @@ function dispatchMissionControlInput(data: string, context: MissionControlInputD
 		context.requestRender();
 		return "handled";
 	}
-	if (data === "\t" || matchesKey(data, "tab")) {
-		context.view.focusedPane = moveMissionControlFocus(context.view.focusedPane, 1);
+	const scrollBy = missionControlScrollDelta(data);
+	if (scrollBy !== 0) {
+		const pane = context.view.focusedPane;
+		context.view.scrollOffsets[pane] = Math.max(0, (context.view.scrollOffsets[pane] ?? 0) + scrollBy);
+		context.requestRender();
+		return "handled";
+	}
+	if (data === "g") {
+		context.view.scrollOffsets[context.view.focusedPane] = 0;
+		context.requestRender();
+		return "handled";
+	}
+	if (data === "G") {
+		context.view.scrollOffsets[context.view.focusedPane] = Number.MAX_SAFE_INTEGER;
 		context.requestRender();
 		return "handled";
 	}
