@@ -126,7 +126,7 @@ Mission data is stored globally so target repositories do not need `.gitignore` 
 
 ## Development checks
 
-Additional contributor validation notes live in [`docs/release-validation.md`](docs/release-validation.md).
+Additional contributor validation notes live in [`docs/release-validation.md`](docs/release-validation.md). `npm run validate:f5-ux` is the Mission Control UX regression harness for responsive render behavior, focus traversal, footer/status hints, start safety, and stale block/status handling.
 
 ```bash
 npm run typecheck

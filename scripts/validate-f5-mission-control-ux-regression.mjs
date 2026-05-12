@@ -1,77 +1,178 @@
 import fs from "node:fs";
-import path from "node:path";
+import ts from "typescript";
 
-const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
-const source = fs.readFileSync(path.join(repoRoot, "extensions", "missions", "runtime-extension.ts"), "utf8");
+function fail(message) { throw new Error(message); }
+function assert(condition, message) { if (!condition) fail(message); }
 
-const inputDispatchStart = source.indexOf("function dispatchMissionControlInput(data: string, context: MissionControlInputDispatchContext): MissionControlInputDispatchResult {");
-const inputDispatchEnd = inputDispatchStart >= 0 ? source.indexOf("\n}\n\nasync function openMissionControl", inputDispatchStart) : -1;
-const inputDispatchBody = inputDispatchStart >= 0 && inputDispatchEnd > inputDispatchStart ? source.slice(inputDispatchStart, inputDispatchEnd) : "";
+const source = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
+const sourceFile = ts.createSourceFile("runtime-extension.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 
-const checks = [
-	{
-		id: "RESPONSIVE_LAYOUT_MODES",
-		ok: source.includes('type MissionControlLayoutMode = "wide" | "medium" | "narrow" | "compact";')
-			&& source.includes("if (width >= 120) return \"wide\";")
-			&& source.includes("if (width >= 90) return \"medium\";")
-			&& source.includes("if (width >= 62) return \"narrow\";")
-			&& source.includes('return "compact";'),
-		error: "Mission Control should preserve deterministic responsive layout breakpoints (wide/medium/narrow/compact).",
-	},
-	{
-		id: "FOCUS_AND_PANE_MOVEMENT",
-		ok: source.includes("const MISSION_CONTROL_PANES: MissionControlPaneId[] = [\"features\", \"details\", \"activity\", \"child-output\"];")
-			&& source.includes("function missionControlPaneJump(data: string): MissionControlPaneId | undefined")
-			&& source.includes('if (data === "\\t" || matchesKey(data, "tab"))')
-			&& source.includes('if (data === "\\u001b[Z" || matchesKey(data, "shift+tab"))'),
-		error: "Mission Control should keep explicit focus movement via tab/shift-tab and pane jump keys.",
-	},
-	{
-		id: "STATUS_AND_FOOTER_CONTEXT",
-		ok: source.includes("ctx.ui.setStatus(\"missions\", undefined);")
-			&& source.includes("function missionControlFooter(width: number, view?: MissionControlViewState, selection?: MissionControlSelection, mission?: MissionState): string")
-			&& source.includes('if (pane === "features") return `${base} · ↑/↓ select · scope ${scope} · ${lifecycle}`;')
-			&& source.includes('return `${base} · child output inspect · o mode ${effectiveView.childOutputMode} · ${lifecycle}`;'),
-		error: "Mission status/footer rendering should clear stale status and keep pane-aware footer hints.",
-	},
-	{
-		id: "START_SAFETY_OUTSIDE_OVERLAY",
-		ok: source.includes('if (matchedAction.id === "start-resume")')
-			&& source.includes("context.close();")
-			&& source.includes("setTimeout(() => {")
-			&& source.includes("context.pi.sendUserMessage(`/missions run ${missionId}`);")
-			&& source.includes("overlay: true,"),
-		error: "Mission Control start/resume must close overlay first and queue /missions run asynchronously.",
-	},
-	{
-		id: "NO_MODAL_CONFIRM_IN_INPUT_LOOP",
-		ok: inputDispatchBody.length > 0 && !inputDispatchBody.includes("ctx.ui.confirm(") && !inputDispatchBody.includes("context.ctx.ui.confirm("),
-		error: "Mission Control input handling must not use modal ctx.ui.confirm.",
-	},
-	{
-		id: "STALE_BLOCK_AND_SELECTION_HANDLING",
-		ok: source.includes("const block = latestBlockFromArtifacts(active);")
-			&& source.includes("if (view.lastAutoFocusedBlockId !== id)")
-			&& source.includes("view.lastAutoFocusedBlockId = undefined;")
-			&& source.includes("missionControlSelectionById(active, view.selectedId, block)"),
-		error: "Block auto-focus and selection fallback should avoid stale block/selection indicators.",
-	},
-	{
-		id: "KEY_HINT_AND_HELP_MODEL",
-		ok: source.includes("function missionControlHelpLines(): string[]")
-			&& source.includes('"Focus panes: tab / shift-tab, or 1-4 jump (Features, Details, Activity, Child Output)"')
-			&& source.includes('"o: cycle child output mode (summary/raw/stderr)"')
-			&& source.includes('"q/esc: close Mission Control only"'),
-		error: "Help and key-hint model should include pane focus, child output mode, and close semantics.",
-	},
-];
-
-const failed = checks.filter((check) => !check.ok);
-if (failed.length > 0) {
-	console.error("F5 Mission Control UX regression validation failed:");
-	for (const check of failed) console.error(`- [${check.id}] ${check.error}`);
-	process.exit(1);
+function extractFunctionSource(name) {
+	for (const stmt of sourceFile.statements) {
+		if (!ts.isFunctionDeclaration(stmt) || !stmt.name || stmt.name.text !== name) continue;
+		return stmt.getText(sourceFile);
+	}
+	fail(`missing function ${name}`);
 }
 
+function compileNamedFunction(name, deps) {
+	const fnText = extractFunctionSource(name);
+	const transpiled = ts.transpileModule(fnText, {
+		compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
+		fileName: `${name}.ts`,
+	}).outputText;
+	const depNames = Object.keys(deps);
+	const depValues = Object.values(deps);
+	return new Function(...depNames, `"use strict"; ${transpiled}; return ${name};`)(...depValues);
+}
+
+function buildView() {
+	return {
+		showHelp: false,
+		focusedPane: "features",
+		scrollOffsets: { features: 0, details: 0, activity: 0, "child-output": 0 },
+		viewMode: "dashboard",
+		childOutputMode: "summary",
+		selectedActivityIndexFromEnd: 0,
+	};
+}
+
+function runResponsiveChecks() {
+	const missionControlLayoutMode = compileNamedFunction("missionControlLayoutMode", {});
+	assert(missionControlLayoutMode(120) === "wide", "wide breakpoint failed");
+	assert(missionControlLayoutMode(90) === "medium", "medium breakpoint failed");
+	assert(missionControlLayoutMode(62) === "narrow", "narrow breakpoint failed");
+	assert(missionControlLayoutMode(61) === "compact", "compact breakpoint failed");
+
+	const missionControlFooter = compileNamedFunction("missionControlFooter", {
+		createMissionControlViewState: buildView,
+		classifyMissionRunLifecycle: () => ({ state: "running" }),
+	});
+	const compact = missionControlFooter(40, { ...buildView(), focusedPane: "features" }, { kind: "feature" }, { cwd: "/tmp" });
+	assert(compact.includes("q close") && compact.includes("tab/shift-tab") && compact.includes("scope feature"), "compact footer missing key hints");
+}
+
+function runFocusAndKeyHintChecks() {
+	const missionControlPaneJump = compileNamedFunction("missionControlPaneJump", {});
+	assert(missionControlPaneJump("1") === "features", "pane jump 1 failed");
+	assert(missionControlPaneJump("4") === "child-output", "pane jump 4 failed");
+
+	const missionControlHelpLines = compileNamedFunction("missionControlHelpLines", {});
+	const help = missionControlHelpLines().join("\n");
+	for (const expected of ["tab / shift-tab", "1-4 jump", "summary/raw/stderr", "q/esc: close Mission Control only"]) {
+		assert(help.includes(expected), `help missing: ${expected}`);
+	}
+
+	const moveMissionControlFocus = compileNamedFunction("moveMissionControlFocus", {
+		MISSION_CONTROL_PANES: ["features", "details", "activity", "child-output"],
+	});
+	assert(moveMissionControlFocus("features", 1) === "details", "tab focus advance failed");
+	assert(moveMissionControlFocus("features", -1) === "child-output", "shift-tab focus wrap failed");
+}
+
+async function runStartSafetyAndDispatchChecks() {
+	const sent = [];
+	let closed = 0;
+	const timers = [];
+	const originalSetTimeout = globalThis.setTimeout;
+	globalThis.setTimeout = (fn, delay, ...args) => {
+		timers.push({ fn, delay, args });
+		return 1;
+	};
+	try {
+		const dispatchMissionControlInput = compileNamedFunction("dispatchMissionControlInput", {
+			matchesKey: () => false,
+			moveMissionControlFocus: (pane, delta) => {
+				const order = ["features", "details", "activity", "child-output"];
+				const idx = order.indexOf(pane);
+				return order[(idx + delta + order.length) % order.length];
+			},
+			missionControlPaneJump: (data) => ({ "1": "features", "2": "details", "3": "activity", "4": "child-output" })[data],
+			missionControlAvailableActions: () => [{ id: "start-resume", key: "s" }],
+			matchesMissionControlActionKey: (data, action) => data === action.key,
+			dispatchMissionControlAction: async () => true,
+			missionControlInputMoveDelta: () => 0,
+			missionControlScrollDelta: () => 0,
+			missionActivityViewModel: () => ({ events: [] }),
+			moveMissionControlSelection: () => undefined,
+			missionControlMoveRecentMission: () => undefined,
+			cycleChildOutputMode: (mode) => mode,
+		});
+
+		const view = buildView();
+		dispatchMissionControlInput("s", {
+			ctx: { ui: { notify: () => {} }, cwd: "/tmp" },
+			pi: { sendUserMessage: (msg) => sent.push(msg) },
+			view,
+			active: { id: "M1" },
+			close: () => { closed += 1; },
+			requestRender: () => {},
+		});
+		assert(closed === 1, "start-resume must close Mission Control first");
+		assert(sent.length === 0, "start-resume must defer mission run send");
+		assert(timers.length === 1 && timers[0].delay === 25, "start-resume should schedule async run");
+		timers[0].fn(...timers[0].args);
+		assert(sent[0] === "/missions run M1", "start-resume should queue /missions run for target mission");
+	} finally {
+		globalThis.setTimeout = originalSetTimeout;
+	}
+}
+
+function runStaleStateChecks() {
+	const missionControlLines = compileNamedFunction("missionControlLines", {
+		missionControlTarget: (_cwd, _state, target) => ({ id: target ?? "M1", cwd: "/tmp", status: "running" }),
+		visibleMissions: () => [],
+		fitToViewport: (lines) => lines,
+		latestBlockFromArtifacts: (mission) => mission.latestBlock,
+		blockSelectionId: (block) => `block:${block.runId}`,
+		missionControlSelectionById: (_mission, selectedId, block) => ({ kind: block ? "block" : "feature", id: selectedId ?? "F1" }),
+		selectionId: (selection) => selection.id,
+		missionControlFocusText: () => "focus",
+		missionControlDashboardLines: () => ["dashboard"],
+		missionControlHelpLines: () => [],
+		missionControlFooter: () => "footer",
+	});
+	const view = buildView();
+	const linesWithBlock = missionControlLines("/tmp", undefined, 80, undefined, view, "M1");
+	assert(linesWithBlock.includes("dashboard"), "mission control lines should render active dashboard");
+
+	// simulate stale block clear path
+	view.lastAutoFocusedBlockId = "block:run-1";
+	const missionControlLinesNoBlock = compileNamedFunction("missionControlLines", {
+		missionControlTarget: () => ({ id: "M1", cwd: "/tmp", status: "running" }),
+		visibleMissions: () => [],
+		fitToViewport: (lines) => lines,
+		latestBlockFromArtifacts: () => undefined,
+		blockSelectionId: (block) => `block:${block.runId}`,
+		missionControlSelectionById: () => ({ kind: "feature", id: "F1" }),
+		selectionId: (selection) => selection.id,
+		missionControlFocusText: () => "focus",
+		missionControlDashboardLines: () => ["dashboard"],
+		missionControlHelpLines: () => [],
+		missionControlFooter: () => "footer",
+	});
+	missionControlLinesNoBlock("/tmp", undefined, 80, undefined, view, "M1");
+	assert(view.lastAutoFocusedBlockId === undefined, "stale block focus marker should clear when block disappears");
+
+	const updateWidget = compileNamedFunction("updateWidget", {
+		missionFeatureList: () => [{ status: "pending" }],
+		currentOrLastRunContext: () => undefined,
+		classifyMissionRunLifecycle: () => ({ state: "idle" }),
+		isMissionCleared: () => false,
+	});
+	const statusCalls = [];
+	updateWidget({ ui: { setWidget: () => {}, setStatus: (_name, value) => statusCalls.push(value) } }, { cwd: "/tmp", id: "M1", status: "complete" });
+	assert(statusCalls[0] === undefined, "status should be cleared before early return on completed/cleared mission");
+}
+
+runResponsiveChecks();
+runFocusAndKeyHintChecks();
+await runStartSafetyAndDispatchChecks();
+runStaleStateChecks();
+
+const dispatchStart = source.indexOf("function dispatchMissionControlInput(data: string, context: MissionControlInputDispatchContext): MissionControlInputDispatchResult {");
+const dispatchEnd = dispatchStart >= 0 ? source.indexOf("\n}\n\nasync function openMissionControl", dispatchStart) : -1;
+const dispatchBody = dispatchStart >= 0 && dispatchEnd > dispatchStart ? source.slice(dispatchStart, dispatchEnd) : "";
+assert(dispatchBody.length > 0 && !dispatchBody.includes("ctx.ui.confirm(") && !dispatchBody.includes("context.ctx.ui.confirm("), "dispatch path must not use ctx.ui.confirm");
+
 console.log("F5 Mission Control UX regression validation passed.");
-for (const check of checks) console.log(`- [${check.id}] ok`);
