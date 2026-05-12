@@ -9,7 +9,7 @@ const checks = [
 	["PANE_JUMP_KEYS", source.includes('function missionControlPaneJump(data: string)')],
 	["SCROLL_KEYS", source.includes('function missionControlScrollDelta(data: string)')],
 	["INSPECT_MODE_TOGGLE", source.includes('viewMode === "dashboard" ? "inspect" : "dashboard"')],
-	["CONTEXT_FOOTER", source.includes('function missionControlFooter(width: number, view: MissionControlViewState')],
+	["CONTEXT_FOOTER", source.includes('function missionControlFooter(width: number, view?: MissionControlViewState') || source.includes('function missionControlFooter(width: number, view: MissionControlViewState')],
 ];
 
 const failed = checks.filter(([, ok]) => !ok);

@@ -2425,11 +2425,12 @@ function missionControlHelpLines(): string[] {
 	];
 }
 
-function missionControlFooter(width: number, view: MissionControlViewState, selection?: MissionControlSelection, mission?: MissionState): string {
+function missionControlFooter(width: number, view?: MissionControlViewState, selection?: MissionControlSelection, mission?: MissionState): string {
+	const effectiveView = view ?? createMissionControlViewState();
 	const lifecycle = mission ? classifyMissionRunLifecycle(mission.cwd, mission).state : "idle";
 	const scope = selection ? `${selection.kind}` : "recent";
-	const pane = view.focusedPane;
-	const inspectHint = view.viewMode === "inspect" ? "enter/i dashboard" : "enter/i inspect";
+	const pane = effectiveView.focusedPane;
+	const inspectHint = effectiveView.viewMode === "inspect" ? "enter/i dashboard" : "enter/i inspect";
 	const base = `q close · tab/shift-tab pane · 1-4 jump · ${inspectHint} · pgup/pgdn scroll · g/G`;
 	if (pane === "features") return `${base} · ↑/↓ select · scope ${scope} · ${lifecycle}`;
 	if (pane === "details") return `${base} · inspect selected ${scope} · ${lifecycle}`;

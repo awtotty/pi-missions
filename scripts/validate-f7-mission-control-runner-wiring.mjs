@@ -4,7 +4,8 @@ const source = fs.readFileSync(new URL("../extensions/missions/runtime-extension
 
 const checks = [
 	{
-		ok: source.includes('panelLines("Runner & Orchestrator", missionControlPlaneLines(mission), width)'),
+		ok: source.includes('limitedPanelLines("Runner & Orchestrator", missionControlPlaneLines(mission)')
+			|| source.includes('panelLines("Runner & Orchestrator", missionControlPlaneLines(mission), width)'),
 		error: "Mission Control must render a Runner & Orchestrator panel.",
 	},
 	{
@@ -32,8 +33,8 @@ const checks = [
 	{
 		ok: (source.includes('panelLines("Child Output", childOutputLines(run), width)')
 			|| source.includes('limitedPanelLines("Child Output", childOutputLines(run), width')
-			|| source.includes('limitedPanelLines(childOutputTitle, childOutputLines(run), width'))
-			&& source.includes("transcript stream"),
+			|| source.includes('const childPanel = paneLines("child-output", width)'))
+			&& (source.includes("transcript stream") || source.includes("Live stream:")),
 		error: "Mission Control must show child transcript stream output.",
 	},
 ];

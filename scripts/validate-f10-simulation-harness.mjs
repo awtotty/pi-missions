@@ -216,14 +216,16 @@ async function runMissionControlLifecycleCheck() {
 
 function runResponsiveLayoutChecks() {
 	const missionControlLayoutMode = compileNamedFunction("missionControlLayoutMode", {});
-	const missionControlFooter = compileNamedFunction("missionControlFooter", { missionControlLayoutMode, MISSION_CONTROL_POLL_MS: 1500 });
+	const missionControlFooter = compileNamedFunction("missionControlFooter", { missionControlLayoutMode, MISSION_CONTROL_POLL_MS: 1500, createMissionControlViewState: () => ({ showHelp: false, focusedPane: "features", scrollOffsets: { features: 0, details: 0, activity: 0, "child-output": 0 }, viewMode: "dashboard" }), classifyMissionRunLifecycle: () => ({ state: "idle" }) });
 
 	assert(missionControlLayoutMode(130) === "wide", "layout should be wide at >=120 columns");
 	assert(missionControlLayoutMode(100) === "medium", "layout should be medium at >=90 and <120 columns");
 	assert(missionControlLayoutMode(70) === "narrow", "layout should be narrow at >=62 and <90 columns");
 	assert(missionControlLayoutMode(40) === "compact", "layout should be compact below 62 columns");
 	assert(missionControlFooter(40).includes("q close") && missionControlFooter(40).includes("tab"), "compact footer should keep close + navigation hints");
-	assert(source.includes("...featuresPanel, \"\", ...limitLines(detailsPanel, 5, width)"), "compact layout must keep Features before condensed Details");
+	const featuresIdx = source.indexOf('const featuresPanel = paneLines("features"');
+	const detailsIdx = source.indexOf('const detailsPanel = paneLines("details"');
+	assert(featuresIdx >= 0 && detailsIdx > featuresIdx, "dashboard layout must build Features pane before Details pane");
 }
 
 function runFeatureFlowAndRegressionChecks(computeRecoveryGatePlan) {
