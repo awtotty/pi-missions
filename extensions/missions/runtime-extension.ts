@@ -1576,6 +1576,15 @@ interface MissionControlEventWindow {
 	maxEvents: number;
 }
 
+type ChildOutputMode = "summary" | "raw" | "stderr";
+
+interface MissionControlActivityViewModel {
+	headline: string;
+	rows: string[];
+	events: MissionControlEvent[];
+	hidden: number;
+}
+
 type MissionControlSelection =
 	| { kind: "mission"; mission: MissionState }
 	| { kind: "block"; mission: MissionState; block: MissionBlockMetadata }
@@ -1697,6 +1706,9 @@ function eventDataSummary(event: MissionControlEvent): string {
 	const source = typeof record.source === "string" ? record.source.replace(/_/g, " ") : undefined;
 	const completedUnit = typeof record.completedUnit === "string" ? record.completedUnit : undefined;
 	const ok = typeof record.ok === "boolean" ? record.ok : undefined;
+	const tool = typeof record.toolName === "string" ? record.toolName : typeof record.name === "string" ? record.name : undefined;
+	const textSummary = [record.summary, record.text, record.message, record.error]
+		.find((value): value is string => typeof value === "string" && value.trim().length > 0);
 	if (event.type === "mission_block_recorded") {
 		if (kind || failedItemId) pieces.push([kind, failedItemId].filter(Boolean).join(" "));
 		if (reason) pieces.push(reason);
@@ -1706,9 +1718,11 @@ function eventDataSummary(event: MissionControlEvent): string {
 		if (actionId) pieces.push(actionId);
 		if (completedUnit) pieces.push(`after ${completedUnit}`);
 		if (source) pieces.push(source);
+		if (tool) pieces.push(`tool ${tool}`);
 		if (status) pieces.push(status);
 		if (typeof ok === "boolean") pieces.push(ok ? "ok" : "not ok");
 		if (typeof exitCode === "number") pieces.push(`exit ${exitCode}`);
+		if (textSummary) pieces.push(compactSnippetText(textSummary, 90));
 	}
 	if (runId) pieces.push(`run ${runId}`);
 	return pieces.length ? ` — ${pieces.join(" · ")}` : "";
@@ -1716,6 +1730,21 @@ function eventDataSummary(event: MissionControlEvent): string {
 
 function formatMissionEventLine(event: MissionControlEvent, now = Date.now()): string {
 	return `${relativeEventTime(event.ts, now).padStart(7)} ${eventIcon(event)} ${eventLabel(event.type)}${eventDataSummary(event)}`;
+}
+
+function missionActivityViewModel(mission: MissionState, selectedIndexFromEnd = 0): MissionControlActivityViewModel {
+	const window = readMissionEventWindow(mission);
+	const prefix = window.truncated ? "Recent tail" : "Recent log";
+	const hidden = Math.max(0, window.parsedInTail - window.events.length);
+	const headline = `${prefix}: showing ${window.events.length}/${window.parsedInTail} parsed event${window.parsedInTail === 1 ? "" : "s"}${hidden ? ` (${hidden} older in tail)` : ""}${window.malformedInTail ? ` · skipped ${window.malformedInTail} malformed` : ""}`;
+	if (window.events.length === 0) return { headline, rows: [], events: [], hidden };
+	const now = Date.now();
+	const selected = Math.max(0, Math.min(window.events.length - 1, selectedIndexFromEnd));
+	const rows = window.events.map((event, index) => {
+		const marker = index === window.events.length - 1 - selected ? "▸" : " ";
+		return `${marker} ${formatMissionEventLine(event, now)}`;
+	});
+	return { headline, rows, events: window.events, hidden };
 }
 
 function runArtifactSummaryLines(run: MissionRunContext): string[] {
@@ -1978,24 +2007,14 @@ function missionDetailsLines(selection: MissionControlSelection, run?: MissionRu
 	return lines;
 }
 
-function progressLogLines(mission: MissionState): string[] {
+function progressLogLines(mission: MissionState, selectedIndexFromEnd = 0): string[] {
 	const lifecycle = classifyMissionRunLifecycle(mission.cwd, mission);
-	const window = readMissionEventWindow(mission);
-	if (window.events.length === 0) {
-		const base = window.malformedInTail > 0
-			? `No parseable events in recent log tail; skipped ${window.malformedInTail} malformed entr${window.malformedInTail === 1 ? "y" : "ies"}.`
-			: "(no events recorded)";
+	const model = missionActivityViewModel(mission, selectedIndexFromEnd);
+	if (model.events.length === 0) {
+		const base = model.headline.includes("malformed") ? model.headline : "(no events recorded)";
 		return [`Run lifecycle: ${lifecycle.state}${lifecycle.reason ? ` (${lifecycle.reason})` : ""}`, base];
 	}
-	const prefix = window.truncated ? "Recent tail" : "Recent log";
-	const hidden = Math.max(0, window.parsedInTail - window.events.length);
-	const lines = [
-		`Run lifecycle: ${lifecycle.state}${lifecycle.reason ? ` (${lifecycle.reason})` : ""}`,
-		`${prefix}: showing ${window.events.length}/${window.parsedInTail} parsed event${window.parsedInTail === 1 ? "" : "s"}${hidden ? ` (${hidden} older in tail)` : ""}${window.malformedInTail ? ` · skipped ${window.malformedInTail} malformed` : ""}`,
-	];
-	const now = Date.now();
-	for (const event of window.events) lines.push(formatMissionEventLine(event, now));
-	return lines;
+	return [`Run lifecycle: ${lifecycle.state}${lifecycle.reason ? ` (${lifecycle.reason})` : ""}`, model.headline, ...model.rows];
 }
 
 function conciseArtifactSummary(run?: MissionRunContext): string {
@@ -2004,9 +2023,18 @@ function conciseArtifactSummary(run?: MissionRunContext): string {
 	return summary ? `Artifacts: ${summary.replace(/^Artifact (status|summary):\s*/, "")}` : `Artifacts: run ${run.runId} recorded`;
 }
 
-function currentItemLines(selection: MissionControlSelection, run?: MissionRunContext, block?: MissionBlockMetadata): string[] {
+function currentItemLines(selection: MissionControlSelection, run?: MissionRunContext, block?: MissionBlockMetadata, activityEvent?: MissionControlEvent): string[] {
 	const lifecycle = classifyMissionRunLifecycle(selection.mission.cwd, selection.mission);
 	const nextAction = `Next action: ${nextSuggestedAction(selection.mission, lifecycle, run, block)}`;
+	if (activityEvent) {
+		return [
+			`Activity event: ${eventLabel(activityEvent.type)}`,
+			`When: ${relativeEventTime(activityEvent.ts)}${activityEvent.ts ? ` (${activityEvent.ts})` : ""}`,
+			`Severity: ${eventIcon(activityEvent)}`,
+			`Summary: ${eventLabel(activityEvent.type)}${eventDataSummary(activityEvent)}`,
+			...(activityEvent.data !== undefined ? ["Data:", compactSnippetText(JSON.stringify(activityEvent.data), 320)] : ["Data: none"]),
+		];
+	}
 	if (selection.kind === "mission") {
 		const counts = missionFeatureCounts(selection.mission);
 		return [
@@ -2180,7 +2208,19 @@ function stderrTailLines(file: string): string[] {
 	return [`${tail.truncated ? "stderr tail" : "stderr"}:`, ...stderrLines.map((line) => `stderr: ${line}`)];
 }
 
-function childOutputLines(run?: MissionRunContext): string[] {
+function childOutputSummaryLines(transcriptFile: string, stderrFile: string): string[] {
+	return [...transcriptTailLines(transcriptFile), ...stderrTailLines(stderrFile)];
+}
+
+function childOutputRawLines(transcriptFile: string): string[] {
+	const tail = safeReadTailText(transcriptFile, CHILD_TRANSCRIPT_TAIL_BYTES);
+	if (tail.missing) return ["transcript.jsonl: not available yet"];
+	if (tail.error) return [`transcript.jsonl: could not read tail (${tail.error})`];
+	const rawLines = tail.text.split("\n").map((line) => line.trim()).filter(Boolean).slice(-CHILD_OUTPUT_MAX_TRANSCRIPT_LINES);
+	return [`${tail.truncated ? "transcript raw tail" : "transcript raw"}: showing ${rawLines.length} line${rawLines.length === 1 ? "" : "s"}`, ...rawLines.map((line) => `json: ${compactSnippetText(line, 260)}`)];
+}
+
+function childOutputLines(run: MissionRunContext | undefined, mode: ChildOutputMode): string[] {
 	if (!run) {
 		return [
 			"Live stream: no active child run.",
@@ -2189,14 +2229,23 @@ function childOutputLines(run?: MissionRunContext): string[] {
 	}
 	const transcriptFile = path.join(run.runDir, "transcript.jsonl");
 	const stderrFile = path.join(run.runDir, "stderr.txt");
+	const modeLabel = mode === "summary" ? "summary" : mode === "raw" ? "raw transcript" : "stderr";
+	const modeLines = mode === "summary"
+		? childOutputSummaryLines(transcriptFile, stderrFile)
+		: mode === "raw"
+			? childOutputRawLines(transcriptFile)
+			: (() => {
+				const stderr = stderrTailLines(stderrFile);
+				return stderr.length > 0 ? stderr : ["stderr.txt: no output yet"];
+			})();
 	const lines = [
 		`Live stream: ${run.label} ${run.kind === "worker" ? "worker" : run.kind}`,
 		`Run: ${run.runId}`,
 		`Item: ${run.kind} ${run.itemId} — ${run.itemTitle}`,
 		`Artifacts: ${run.runDir}`,
+		`View mode: ${modeLabel} (o to toggle)`,
 		"",
-		...transcriptTailLines(transcriptFile),
-		...stderrTailLines(stderrFile),
+		...modeLines,
 	];
 	return limitLines(lines, CHILD_OUTPUT_MAX_PANEL_LINES, 120);
 }
@@ -2264,11 +2313,19 @@ function compactGroupedFeatureLines(mission: MissionState, selection: MissionCon
 	return lines;
 }
 
-function missionControlPaneBodyLines(pane: MissionControlPaneId, mission: MissionState, selection: MissionControlSelection, run: MissionRunContext | undefined, block: MissionBlockMetadata | undefined, mode: MissionControlLayoutMode): string[] {
+function selectedActivityEvent(mission: MissionState, view: MissionControlViewState): MissionControlEvent | undefined {
+	if (view.focusedPane !== "activity") return undefined;
+	const events = missionActivityViewModel(mission, view.selectedActivityIndexFromEnd).events;
+	if (events.length === 0) return undefined;
+	const index = Math.max(0, Math.min(events.length - 1, events.length - 1 - view.selectedActivityIndexFromEnd));
+	return events[index];
+}
+
+function missionControlPaneBodyLines(pane: MissionControlPaneId, mission: MissionState, selection: MissionControlSelection, run: MissionRunContext | undefined, block: MissionBlockMetadata | undefined, mode: MissionControlLayoutMode, view: MissionControlViewState): string[] {
 	if (pane === "features") return mode === "compact" ? compactGroupedFeatureLines(mission, selection, block) : groupedFeatureLines(mission, selection, block);
-	if (pane === "details") return currentItemLines(selection, run, block);
-	if (pane === "activity") return progressLogLines(mission);
-	return childOutputLines(run);
+	if (pane === "details") return currentItemLines(selection, run, block, selectedActivityEvent(mission, view));
+	if (pane === "activity") return progressLogLines(mission, view.selectedActivityIndexFromEnd);
+	return childOutputLines(run, view.childOutputMode);
 }
 
 function missionControlDashboardLines(mission: MissionState, selection: MissionControlSelection, width: number, view: MissionControlViewState, block?: MissionBlockMetadata): string[] {
@@ -2288,7 +2345,7 @@ function missionControlDashboardLines(mission: MissionState, selection: MissionC
 		"child-output": mode === "compact" ? 7 : mode === "narrow" ? 8 : CHILD_OUTPUT_MAX_PANEL_LINES + 1,
 	};
 	const paneLines = (pane: MissionControlPaneId, panelWidth: number): string[] => {
-		const body = missionControlPaneBodyLines(pane, mission, selection, run, block, mode);
+		const body = missionControlPaneBodyLines(pane, mission, selection, run, block, mode, view);
 		const rendered = limitedPanelLines(titleByPane[pane], body, panelWidth, panelHeightByPane[pane], view.scrollOffsets[pane] ?? 0);
 		view.scrollOffsets[pane] = rendered.clampedOffset;
 		return rendered.lines;
@@ -2352,6 +2409,8 @@ interface MissionControlViewState {
 	focusedPane: MissionControlPaneId;
 	scrollOffsets: Record<MissionControlPaneId, number>;
 	viewMode: MissionControlViewMode;
+	childOutputMode: ChildOutputMode;
+	selectedActivityIndexFromEnd: number;
 }
 
 function createMissionControlViewState(): MissionControlViewState {
@@ -2360,6 +2419,8 @@ function createMissionControlViewState(): MissionControlViewState {
 		focusedPane: "features",
 		scrollOffsets: { features: 0, details: 0, activity: 0, "child-output": 0 },
 		viewMode: "dashboard",
+		childOutputMode: "summary",
+		selectedActivityIndexFromEnd: 0,
 	};
 }
 
@@ -2414,6 +2475,7 @@ function missionControlHelpLines(): string[] {
 		"Selection: ↑/↓/j/k move mission tree selection",
 		"Pane scroll: pgup/pgdn, ctrl-u/ctrl-d, g/G (top/bottom)",
 		"i or enter: toggle inspect mode",
+		"o: cycle child output mode (summary/raw/stderr)",
 		"r: refresh mission artifacts",
 		"p: request pause-after-current (does not kill current worker/validator)",
 		"s: start/resume mission execution",
@@ -2435,7 +2497,7 @@ function missionControlFooter(width: number, view?: MissionControlViewState, sel
 	if (pane === "features") return `${base} · ↑/↓ select · scope ${scope} · ${lifecycle}`;
 	if (pane === "details") return `${base} · inspect selected ${scope} · ${lifecycle}`;
 	if (pane === "activity") return `${base} · log inspect · ${lifecycle}`;
-	return `${base} · child output inspect · ${lifecycle}`;
+	return `${base} · child output inspect · o mode ${effectiveView.childOutputMode} · ${lifecycle}`;
 }
 
 function visibleCompletedMissionsToClear(cwd: string): MissionState[] {
@@ -2705,6 +2767,12 @@ function missionControlPaneJump(data: string): MissionControlPaneId | undefined 
 	return undefined;
 }
 
+function cycleChildOutputMode(mode: ChildOutputMode): ChildOutputMode {
+	if (mode === "summary") return "raw";
+	if (mode === "raw") return "stderr";
+	return "summary";
+}
+
 function dispatchMissionControlInput(data: string, context: MissionControlInputDispatchContext): MissionControlInputDispatchResult {
 	if (data === "q" || matchesKey(data, "escape")) {
 		context.close();
@@ -2755,8 +2823,17 @@ function dispatchMissionControlInput(data: string, context: MissionControlInputD
 
 	const moveBy = missionControlInputMoveDelta(data);
 	if (moveBy !== 0) {
-		if (context.active) context.view.selectedId = moveMissionControlSelection(context.active, context.view.selectedId, moveBy);
-		else context.view.selectedRecentMissionId = missionControlMoveRecentMission(context.ctx.cwd, context.view.selectedRecentMissionId, moveBy);
+		if (context.active && context.view.focusedPane === "activity") {
+			const events = missionActivityViewModel(context.active, context.view.selectedActivityIndexFromEnd).events;
+			if (events.length > 0) {
+				const next = context.view.selectedActivityIndexFromEnd - moveBy;
+				context.view.selectedActivityIndexFromEnd = Math.max(0, Math.min(events.length - 1, next));
+			}
+		} else if (context.active) {
+			context.view.selectedId = moveMissionControlSelection(context.active, context.view.selectedId, moveBy);
+		} else {
+			context.view.selectedRecentMissionId = missionControlMoveRecentMission(context.ctx.cwd, context.view.selectedRecentMissionId, moveBy);
+		}
 		context.requestRender();
 		return "handled";
 	}
@@ -2774,6 +2851,11 @@ function dispatchMissionControlInput(data: string, context: MissionControlInputD
 	}
 	if (data === "G") {
 		context.view.scrollOffsets[context.view.focusedPane] = Number.MAX_SAFE_INTEGER;
+		context.requestRender();
+		return "handled";
+	}
+	if (data === "o") {
+		context.view.childOutputMode = cycleChildOutputMode(context.view.childOutputMode);
 		context.requestRender();
 		return "handled";
 	}

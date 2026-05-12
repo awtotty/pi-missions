@@ -37,6 +37,7 @@
     "validate:f3": "node ./scripts/validate-f3-runner-command-routing.mjs",
     "validate:f3-nav": "node ./scripts/validate-f3-mission-control-navigation.mjs",
     "validate:f4": "node ./scripts/validate-f4-mission-flow-coverage.mjs",
+    "validate:f4-ux": "node ./scripts/validate-f4-mission-control-activity-output.mjs",
     "validate:f5": "node ./scripts/validate-f5-official-orchestrator-session.mjs",
     "validate:f7": "node ./scripts/validate-f7-mission-control-runner-wiring.mjs",
     "validate:f8": "node ./scripts/validate-f8-feature-execution-vs-milestones.mjs",
