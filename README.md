@@ -66,7 +66,15 @@ After local edits, use `/reload` inside pi.
 
 ## Mission Control
 
-`/mission-control [mission-id]` opens an interactive dashboard for mission progress and controls. It shows mission status, feature progress, current work, recent log events, and bounded child-output tails from `transcript.jsonl` / `stderr.txt`.
+`/mission-control [mission-id]` opens an interactive dashboard for mission progress and controls. It keeps four stable panes (Features, Details, Activity, Child Output), selection-driven details, inspect mode for focused panes, and bounded child-output tails from `transcript.jsonl` / `stderr.txt`.
+
+Interaction model highlights:
+
+- Responsive layouts: `wide` (2-column), `medium`, `narrow`, and `compact` stack modes.
+- Explicit focus model: tab/shift-tab or `1-4` pane jumps; pane-local scroll offsets are preserved.
+- Contextual footer hints: key hints adapt to focused pane and child output mode.
+- Safe start/resume from Mission Control: pressing `s` closes the overlay first, then queues `/missions run` so execution does not begin inside the custom overlay input loop.
+- Stale-state safety: compact status/footer is cleared before re-render so completed/cleared missions do not leak stale indicators.
 
 Useful keys:
 
@@ -87,7 +95,7 @@ c                   Clear completed missions from default visibility
 ?                   Toggle help
 ```
 
-Mission Control actions route through deterministic runner commands and preserve confirmation gates for execution-starting or destructive visibility actions.
+Mission Control actions route through deterministic runner commands and preserve confirmation gates for execution-starting or destructive visibility actions. Mission Control input handling intentionally avoids modal `ctx.ui.confirm` calls.
 
 ## Artifact layout
 
@@ -125,6 +133,7 @@ npm run typecheck
 npm run validate:f3
 npm run validate:f4
 npm run validate:f5
+npm run validate:f5-ux
 npm run validate:f7
 npm run validate:f8
 npm run validate:f9
