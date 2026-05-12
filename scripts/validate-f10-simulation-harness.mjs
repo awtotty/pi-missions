@@ -187,14 +187,8 @@ async function runMissionControlLifecycleCheck() {
 		loadMission: () => ({ id: "M1" }),
 		missionControlLines: () => ["Mission Control"],
 		missionControlTarget: () => ({ id: "M1" }),
-		missionControlAvailableActions: () => [],
-		matchesMissionControlActionKey: () => false,
-		dispatchMissionControlAction: async () => {},
-		moveMissionControlSelection: () => "F5",
-		missionControlMoveRecentMission: () => "M1",
-		hasSessionSwitchControls: () => false,
-		openOrSwitchMissionOrchestratorSession: async () => {},
-		matchesKey: () => false,
+		createMissionControlViewState: () => ({ showHelp: false, focusedPane: "features", scrollOffsets: { features: 0, details: 0, activity: 0, "child-output": 0 }, viewMode: "dashboard" }),
+		dispatchMissionControlInput: (_data, inputContext) => { inputContext.close(); return "handled"; },
 	});
 
 	for (let attempt = 0; attempt < 2; attempt++) {
@@ -234,7 +228,11 @@ function runResponsiveLayoutChecks() {
 
 function runFeatureFlowAndRegressionChecks(computeRecoveryGatePlan) {
 	const transitionValidatorFailToFeaturePendingForRetry = compileNamedFunction("transitionValidatorFailToFeaturePendingForRetry", {});
-	const transitionValidatorPassToFeatureComplete = compileNamedFunction("transitionValidatorPassToFeatureComplete", {});
+	const transitionValidatorPassToFeatureComplete = compileNamedFunction("transitionValidatorPassToFeatureComplete", {
+		clearResolvedFeatureBlock: (mission, featureId) => {
+			if (mission.latestBlock?.featureId === featureId || mission.latestBlock?.failedItemId === featureId) mission.latestBlock = undefined;
+		},
+	});
 	const findNextFeature = compileNamedFunction("findNextFeature", {
 		featureStatusById: (mission) => new Map(mission.features.map((f) => [f.id, f.status])),
 		missionFeatureList: (mission) => mission.features,

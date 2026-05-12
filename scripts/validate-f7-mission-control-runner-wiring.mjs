@@ -31,7 +31,8 @@ const checks = [
 	},
 	{
 		ok: (source.includes('panelLines("Child Output", childOutputLines(run), width)')
-			|| source.includes('limitedPanelLines("Child Output", childOutputLines(run), width'))
+			|| source.includes('limitedPanelLines("Child Output", childOutputLines(run), width')
+			|| source.includes('limitedPanelLines(childOutputTitle, childOutputLines(run), width'))
 			&& source.includes("transcript stream"),
 		error: "Mission Control must show child transcript stream output.",
 	},
