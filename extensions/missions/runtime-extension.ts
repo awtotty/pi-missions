@@ -1471,15 +1471,18 @@ function persistMissionBlock(dir: string, mission: MissionState, block: MissionB
 	appendEvent(dir, "mission_block_recorded", latestBlock);
 }
 
-function formatMissionBlockMessage(block: MissionBlockSummary): string {
+function formatMissionBlockMessage(block: MissionBlockSummary, routedToRuntimeOrchestrator: boolean): string {
 	const failedItem = block.kind === "worker"
 		? `Feature ${block.featureId} - ${block.featureTitle}`
 		: `Milestone ${block.milestoneId} - ${block.milestoneTitle}`;
 	return [
 		"[MISSION BLOCKED - RECOVERY CONTEXT]",
 		block.reasonCategory === "no_runnable_pending_work"
-			? "Mission execution stopped because pending work remains but no feature is currently runnable. Continue recovery in this main chat as the mission orchestrator; do not treat the mission as dead."
-			: "A mission child agent blocked execution. Continue recovery in this main chat as the mission orchestrator; do not treat the mission as dead.",
+			? "Mission execution stopped because pending work remains but no feature is currently runnable."
+			: "A mission child agent blocked execution.",
+		routedToRuntimeOrchestrator
+			? "Default recovery has been routed to the mission's dedicated runtime orchestrator session. This main chat copy is display-only visibility for human override."
+			: "Dedicated runtime orchestrator session dispatch is unavailable here. This main chat copy is the display-only fallback for human override and manual recovery.",
 		"",
 		`Mission: ${block.missionId} — ${block.missionTitle}`,
 		`Blocked during: ${block.kind}`,
@@ -1503,18 +1506,89 @@ function formatMissionBlockMessage(block: MissionBlockSummary): string {
 	].filter((line): line is string => Boolean(line)).join("\n");
 }
 
-function emitMissionBlockMessage(pi: ExtensionAPI, block: MissionBlockSummary): void {
-	// Blocking a mission is an artifact/state transition, not permission to start a
-	// nested assistant turn. Triggering a follow-up turn from inside a running tool
-	// call or Mission Control action can collide with the active child execution and
-	// interactive custom UI. Surface the recovery context as a display-only custom
-	// message; the user can then decide when to continue recovery in chat.
+function runtimeOrchestratorRecoveryPrompt(mission: MissionState, block: MissionBlockSummary): string {
+	const packetArtifacts = block.artifactPaths.filter((artifact) => artifact.includes(`${path.sep}recovery-packets${path.sep}`));
+	return [
+		"[MISSION RUNTIME ORCHESTRATOR RECOVERY]",
+		"The deterministic mission runner has stopped after a recoverable block. You are the dedicated runtime orchestrator session for this mission.",
+		"Do not edit repository implementation code by default. Use mission tools/APIs to inspect artifacts, revise mission metadata/control state, retry/repair state, resume, ask the user, rerun validation when safe, or leave the mission blocked with a clear reason.",
+		"Main chat remains the human command/question/override channel. Mission Control remains read-only observability.",
+		"",
+		`Mission: ${mission.id} — ${mission.title} [${mission.status}]`,
+		`Mission directory: ${missionDir(mission.cwd, mission.id)}`,
+		`Target repository cwd: ${mission.cwd}`,
+		`Current milestone: ${mission.currentMilestoneId ?? "not set"}`,
+		`Current feature: ${mission.currentFeatureId ?? "not set"}`,
+		"",
+		"## Block",
+		formatMissionBlockMessage(block, true),
+		"",
+		"## Recovery packet",
+		...(packetArtifacts.length > 0 ? packetArtifacts.map((artifact) => `- ${artifact}`) : ["- Recovery packet path was not present in block artifact paths; inspect the mission's recovery-packets directory."]),
+		"",
+		"## Required recovery behavior",
+		"1. Inspect the recovery packet and failed run artifacts.",
+		"2. Classify the failure as implementation defect, validator defect, procedural failure, environment/tooling issue, stale-state issue, dependency/planning issue, or retry-limit exceeded.",
+		"3. Use mission tools/APIs for mission metadata/control-state recovery. Do not directly implement repository code unless the user explicitly overrides the mission contract.",
+		"4. Choose one allowed outcome: resume, ask-user, leave-blocked, retry-repair, or rerun-validation when safe.",
+		"5. Do not advance later features while this block is unresolved.",
+	].join("\n");
+}
+
+async function dispatchMissionBlockRecovery(ctx: ExtensionContext, pi: ExtensionAPI, mission: MissionState, block: MissionBlockSummary): Promise<void> {
+	const dir = missionDir(mission.cwd, mission.id);
+	const controlsAvailable = hasSessionSwitchControls(ctx);
 	pi.sendMessage({
 		customType: "missions-block-context",
 		display: true,
-		content: formatMissionBlockMessage(block),
-		details: block,
+		content: formatMissionBlockMessage(block, controlsAvailable),
+		details: { ...block, recoveryDispatchTarget: controlsAvailable ? "dedicated-runtime-orchestrator-session" : "main-chat-display-only" },
 	}, { triggerTurn: false, deliverAs: "followUp" });
+	if (!controlsAvailable) {
+		appendEvent(dir, "runtime_orchestrator_recovery_dispatch_unavailable", { missionId: mission.id, runId: block.runId, reasonCategory: block.reasonCategory, fallback: "main-chat-display-only" });
+		return;
+	}
+
+	const content = runtimeOrchestratorRecoveryPrompt(mission, block);
+	const details = { missionId: mission.id, missionDir: dir, runId: block.runId, runDir: block.runDir, reasonCategory: block.reasonCategory, target: "dedicated-runtime-orchestrator-session" };
+	const existing = readOrchestratorSessionRecord(mission.cwd, mission.id);
+	const existingSessionPath = existing?.sessionPath && fs.existsSync(existing.sessionPath) ? existing.sessionPath : undefined;
+	const parentSession = ctx.sessionManager.getSessionFile();
+	appendEvent(dir, "runtime_orchestrator_recovery_dispatch_requested", { ...details, sessionPath: existingSessionPath, reusedSession: Boolean(existingSessionPath) });
+	try {
+		if (existingSessionPath) {
+			await ctx.switchSession(existingSessionPath, {
+				withSession: async (nextCtx) => {
+					await nextCtx.sendMessage({ customType: "missions-runtime-orchestrator-recovery", display: true, content, details: { ...details, reusedSession: true, sessionPath: existingSessionPath } }, { triggerTurn: true, deliverAs: "followUp" });
+					appendEvent(dir, "runtime_orchestrator_recovery_dispatched", { ...details, sessionPath: existingSessionPath, reusedSession: true, triggerTurn: true });
+				},
+			});
+			return;
+		}
+
+		let createdSessionPath = "";
+		await ctx.newSession({
+			parentSession,
+			setup: async (sessionManager) => {
+				createdSessionPath = sessionManager.getSessionFile() || "";
+				sessionManager.appendSessionInfo(`Mission runtime orchestrator: ${mission.title}`);
+				sessionManager.appendCustomEntry(ORCHESTRATOR_STATE_ENTRY, buildOrchestratorState(mission.cwd, mission, { activeMissionId: mission.id, activePlanningMissionId: undefined, activeRunningMissionId: mission.id }));
+				writeOrchestratorSessionRecord(mission.cwd, mission.id, {
+					sessionId: createdSessionPath ? path.basename(createdSessionPath, path.extname(createdSessionPath)) : `pid-${process.pid}`,
+					sessionPath: createdSessionPath,
+					createdAt: nowIso(),
+					active: true,
+				});
+			},
+			withSession: async (nextCtx) => {
+				await nextCtx.sendMessage({ customType: "missions-runtime-orchestrator-recovery", display: true, content, details: { ...details, reusedSession: false, sessionPath: createdSessionPath } }, { triggerTurn: true, deliverAs: "followUp" });
+				appendEvent(dir, "runtime_orchestrator_recovery_dispatched", { ...details, sessionPath: createdSessionPath, reusedSession: false, triggerTurn: true });
+			},
+		});
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		appendEvent(dir, "runtime_orchestrator_recovery_dispatch_failed", { ...details, error: message, fallback: "main-chat-display-only" });
+	}
 }
 
 function summarizeMission(mission: MissionState): string {
@@ -3805,9 +3879,9 @@ class MissionExecutionRunner {
 				const workerBlock = await runWorker(this.ctx, mission, milestone, nextFeature, this.childSignal);
 				mission = loadMission(this.ctx.cwd, this.missionId);
 				if (mission.status === "blocked" || mission.status === "failed") {
-					if (workerBlock) emitMissionBlockMessage(this.pi, workerBlock);
 					this.ctx.ui.notify(`Mission blocked. See ${this.dir}`, "error");
 					clearMissionRunStatus(this.ctx);
+					if (workerBlock) await dispatchMissionBlockRecovery(this.ctx, this.pi, mission, workerBlock);
 					return;
 				}
 				if (workerBlock) appendEvent(this.dir, "worker_failure_auto_retry", { featureId: nextFeature.id, runId: workerBlock.runId, status: workerBlock.status });
@@ -3818,9 +3892,9 @@ class MissionExecutionRunner {
 				const validatorBlock = await runValidator(this.ctx, mission, milestone, this.childSignal);
 				mission = loadMission(this.ctx.cwd, this.missionId);
 				if (mission.status === "blocked" || mission.status === "failed") {
-					if (validatorBlock) emitMissionBlockMessage(this.pi, validatorBlock);
 					this.ctx.ui.notify(`Validation blocked mission. See ${this.dir}`, "error");
 					clearMissionRunStatus(this.ctx);
+					if (validatorBlock) await dispatchMissionBlockRecovery(this.ctx, this.pi, mission, validatorBlock);
 					return;
 				}
 				if (applyPauseAfterCurrentIfRequested(this.ctx, this.missionId, `validator:${milestone.id}`)) return;
@@ -3830,9 +3904,9 @@ class MissionExecutionRunner {
 				const userTestingBlock = await runMilestoneUserTestingValidator(this.ctx, mission, milestone, this.childSignal);
 				mission = loadMission(this.ctx.cwd, this.missionId);
 				if (mission.status === "blocked" || mission.status === "failed") {
-					if (userTestingBlock) emitMissionBlockMessage(this.pi, userTestingBlock);
 					this.ctx.ui.notify(`User testing blocked mission. See ${this.dir}`, "error");
 					clearMissionRunStatus(this.ctx);
+					if (userTestingBlock) await dispatchMissionBlockRecovery(this.ctx, this.pi, mission, userTestingBlock);
 					return;
 				}
 				if (applyPauseAfterCurrentIfRequested(this.ctx, this.missionId, `user-testing:${milestone.id}`)) return;
@@ -3850,9 +3924,9 @@ class MissionExecutionRunner {
 			persistMissionBlock(this.dir, mission, block, "no_runnable_pending_work");
 			saveMission(this.ctx.cwd, mission);
 			updateWidget(this.ctx, mission);
-			emitMissionBlockMessage(this.pi, block);
 			this.ctx.ui.notify(`Mission blocked: pending work remains but no feature is runnable. See ${runDir}`, "error");
 			clearMissionRunStatus(this.ctx);
+			await dispatchMissionBlockRecovery(this.ctx, this.pi, mission, block);
 			return;
 		}
 		transitionMissionToComplete(mission);
