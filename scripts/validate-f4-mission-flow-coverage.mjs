@@ -27,21 +27,21 @@ for (const token of [
 	'artifactValidationErrorSummary("scrutiny-validation-report", validation.issues)',
 	'artifactValidationErrorSummary("user-testing-report", validation.issues)',
 	'ensureValidatorFailureReportArtifacts(runDir, milestone, result, report, reportSchemaError)',
-	'ensureUserTestingFailureReportArtifacts(runDir, feature, result, report, reportSchemaError)',
+	'ensureUserTestingFailureReportArtifacts(runDir, { id: milestone.id, title: milestone.title, label: "Milestone" }, result, report, reportSchemaError)',
 ]) {
 	assertIncludes(runtimeSource, token, `missing artifact-schema coverage token: ${token}`);
 }
 
-// Optional user-testing skip/pass/fail behavior.
+// Milestone-boundary user-testing skip/pass/fail behavior.
 for (const token of [
-	"if (isFeatureUserTestingRequired(targetFeature))",
-	"targetFeature.userTestingPending = true",
-	"else transitionValidatorPassToFeatureComplete(mission, milestone, targetFeature)",
-	"if (result.exitCode === 0 && report?.status === \"pass\") transitionValidatorPassToFeatureComplete(mission, milestone, feature);",
-	"transitionUserTestingFailToFeaturePendingAndMissionBlocked(mission, feature);",
-	"if (!isFeatureUserTestingRequired(feature)) return false;",
+	"function isMilestoneUserTestingRequired(milestone: MissionMilestone): boolean",
+	"function milestoneAwaitingUserTestingValidation(milestone: MissionMilestone): boolean",
+	"async function runMilestoneUserTestingValidator",
+	"systemPromptFiles: [BASE_SKILLS.validator, path.join(dir, \"skills/validator-user-testing/SKILL.md\")]",
+	"if (result.exitCode === 0 && report?.status === \"pass\") milestone.status = \"complete\";",
+	"validatorMode: \"user-testing\"",
 ]) {
-	assertIncludes(runtimeSource, token, `missing user-testing flow token: ${token}`);
+	assertIncludes(runtimeSource, token, `missing milestone user-testing flow token: ${token}`);
 }
 
 // Scrutiny validators own code-review/advisory assessment; no standalone reviewer fanout remains.

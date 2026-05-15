@@ -28,11 +28,6 @@ function collect(node, pred, out = []) {
   return out;
 }
 
-function callName(call) {
-  if (ts.isIdentifier(call.expression)) return call.expression.text;
-  return undefined;
-}
-
 const missionMilestonesFn = findFunction("missionMilestones");
 if (!missionMilestonesFn) fail("missing missionMilestones function");
 const missionMilestonesText = missionMilestonesFn.getText(sf);
@@ -47,12 +42,19 @@ if (normalizeText.includes("mission.milestones = undefined") || normalizeText.in
   fail("normalizeMissionShape must not clear milestone metadata by default.");
 }
 
-const findAwaitingFn = findFunction("findFeatureAwaitingValidation");
-if (!findAwaitingFn) fail("missing findFeatureAwaitingValidation function");
-const awaitingText = findAwaitingFn.getText(sf);
-if (!awaitingText.includes("for (const feature of missionFeatureList(mission))")) fail("findFeatureAwaitingValidation must scan features sequentially.");
-if (!awaitingText.includes("if (featureAwaitingValidation(mission, feature))")) fail("findFeatureAwaitingValidation must detect feature-level awaiting validation.");
-if (!awaitingText.includes("return undefined;")) fail("findFeatureAwaitingValidation must gate later features when an earlier one is incomplete.");
+for (const helper of [
+  "currentRunnableMilestone",
+  "findNextFeatureInMilestone",
+  "milestoneWorkersComplete",
+  "milestoneAwaitingScrutinyValidation",
+  "milestoneAwaitingUserTestingValidation",
+]) {
+  if (!findFunction(helper)) fail(`missing milestone run-loop helper: ${helper}`);
+}
+
+const findNextInMilestone = findFunction("findNextFeatureInMilestone").getText(sf);
+if (!findNextInMilestone.includes("for (const feature of milestone.features)")) fail("findNextFeatureInMilestone must scan only the current milestone.");
+if (!findNextInMilestone.includes("areFeatureDependenciesSatisfied(feature, statuses)")) fail("findNextFeatureInMilestone must preserve dependency gating.");
 
 const runnerClass = findFunction("MissionExecutionRunner");
 if (!runnerClass || !ts.isClassDeclaration(runnerClass)) fail("missing MissionExecutionRunner class");
@@ -60,22 +62,24 @@ const runMethod = runnerClass.members.find((m) => ts.isMethodDeclaration(m) && n
 if (!runMethod || !ts.isMethodDeclaration(runMethod) || !runMethod.body) fail("missing MissionExecutionRunner.run method");
 const runText = runMethod.getText(sf);
 
-const awaitingIdx = runText.indexOf("const awaitingValidation = findFeatureAwaitingValidation(mission);");
-const nextIdx = runText.indexOf("const next = findNextFeature(mission);");
-if (awaitingIdx === -1 || nextIdx === -1 || awaitingIdx > nextIdx) fail("runner must check awaiting feature validation before selecting the next feature.");
+const workerIdx = runText.indexOf("const nextFeature = findNextFeatureInMilestone(mission, milestone);");
+const scrutinyIdx = runText.indexOf("if (milestoneAwaitingScrutinyValidation(milestone))");
+const userTestingIdx = runText.indexOf("if (milestoneAwaitingUserTestingValidation(milestone))");
+if (workerIdx === -1 || scrutinyIdx === -1 || userTestingIdx === -1) fail("runner must sequence milestone workers, scrutiny validation, then user-testing validation.");
+if (!(workerIdx < scrutinyIdx && scrutinyIdx < userTestingIdx)) fail("runner must run workers before milestone validators and scrutiny before user-testing.");
 
-const validatorCalls = collect(runMethod.body, (n) => ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "runValidator");
-for (const call of validatorCalls) {
-  if (call.arguments.length < 5) fail("runner validator calls must be feature-targeted (targetFeature argument required).");
+const milestoneValidatorCall = "runValidator(this.ctx, mission, milestone, this.childSignal)";
+if (!runText.includes(milestoneValidatorCall)) fail("runner should have one default scrutiny validator call at milestone boundary.");
+if ((runText.match(/runValidator\(/g) ?? []).length !== 1) fail("runner should have exactly one default scrutiny validator call.");
+
+if (runText.includes("findFeatureAwaitingValidation(mission)") || runText.includes("findFeatureAwaitingUserTesting(mission)")) {
+  fail("runner must not use per-feature validation gates by default.");
 }
-
-const hasAwaitingTargetCall = runText.includes("runValidator(this.ctx, mission, awaitingValidation.milestone, this.childSignal, awaitingValidation.feature)");
-if (!hasAwaitingTargetCall) fail("runner must immediately validate the specific awaiting feature.");
-
-const hasPostWorkerTargetCall = runText.includes("runValidator(this.ctx, mission, milestone, this.childSignal, feature)");
-if (!hasPostWorkerTargetCall) fail("runner must validate the same feature immediately after worker success.");
-
-const hasMilestoneOnlyGate = runText.includes("runValidator(this.ctx, mission, milestone, this.childSignal);");
-if (hasMilestoneOnlyGate) fail("milestone-only validation must not be the default execution gate in runner loop.");
+if (runText.includes("runValidator(this.ctx, mission, milestone, this.childSignal, feature)")) {
+  fail("runner must not validate the same feature immediately after worker success.");
+}
+if (!runText.includes("runMilestoneUserTestingValidator(this.ctx, mission, milestone, this.childSignal)")) {
+  fail("runner must use milestone user-testing validator mode when configured.");
+}
 
 console.log("F8 validation checks passed.");
