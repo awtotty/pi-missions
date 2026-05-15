@@ -240,6 +240,50 @@ export interface MissionBlockMetadata {
 	artifactPaths: string[];
 }
 
+export type MissionRecoveryOutcome = "resume" | "ask-user" | "leave-blocked" | "retry-repair" | "rerun-validation";
+export type MissionRecoveryDispatchTarget = "dedicated-runtime-orchestrator-session";
+export type MissionRecoveryDispatchTrigger = "runner-after-block";
+export type MissionRecoveryFallback = "main-chat-display-only";
+export type MissionRepositoryEditPolicy = "forbidden-by-default";
+
+export interface MissionRecoveryOutcomeOption {
+	outcome: MissionRecoveryOutcome;
+	description: string;
+	safeWhen: string;
+	requiresHuman?: boolean;
+}
+
+export interface MissionRuntimeOrchestratorRecoveryPacket {
+	schemaVersion: 1;
+	missionId: string;
+	missionTitle: string;
+	status: "orchestrator_action_required";
+	createdAt: string;
+	block: MissionBlockMetadata;
+	dispatch: {
+		target: MissionRecoveryDispatchTarget;
+		trigger: MissionRecoveryDispatchTrigger;
+		runnerWritesPacket: true;
+		fallback: MissionRecoveryFallback;
+		orchestratorSessionRecordPath?: string;
+	};
+	authority: {
+		runner: string[];
+		runtimeOrchestrator: {
+			mayUseMissionTools: true;
+			mayReviseMissionMetadata: true;
+			mayEditRepositoryImplementation: false;
+			repositoryEditPolicy: MissionRepositoryEditPolicy;
+		};
+		mainChat: string[];
+		missionControl: "read-only-observability";
+	};
+	allowedOutcomes: MissionRecoveryOutcomeOption[];
+	instructions: string[];
+}
+
+export const MISSION_RECOVERY_OUTCOMES: MissionRecoveryOutcome[] = ["resume", "ask-user", "leave-blocked", "retry-repair", "rerun-validation"];
+
 export interface MissionRunContext {
 	label: string;
 	runId: string;

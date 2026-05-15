@@ -111,6 +111,8 @@ Mission data is stored globally so target repositories do not need `.gitignore` 
     worker/SKILL.md
     validator-scrutiny/SKILL.md
     validator-user-testing/SKILL.md
+  recovery-packets/
+    <timestamp>-<run-id>.json / .md   # runtime orchestrator recovery handoff contract
   runs/<run-id>/
     transcript.jsonl
     stderr.txt
@@ -118,6 +120,8 @@ Mission data is stored globally so target repositories do not need `.gitignore` 
     validation-report.json / validation-report.md
     user-testing-report.json / user-testing-report.md
 ```
+
+Recovery packet shape and authority boundaries are documented in [`docs/runtime-orchestrator-recovery-artifacts.md`](docs/runtime-orchestrator-recovery-artifacts.md).
 
 ## Development checks
 
