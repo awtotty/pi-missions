@@ -93,7 +93,8 @@ Then:
 The extension already has a strong foundation:
 
 - `/missions`, `/mission`, `/mission-control`, and `/mission-orchestrator` commands.
-- Mission planning through an orchestrator skill.
+- Mission planning through the `mission-plan` skill.
+- Event-driven runtime recovery through the `mission-orchestrator` skill.
 - Persisted artifacts under `~/.pi/missions/<mission-id>/`.
 - Sequential feature execution through fresh child sessions.
 - Required worker handoffs and git commits.

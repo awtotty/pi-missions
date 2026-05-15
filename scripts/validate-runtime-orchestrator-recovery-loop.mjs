@@ -188,11 +188,11 @@ assertIncludesAll(roadmapDocs, [
 	"Main chat is the human planning, command, question, and override channel",
 ], "roadmap runtime recovery docs");
 assertIncludesAll(orchestratorSkill, [
-	"current/main-session collaboration",
-	"event-driven turns in the mission's dedicated runtime orchestrator session",
-	"may mutate mission metadata/control state through mission tools/APIs",
-	"must not edit repository implementation code by default",
-	"Main/current chat remains the human command, question, and override channel",
+	"Initial mission planning belongs to the `mission-plan` skill",
+	"event-driven coordinator",
+	"mutate mission metadata/control state through mission tools/APIs",
+	"edit repository implementation code by default",
+	"Main/current chat is the human command, question, and override channel",
 	"Mission Control is read-only observability",
 ], "mission orchestrator skill runtime recovery guidance");
 

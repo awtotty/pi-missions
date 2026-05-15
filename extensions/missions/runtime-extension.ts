@@ -749,7 +749,7 @@ function missionPlanningKickoffContext(cwd: string, goal: string): string {
 		"User goal or context:",
 		goal || "The user wants to discuss or continue mission planning.",
 		"",
-		"Use the mission-orchestrator skill for mission planning. Do not write application code while planning.",
+		"Use the mission-plan skill for mission planning. Do not write application code while planning. The mission-orchestrator skill is for event-driven runtime recovery after execution starts.",
 		"First brainstorm with the user: ask clarifying questions, push back on scope, surface tradeoffs, and iterate in normal chat.",
 		"Do not call mission_write_plan merely because /missions was invoked. Call mission_write_plan only when you judge the plan and validation contract are mature enough to persist, or when the user explicitly asks you to save the draft.",
 		"After the user has reviewed the persisted plan, use mission_start_execution as the single explicit start/run confirmation gate before implementation begins.",
@@ -4170,7 +4170,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 		description: "Persist the current interactive mission planning draft or revise the active mission plan. Omit missionId to use the current session's active planning/running mission; never-started missions are not run, but previously-started blocked missions auto-resume when a revision leaves pending runnable work.",
 		parameters: Type.Object({
 			missionId: Type.Optional(Type.String()),
-			mission: Type.Any({ description: "Complete mission.json object matching the mission-orchestrator schema." }),
+			mission: Type.Any({ description: "Complete mission.json object matching the mission-plan schema." }),
 			objectiveMd: Type.String({ description: "Human-readable objective, constraints, non-goals, and assumptions." }),
 			featuresJson: Type.Any({ description: "Ordered feature list derived from milestone features." }),
 			validationContractJson: Type.Any({ description: "Implementation-independent validation assertions." }),

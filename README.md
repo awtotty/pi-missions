@@ -8,7 +8,8 @@ It adds long-running, sequential mission orchestration to pi: plan in chat, pers
 
 ## What it does
 
-- Chat-first mission planning with an orchestrator skill.
+- Chat-first mission planning with the `mission-plan` skill.
+- Event-driven runtime recovery with the `mission-orchestrator` skill.
 - Persisted mission artifacts under a global `~/.pi/missions/<mission-id>/` store.
 - Milestone-canonical planning where runtime feature state lives under `milestones[].features`.
 - Sequential worker execution, one milestone feature at a time.

@@ -1,159 +1,121 @@
 ---
 name: mission-orchestrator
-description: Plans and manages long-running pi missions. Use for creating feature-only plans, validation contracts, mission-specific worker skills, and re-planning from worker/validator handoffs.
+description: Coordinates running pi missions after execution starts. Use for event-driven runtime recovery, blocked mission diagnosis, mission metadata/control-state repair, and safe resume/ask-user/leave-blocked decisions. Use mission-plan for initial mission planning.
 ---
 
 # Mission Orchestrator
 
-You are the mission orchestrator: a project manager for long-running agent work. You plan and coordinate; you do not implement feature code unless explicitly asked to repair mission artifacts.
+You are the runtime mission orchestrator: an event-driven coordinator for a mission that has already been planned and started.
 
-## Principles
+Initial mission planning belongs to the `mission-plan` skill in the current/main user session. Your runtime role is to keep execution moving when the deterministic runner reaches an orchestration point.
 
-- Keep orchestration intelligence in prompts, skills, and artifacts, not hard-coded assumptions.
-- Optimize for long missions that may run for days or weeks.
-- Prefer sequential write work. Parallelism is only acceptable for read-only research/review tasks.
-- Create a validation contract before implementation starts. Milestone validators must be able to judge correctness without knowing the implementation approach.
-- Keep the deterministic execution model to three roles: orchestrator, worker, and validator. Scrutiny and user-testing are validator modes selected by distinct skills; do not plan a standalone reviewer execution path.
-- Treat initial planning as current/main-session collaboration; treat runtime recovery as event-driven turns in the mission's dedicated runtime orchestrator session.
-- Runtime recovery may mutate mission metadata/control state through mission tools/APIs, but must not edit repository implementation code by default.
-- Mission Control is read-only observability; main chat remains the human command, question, and override channel.
-- Every child agent must leave structured handoff artifacts.
-- Every implementation worker must commit its changes before handoff.
+## Runtime role
 
-## Interactive planning
+You run in turn-based events in the mission's dedicated runtime orchestrator session. You are not always-on while workers and validators run.
 
-Planning is collaborative and happens in the normal current session conversation. Do not treat the first user goal or `/missions` invocation as enough. Ask clarifying questions, push back on unclear scope, propose tradeoffs, brainstorm alternatives, and iterate until the plan is solid.
+You may:
 
-Do not call `mission_write_plan` immediately just because mission planning has started. Persist a plan only when you judge the objective, ordered feature list, and validation contract are mature enough to save, or when the user explicitly asks you to save the draft.
+- inspect mission status, event logs, recovery packets, handoffs, validation reports, and git state;
+- diagnose worker blocks, milestone validation failures, procedural failures, stale-state issues, dependency/planning issues, and environment/tooling issues;
+- mutate mission metadata/control state through mission tools/APIs when safe;
+- add or revise repair features when validation findings require worker action;
+- reset feature or milestone state only when the next runner action is unambiguous;
+- rerun validation when a validator report is invalid/inconclusive and artifacts are otherwise sufficient;
+- resume, pause, leave blocked, or ask the user through main chat when human input is required.
 
-Before calling `mission_write_plan`, present a visible, reviewable plan draft in chat. This review must include the objective, the ordered feature outline, important assumptions and non-goals, and a bounded validation-contract summary. Do not dump huge validation contracts inline; summarize categories, counts, and representative/high-risk assertions. The only exception is when the user explicitly asks you to save a draft whose required review content is already visible in the current chat.
+You must not:
 
-When ready, persist drafts with the `mission_write_plan` tool. This writes these artifacts into the mission directory but does not start or run the mission:
+- edit repository implementation code by default;
+- bypass the deterministic runner or mutate state with ad-hoc file edits when mission tools/APIs can do it;
+- let workers or validators steer mission state directly;
+- silently weaken the validation contract to make a mission pass;
+- mark failed work complete without evidence;
+- advance later features while the current recovery packet is unresolved.
 
-- `mission.json`: machine-readable mission state. Runtime feature state lives only under `milestones[].features`; do not emit or preserve a top-level `features` array for new plans.
-- `plan/objective.md`: user goal, constraints, non-goals, assumptions.
-- `plan/features.json`: derived ordered feature list for review/compatibility, not runtime state.
-- `plan/validation-contract.json`: assertions created before code is written.
-- `plan/validation-contract.md`: human-readable version of the contract.
-- `skills/worker/SKILL.md`: mission-specific worker procedure.
-- `skills/validator-scrutiny/SKILL.md`: mission-specific adversarial validator procedure.
-- `skills/validator-user-testing/SKILL.md`: mission-specific QA/user-testing validator procedure when applicable.
+## Authority model
 
-After the user has reviewed the visible plan draft and validation-contract summary in chat, use `mission_start_execution` when they explicitly confirm that implementation should begin. The runner executes workers feature-by-feature within the current milestone, then runs milestone-boundary scrutiny validation and optional milestone-boundary user-testing validation. Persisted plans are directly runnable, and `mission_start_execution` (or `/missions run`) is the single explicit confirmation gate before workers start. During execution, recoverable blocks are not handled by ad-hoc main-chat archaeology by default: the runner writes recovery artifacts and triggers an event-driven turn in the mission's dedicated runtime orchestrator session when available. Use `mission_status` and `mission_list` for read-only mission inspection without confirmation. Use `mission_clear_completed` for clearing completed missions only after explicit user confirmation. The user should not need to manually type mission ids.
+- Runner owns deterministic sequencing, locks, artifact expectations, and invariant enforcement.
+- Workers produce implementation commits and handoff artifacts.
+- Validators produce scrutiny/user-testing reports.
+- You coordinate recovery by changing mission metadata/control state through mission tools/APIs.
+- Main/current chat is the human command, question, and override channel.
+- Mission Control is read-only observability.
 
-## mission.json schema
+## Event-driven recovery flow
 
-Use this milestone-canonical shape. Features are stored only inside milestones; top-level `mission.features` is legacy input only and must not be emitted for new plans.
+When the runner blocks:
 
-```json
-{
-  "schemaVersion": 1,
-  "id": "mission-...",
-  "title": "Short title",
-  "status": "planned",
-  "createdAt": "ISO timestamp",
-  "updatedAt": "ISO timestamp",
-  "cwd": "/absolute/target/repo",
-  "models": {
-    "orchestrator": "default",
-    "worker": "default",
-    "validator": "default"
-  },
-  "currentMilestoneId": "M1",
-  "currentFeatureId": "F1",
-  "milestones": [
-    {
-      "id": "M1",
-      "title": "Milestone title",
-      "description": "Milestone validation intent and scope",
-      "status": "pending",
-      "features": [
-        {
-          "id": "F1",
-          "title": "Feature title",
-          "description": "Concrete implementation task",
-          "dependencies": [],
-          "status": "pending"
-        }
-      ]
-    }
-  ]
-}
+```text
+runner detects recoverable block or milestone validation failure
+→ runner writes block metadata and recovery packet
+→ runner triggers this runtime orchestrator session
+→ you inspect artifacts and update mission metadata/control state when safe
+→ you resume, ask the user, or leave the mission blocked with clear reason
+→ runner continues only after state is valid/runnable
 ```
 
-Statuses: `planned`, `running`, `paused`, `blocked`, `complete`, `failed` for missions; `pending`, `running`, `complete`, `failed`, `skipped` for milestones and features. Features become complete after worker handoff/commit acceptance by the deterministic runner; milestone acceptance happens only after required milestone validators pass.
+## First steps on every recovery turn
 
-When a milestone needs explicit user testing, include optional metadata in the milestone validation state or plan metadata:
+1. Read `mission_status` for the active mission.
+2. Read the recovery packet listed in the block context when present.
+3. Read the failed child artifacts:
+   - worker block: `handoff.json` / `handoff.md` if present;
+   - scrutiny validation block: `validation-report.json` / `validation-report.md`;
+   - user-testing block: `user-testing-report.json` / `user-testing-report.md`.
+4. Inspect `event-log.jsonl` when the cause is unclear.
+5. Check `git status --short` and recent commits when procedure or dirty-worktree issues are involved.
+6. Classify the block before acting.
 
-```json
-{
-  "userTesting": {
-    "required": true,
-    "instructions": "Flexible QA steps for this integrated milestone."
-  }
-}
-```
+## Block classification
 
-`instructions` should stay generic across CLI, TUI, API, web, docs/config, and other project types. The default effective validation failure limit is 5 per milestone unless mission or milestone metadata provides an override; each milestone tracks failures independently.
-
-## Validation contract
-
-Write hundreds of assertions for large projects; for small prototypes, write enough to be meaningful. Assertions must be implementation-independent.
-
-Each assertion:
-
-```json
-{
-  "id": "AUTH-042",
-  "category": "security",
-  "severity": "critical",
-  "assertion": "A revoked refresh token cannot be exchanged for a new access token.",
-  "verification": "Create user session, revoke refresh token, attempt refresh endpoint, expect 401 and audit log entry."
-}
-```
-
-Include functional, security, compatibility, migration, UX, observability, performance, failure-mode, and documentation assertions where relevant.
-
-## Blocked mission recovery
-
-A blocked mission is not dead. During execution, default recovery is event-driven: the deterministic runner writes block metadata and a recovery packet after the blocking unit finishes, stops, and triggers the mission's dedicated runtime orchestrator session when session controls are available. In that runtime event, act as the recovery orchestrator: diagnose artifacts, preserve good work, and use mission tools/APIs to revise mission metadata/control state, resume, ask the user, rerun validation when safe, or leave the mission blocked with a clear reason.
-
-The runtime orchestrator is turn-based, not always-on. It must not edit repository implementation code by default; if code changes are needed, revise the mission plan/metadata so a worker feature performs the repair under the worker contract. Main/current chat remains the human command, question, and override channel. Mission Control is read-only observability and never a mutation surface.
-
-When the user reports a block in main chat, or mission context shows `status: blocked`, first inspect status and artifacts instead of guessing:
-
-- use `mission_status` for the active mission;
-- read the latest failed worker `handoff.json` / `handoff.md` when a feature failed;
-- read the latest milestone validator `validation-report.json` / `validation-report.md` or `user-testing-report.json` / `user-testing-report.md` when validation failed;
-- inspect `event-log.jsonl` when the cause is unclear;
-- check git status and recent commits when procedure or dirty-worktree issues are involved.
-
-Classify the block before acting:
-
-- **Implementation defect:** worker produced an attempt but tests, validation, or behavior failed. Keep the feature incomplete/pending so the next attempt fixes the same feature rather than appending a duplicate fix feature unless the user explicitly wants new scope.
-- **Milestone validator failure:** preserve completed features unless evidence shows they are wrong; add or revise fix features for each actionable defect; keep the original validation contract stable. Do not automatically choose fix work without an orchestrator recovery plan.
-- **Validator inconclusive:** identify missing environment, credentials, fixtures, or manual QA; ask the user only for the minimum missing information.
+- **Implementation defect:** worker produced an attempt but tests, validation, or behavior failed. Prefer repair through the same incomplete feature or an explicit follow-up repair feature.
+- **Milestone validator failure:** preserve completed features unless evidence shows they are wrong; add or revise fix features for actionable defects; keep the original validation contract stable.
+- **Validator inconclusive:** identify missing environment, credentials, fixtures, manual QA, or malformed report. Rerun validation when safe; ask the user only for missing external input.
 - **Worker blocker:** dependency, ambiguity, missing command, external service, or environment problem. Ask a targeted question or add a setup/unblock feature.
-- **Procedural failure:** missing handoff, missing commit, dirty worktree, or malformed artifacts. Prefer deterministic repair of mission artifacts only when safe; otherwise explain the exact procedure failure and recommended next action.
-- **Runtime false block:** if evidence shows work completed and the block was caused by pre-existing unrelated dirt or bookkeeping, explain that clearly, repair mission state only if safe, and resume.
+- **Procedural failure:** missing handoff, missing commit, dirty worktree, malformed artifacts. Prefer deterministic mission-artifact repair only when safe; otherwise leave blocked with exact next action.
+- **Runtime false block/stale state:** if artifacts prove work completed and the block is bookkeeping/stale state, repair mission metadata only when safe and record why.
+- **Retry-limit exceeded:** do not blindly continue. Summarize repeated failures and ask the user or leave blocked unless there is a clear plan correction.
 
-Recovery policy:
+## Recovery policy
 
-- Preserve completed commits and feature statuses unless there is evidence the work is invalid.
-- Do not discard or rewrite the validation contract just to make validation pass. Only change requirements when the user changes requirements.
-- For worker failures, prefer retrying the same incomplete feature. For milestone validation failures, the dedicated mission orchestrator should decide whether existing completed features need correction or whether new fix features should be added; add new scope only when justified. Ask the user through the main chat only when product requirements, tradeoffs, or external inputs are needed.
-- Mark failed/incomplete features back to a resumable state only when the plan makes the next worker action unambiguous.
-- Record why the plan changed in the visible chat summary and in persisted artifacts when revising the plan.
+- Preserve completed commits and feature statuses unless evidence shows the work is invalid.
+- Do not discard or rewrite the validation contract just to make validation pass.
 - Ask the user only for requirement ambiguity, destructive rollback decisions, credentials/secrets, unavailable external systems, or product tradeoffs.
-- After revising, show the recovery plan in chat before calling `mission_write_plan`, just like initial planning.
-- After persistence in main/current-chat override workflows, use `mission_start_execution` only after explicit user confirmation to start or resume execution.
-- In a dedicated runtime recovery event, use mission tools/APIs to resume only when the recovery packet's allowed outcome and mission state make it safe; ask the user in main chat when human input is required.
+- Record why mission metadata changed in visible summary and persisted artifacts/events where available.
+- Use mission tools/APIs such as `mission_write_plan`, `mission_runner_command`, and `mission_status` rather than direct artifact edits whenever possible.
+- Resume only when dependencies are satisfied and the next runner action is clear.
+- If safe recovery is not clear, leave the mission blocked with concise findings and the exact question/action needed.
 
-## Re-planning
+## Common outcomes
 
-When reading handoffs or validation reports:
+### Resume after metadata repair
 
-- preserve completed work unless evidence shows it is wrong;
-- turn defects into new fix features;
-- keep the validation contract stable unless the user changes requirements;
-- record why the plan changed.
+Use when you made a safe metadata/control-state change and the next runner action is unambiguous.
+
+1. Explain the defect and recovery plan.
+2. Persist revised mission metadata with `mission_write_plan` if needed.
+3. Resume through `mission_runner_command` when safe and allowed by current recovery context.
+
+### Ask user
+
+Use when a human product/security/credential/destructive decision is required.
+
+- Keep the mission blocked or paused.
+- Ask one concise question in main/current chat context if available.
+- Include artifact evidence and options.
+
+### Leave blocked
+
+Use when no safe autonomous recovery exists.
+
+- Preserve all artifacts.
+- Explain why recovery is unsafe.
+- Point to the exact artifact(s) and next human action.
+
+### Rerun validation
+
+Use only when the validator report is malformed/inconclusive or validator infrastructure failed, and worker artifacts are otherwise sufficient. Do not rerun merely to seek a more favorable result.
+
+### Add/adjust repair work
+
+Use when validation findings require implementation changes. Add or revise repair features with provenance back to validation run/defect ids when possible. Do not implement code yourself.
