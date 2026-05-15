@@ -6,19 +6,25 @@ This roadmap describes how `pi-missions` should evolve from the current early ex
 
 ## Headline roadmap
 
+Legend: ✅ done · 🟡 partially done / needs hardening · ⚪ not started
+
 - ✅ Build/test/check foundation
+- ✅ Built extension entrypoint for package publication
 - ✅ Read-only multi-mission Mission Control
 - ✅ Compact mission footer/status cleanup
 - ✅ Milestone-canonical mission schema
 - ✅ Milestone-level deterministic run loop
+- ✅ Three-role model: orchestrator, worker, validator
+- 🟡 Main-chat orchestrator intervention UX
+- 🟡 Blocked-state recovery packets and guidance
+- 🟡 Runtime modularization: core helpers and Mission Control view model extracted
+- 🟡 Mission lifecycle, recovery, and release-validation docs
+- 🟡 Production packaging smoke checks
 - ⚪ Restart verification and stale status cleanup
-- ⚪ Main-chat orchestrator intervention UX
-- ⚪ Runtime modularization: runner, state transitions, status, and UI panes
 - ⚪ Planning readiness checklist and run estimates
 - ⚪ Repair provenance for validation-generated follow-up work
 - ⚪ Configuration inheritance and mission preflight diagnostics
-- ⚪ Production packaging, CI, and release process
-- ⚪ Mission lifecycle, recovery, and troubleshooting docs
+- ⚪ CI and formal release process
 - ⚪ Headless / remote mission execution
 - ⚪ Portable mission export/import and telemetry
 
