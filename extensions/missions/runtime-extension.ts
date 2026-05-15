@@ -1026,6 +1026,7 @@ function unfinishedValidatorRunContextsFromEvents(mission: MissionState, recorde
 				runId,
 				runDir: path.join(missionDir(mission.cwd, mission.id), "runs", runId),
 				kind: "validator" as const,
+				validatorMode: "scrutiny" as const,
 				itemId: started.milestoneId,
 				itemTitle: milestone?.title ?? started.milestoneId,
 				status: "running",
@@ -1057,6 +1058,7 @@ function missionRunContexts(mission: MissionState): MissionRunContext[] {
 					runId: feature.validationRunId,
 					runDir: path.join(missionDir(mission.cwd, mission.id), "runs", feature.validationRunId),
 					kind: "validator",
+					validatorMode: "scrutiny",
 					itemId: feature.id,
 					itemTitle: feature.title,
 					status: feature.status,
@@ -1083,6 +1085,7 @@ function missionRunContexts(mission: MissionState): MissionRunContext[] {
 				runId: milestone.validationRunId,
 				runDir: path.join(missionDir(mission.cwd, mission.id), "runs", milestone.validationRunId),
 				kind: "validator",
+				validatorMode: "scrutiny",
 				itemId: milestone.id,
 				itemTitle: milestone.title,
 				status: milestone.status,
@@ -1908,6 +1911,7 @@ function milestoneValidationRunContext(mission: MissionState, milestone: Mission
 		runId: milestone.validationRunId,
 		runDir: path.join(missionDir(mission.cwd, mission.id), "runs", milestone.validationRunId),
 		kind: "validator",
+		validatorMode: "scrutiny",
 		itemId: milestone.id,
 		itemTitle: milestone.title,
 		status: milestone.status,
@@ -3239,7 +3243,7 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 		mission.currentMilestoneId = milestone.id;
 		mission.currentFeatureId = undefined;
 	}
-	const ownership = setActiveRunOwnership(mission, { kind: "validator", itemId: targetFeature?.id ?? milestone.id, runId });
+	const ownership = setActiveRunOwnership(mission, { kind: "validator", validatorMode: "scrutiny", itemId: targetFeature?.id ?? milestone.id, runId });
 	saveMission(mission.cwd, mission);
 	persistRunOwnershipArtifact(runDir, ownership);
 	const validatorSessionRecord: MissionChildSessionRecord = {
@@ -3247,9 +3251,10 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 		missionId: mission.id,
 		runId,
 		role: "validator",
+		validatorMode: "scrutiny",
 		featureId: targetFeature?.id,
 		milestoneId: milestone.id,
-		attempt: nextChildAttemptNumber(mission.cwd, mission.id, "validator", targetFeature?.id),
+		attempt: nextChildAttemptNumber(mission.cwd, mission.id, "validator", targetFeature?.id, "scrutiny"),
 		status: "running",
 		runDir,
 		transcriptPath: path.join(runDir, "transcript.jsonl"),
@@ -3315,6 +3320,7 @@ Do not stop after stating that you will validate. Use tools to complete the vali
 		}
 		block = {
 			kind: "validator",
+			validatorMode: "scrutiny",
 			missionId: mission.id,
 			missionTitle: mission.title,
 			milestoneId: milestone.id,

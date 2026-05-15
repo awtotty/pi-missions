@@ -155,6 +155,22 @@ describe("milestone-only mission runtime regressions", () => {
 		}
 	});
 
+	it("models scrutiny and user-testing as explicit validator modes", () => {
+		const runValidator = functionBody("runValidator");
+		expect(runValidator).toContain('setActiveRunOwnership(mission, { kind: "validator", validatorMode: "scrutiny"');
+		expect(runValidator).toContain('validatorMode: "scrutiny"');
+		expect(runValidator).toContain('nextChildAttemptNumber(mission.cwd, mission.id, "validator", targetFeature?.id, "scrutiny")');
+		expect(runValidator).toContain('kind: "validator",\n\t\t\tvalidatorMode: "scrutiny"');
+
+		const runUserTestingValidator = functionBody("runUserTestingValidator");
+		expect(runUserTestingValidator).toContain('setActiveRunOwnership(mission, { kind: "validator", validatorMode: "user-testing"');
+		expect(runUserTestingValidator).toContain('validatorMode: "user-testing"');
+
+		const contexts = functionBody("missionRunContexts");
+		expect(contexts).toContain('validatorMode: "scrutiny"');
+		expect(contexts).toContain('validatorMode: "user-testing"');
+	});
+
 	it("tracks milestone validation failure counts with default and override limits", () => {
 		const mission = {
 			schemaVersion: 1 as const,
