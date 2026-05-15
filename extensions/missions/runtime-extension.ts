@@ -54,6 +54,7 @@ import {
 } from "./runtime-types.js";
 import { formatGlobalModels, normalizeRoleModels, readMissionGlobalSettings, setGlobalModel } from "./core/settings.js";
 import { computeRecoveryGatePlan } from "./recovery-gate.js";
+import { loadMissionControlViewModel, type MissionControlMissionView, type MissionControlOutputView, type MissionControlSectionView, type MissionControlViewModel } from "./core/mission-control-view-model.js";
 import { artifactValidationErrorSummary, validateMissionArtifact } from "./runtime-artifact-schemas.js";
 
 function orchestratorSessionRecordFile(cwd: string, missionId: string): string {
@@ -2278,343 +2279,126 @@ function compactGroupedFeatureLines(mission: MissionState, selection: MissionCon
 	return lines;
 }
 
-function selectedActivityEvent(mission: MissionState, view: MissionControlViewState): MissionControlEvent | undefined {
-	if (view.focusedPane !== "activity") return undefined;
-	const events = missionActivityViewModel(mission, view.selectedActivityIndexFromEnd).events;
-	if (events.length === 0) return undefined;
-	const index = Math.max(0, Math.min(events.length - 1, events.length - 1 - view.selectedActivityIndexFromEnd));
-	return events[index];
-}
-
-function missionControlPaneBodyLines(pane: MissionControlPaneId, mission: MissionState, selection: MissionControlSelection, run: MissionRunContext | undefined, block: MissionBlockMetadata | undefined, mode: MissionControlLayoutMode, view: MissionControlViewState): string[] {
-	if (pane === "features") return mode === "compact" ? compactGroupedFeatureLines(mission, selection, block) : groupedFeatureLines(mission, selection, block);
-	if (pane === "details") return currentItemLines(selection, run, block, selectedActivityEvent(mission, view));
-	if (pane === "activity") return progressLogLines(mission, view.selectedActivityIndexFromEnd);
-	return childOutputLines(run, view.childOutputMode);
-}
-
-function missionControlDashboardLines(mission: MissionState, selection: MissionControlSelection, width: number, view: MissionControlViewState, block?: MissionBlockMetadata): string[] {
-	const mode = missionControlLayoutMode(width);
-	const run = currentOrLastRunContext(mission);
-	const header = mode === "compact" ? compactMissionControlHeader(mission, width) : missionControlHeader(mission, width);
-	const titleByPane: Record<MissionControlPaneId, string> = {
-		features: missionControlPaneTitle("Features", "features", view.focusedPane),
-		details: missionControlPaneTitle("Details", "details", view.focusedPane),
-		activity: missionControlPaneTitle("Progress Log", "activity", view.focusedPane),
-		"child-output": missionControlPaneTitle("Child Output", "child-output", view.focusedPane),
-	};
-	const panelHeightByPane: Record<MissionControlPaneId, number> = {
-		features: mode === "compact" ? 7 : mode === "narrow" ? 9 : 14,
-		details: mode === "compact" ? 7 : mode === "narrow" ? 9 : 14,
-		activity: mode === "compact" ? 7 : mode === "narrow" ? 9 : 12,
-		"child-output": mode === "compact" ? 7 : mode === "narrow" ? 8 : CHILD_OUTPUT_MAX_PANEL_LINES + 1,
-	};
-	const paneLines = (pane: MissionControlPaneId, panelWidth: number): string[] => {
-		const body = missionControlPaneBodyLines(pane, mission, selection, run, block, mode, view);
-		const rendered = limitedPanelLines(titleByPane[pane], body, panelWidth, panelHeightByPane[pane], view.scrollOffsets[pane] ?? 0);
-		view.scrollOffsets[pane] = rendered.clampedOffset;
-		return rendered.lines;
-	};
-	if (view.viewMode === "inspect") {
-		const inspectPane = view.focusedPane;
-		const inspectLines = paneLines(inspectPane, width);
-		return [...header, "", ...inspectLines].map((line) => exactClipLine(line, width));
-	}
-	const featuresPanel = paneLines("features", mode === "wide" ? missionControlColumnWidths(width).leftWidth : width);
-	const detailsPanel = paneLines("details", mode === "wide" ? missionControlColumnWidths(width).rightWidth : width);
-	const progressPanel = paneLines("activity", mode === "wide" ? missionControlColumnWidths(width).leftWidth : width);
-	const childPanel = paneLines("child-output", width);
-	const controlPlanePanel = limitedPanelLines("Runner & Orchestrator", missionControlPlaneLines(mission), mode === "wide" ? missionControlColumnWidths(width).rightWidth : width, mode === "compact" ? 6 : 8).lines;
-	const panelGroups: Record<MissionControlPaneId | "control", string[]> = {
-		features: featuresPanel,
-		details: detailsPanel,
-		activity: progressPanel,
-		"child-output": childPanel,
-		control: controlPlanePanel,
-	};
-	const stackedPanels = (order: Array<MissionControlPaneId | "control">): string[] => order.flatMap((pane, index) => index === 0 ? panelGroups[pane] : ["", ...panelGroups[pane]]);
-	const nonWideOrder: Record<MissionControlPaneId, Array<MissionControlPaneId | "control">> = {
-		features: ["features", "details", "activity", "control", "child-output"],
-		details: ["details", "features", "activity", "control", "child-output"],
-		activity: ["activity", "features", "details", "control", "child-output"],
-		"child-output": ["child-output", "features", "details", "activity", "control"],
-	};
-	let body: string[];
-	if (mode === "wide") {
-		if (view.focusedPane === "child-output") {
-			body = [...childPanel, "", ...columnLines([...featuresPanel, "", ...progressPanel], [...detailsPanel, "", ...controlPlanePanel], width)];
-		} else {
-			const left = view.focusedPane === "activity" ? [...progressPanel, "", ...featuresPanel] : [...featuresPanel, "", ...progressPanel];
-			const right = view.focusedPane === "details" ? [...detailsPanel, "", ...controlPlanePanel] : [...detailsPanel, "", ...controlPlanePanel];
-			body = [...columnLines(left, right, width), "", ...childPanel];
-		}
-	} else {
-		body = stackedPanels(nonWideOrder[view.focusedPane]);
-	}
-	const lines = [...header, "", ...body];
-	return lines.map((line) => exactClipLine(line, width));
-}
-
-function missionControlColumnWidths(width: number): { leftWidth: number; rightWidth: number } {
-	const gap = 2;
-	const available = Math.max(1, width - gap);
-	// Use percentage-based responsive sizing for wide mode.
-	const leftWidth = Math.max(36, Math.min(available - 24, Math.floor(available * 0.58)));
-	const rightWidth = Math.max(24, available - leftWidth);
-	return { leftWidth, rightWidth };
-}
-
-function columnLines(left: string[], right: string[], width: number): string[] {
-	if (width < 110) return [...left, "", ...right].map((line) => exactClipLine(line, width));
-	const gap = "  ";
-	const { leftWidth, rightWidth } = missionControlColumnWidths(width);
-	const rows = Math.max(left.length, right.length);
-	const lines: string[] = [];
-	for (let i = 0; i < rows; i += 1) {
-		const leftText = exactPadLineToWidth(left[i] ?? "", leftWidth);
-		const rightText = exactClipLine(right[i] ?? "", rightWidth);
-		lines.push(exactClipLine(`${leftText}${gap}${rightText}`, width));
-	}
-	return lines;
-}
-
-type MissionControlPaneId = "features" | "details" | "activity" | "child-output";
-type MissionControlViewMode = "dashboard" | "inspect";
-
-const MISSION_CONTROL_PANES: MissionControlPaneId[] = ["features", "details", "activity", "child-output"];
+type MissionControlOverlayMode = "overview" | "detail";
 
 interface MissionControlViewState {
-	selectedId?: string;
-	selectedRecentMissionId?: string;
-	lastAutoFocusedBlockId?: string;
-	pendingActionId?: string;
+	selectedMissionId?: string;
+	mode: MissionControlOverlayMode;
+	outputScrollOffset: number;
 	showHelp: boolean;
-	focusedPane: MissionControlPaneId;
-	scrollOffsets: Record<MissionControlPaneId, number>;
-	viewMode: MissionControlViewMode;
-	childOutputMode: ChildOutputMode;
-	selectedActivityIndexFromEnd: number;
 }
 
 function createMissionControlViewState(): MissionControlViewState {
-	return {
-		showHelp: false,
-		focusedPane: "features",
-		scrollOffsets: { features: 0, details: 0, activity: 0, "child-output": 0 },
-		viewMode: "dashboard",
-		childOutputMode: "summary",
-		selectedActivityIndexFromEnd: 0,
-	};
-}
-
-function missionControlPaneNumber(pane: MissionControlPaneId): number {
-	return MISSION_CONTROL_PANES.indexOf(pane) + 1;
-}
-
-function missionControlPaneTitle(title: string, pane: MissionControlPaneId, focusedPane: MissionControlPaneId): string {
-	const numberedTitle = `${missionControlPaneNumber(pane)} ${title}`;
-	return focusedPane === pane ? `${numberedTitle} [active]` : numberedTitle;
-}
-
-function moveMissionControlFocus(current: MissionControlPaneId, delta: number): MissionControlPaneId {
-	const currentIndex = Math.max(0, MISSION_CONTROL_PANES.indexOf(current));
-	const nextIndex = (currentIndex + delta + MISSION_CONTROL_PANES.length) % MISSION_CONTROL_PANES.length;
-	return MISSION_CONTROL_PANES[nextIndex];
-}
-
-function missionControlFocusText(view: MissionControlViewState): string {
-	const next = moveMissionControlFocus(view.focusedPane, 1);
-	return `View: ${view.focusedPane} pane (tab → ${next}) · mode ${view.viewMode}`;
-}
-
-type MissionControlActionKind = "mutation";
-type MissionControlActionSeverity = "info" | "warning" | "destructive" | "execution";
-
-interface MissionControlActionContext {
-	ctx: ExtensionContext;
-	pi: ExtensionAPI;
-	state?: MissionOrchestratorSessionState;
-	view: MissionControlViewState;
-	targetMissionId?: string;
-	mission?: MissionState;
-}
-
-interface MissionControlAction {
-	id: string;
-	key: string;
-	label: string;
-	description: string;
-	kind: MissionControlActionKind;
-	severity: MissionControlActionSeverity;
-	requiresConfirmation: boolean;
-	confirmation?: (context: MissionControlActionContext) => { title: string; message: string };
-	isAvailable?: (context: MissionControlActionContext) => boolean;
-	run: (context: MissionControlActionContext) => Promise<MissionCommandResult> | MissionCommandResult;
+	return { mode: "overview", outputScrollOffset: 0, showHelp: false };
 }
 
 const MISSION_CONTROL_POLL_MS = 1500;
 
+function missionControlStatusIcon(status: Status): string {
+	if (status === "blocked" || status === "failed") return "!";
+	if (status === "running") return "▶";
+	if (status === "paused") return "Ⅱ";
+	if (status === "complete") return "✓";
+	return "○";
+}
+
+function missionControlProgressBar(progress: { completed: number; total: number }, width: number): string {
+	const total = Math.max(0, progress.total);
+	const done = Math.max(0, Math.min(progress.completed, total));
+	const barWidth = Math.max(4, Math.min(24, width));
+	const filled = total === 0 ? 0 : Math.round((done / total) * barWidth);
+	return `[${"█".repeat(filled)}${"░".repeat(barWidth - filled)}] ${done}/${total}`;
+}
+
+function missionControlMissionSummaryLines(mission: MissionControlMissionView, width: number, selected = false): string[] {
+	const marker = selected ? "▸" : " ";
+	const idLabel = mission.id.length > 34 ? `${mission.id.slice(0, 31)}…` : mission.id;
+	const progress = missionControlProgressBar(mission.progress, Math.max(4, Math.min(18, width - 28)));
+	return [
+		clipLine(`${marker} ${missionControlStatusIcon(mission.status)} ${mission.status.toUpperCase()} ${mission.title}`, width),
+		clipLine(`  ${idLabel} · ${mission.locationLabel}`, width),
+		clipLine(`  Current: ${mission.currentTask}`, width),
+		clipLine(`  ${progress}${mission.updatedAt ? ` · updated ${mission.updatedAt}` : ""}`, width),
+	];
+}
+
+function selectedMissionView(vm: MissionControlViewModel, view: MissionControlViewState, targetMissionId?: string): MissionControlMissionView | undefined {
+	const preferred = targetMissionId ?? view.selectedMissionId;
+	const found = preferred ? vm.missions.find((mission) => mission.id === preferred) : undefined;
+	return found ?? vm.missions[0];
+}
+
+function moveMissionControlOverviewSelection(vm: MissionControlViewModel, selectedId: string | undefined, delta: number): string | undefined {
+	if (vm.missions.length === 0) return undefined;
+	const current = Math.max(0, vm.missions.findIndex((mission) => mission.id === selectedId));
+	const next = Math.max(0, Math.min(vm.missions.length - 1, current + delta));
+	return vm.missions[next]?.id;
+}
+
+function missionControlOverviewLines(vm: MissionControlViewModel, view: MissionControlViewState, width: number): string[] {
+	const selected = selectedMissionView(vm, view);
+	if (selected) view.selectedMissionId = selected.id;
+	const lines: string[] = ["Mission Control", "Read-only overview", ""];
+	for (const section of vm.sections) {
+		const body = missionControlSectionLines(section, selected?.id, Math.max(20, width - 4));
+		lines.push(...panelLines(section.title, body.length ? body : ["No missions"], width), "");
+	}
+	if (view.showHelp) lines.push(...missionControlHelpLines(), "");
+	lines.push(missionControlFooter(width, view));
+	return lines;
+}
+
+function missionControlSectionLines(section: MissionControlSectionView, selectedId: string | undefined, width: number): string[] {
+	const missions = section.id === "completed" ? section.missions.slice(0, 5) : section.missions;
+	const lines = missions.flatMap((mission, index) => [
+		...(index === 0 ? [] : [""]),
+		...missionControlMissionSummaryLines(mission, width, mission.id === selectedId),
+	]);
+	if (section.id === "completed" && section.missions.length > missions.length) lines.push(`… ${section.missions.length - missions.length} more completed mission(s)`);
+	return lines;
+}
+
+function missionControlDetailLines(mission: MissionControlMissionView, view: MissionControlViewState, width: number, height?: number): string[] {
+	const summary = panelLines("Mission Summary", missionControlMissionSummaryLines(mission, Math.max(20, width - 4), true), width);
+	const output = missionControlOutputLines(mission.detailOutput);
+	const reserved = summary.length + 6 + (view.showHelp ? missionControlHelpLines().length + 1 : 0);
+	const panelHeight = Math.max(5, (height ?? 30) - reserved);
+	const rendered = limitedPanelLines(mission.detailOutput.label, output, width, panelHeight, view.outputScrollOffset);
+	view.outputScrollOffset = rendered.clampedOffset;
+	return [
+		"Mission Control",
+		"Read-only detail",
+		"",
+		...summary,
+		"",
+		...rendered.lines,
+		...(view.showHelp ? ["", ...missionControlHelpLines()] : []),
+		"",
+		missionControlFooter(width, view),
+	];
+}
+
+function missionControlOutputLines(output: MissionControlOutputView): string[] {
+	const primary = output.text.trim() ? output.text.split(/\r?\n/) : ["No output available."];
+	const secondary = (output.secondary ?? []).flatMap((item) => ["", `--- ${item.label} ---`, ...(item.text.trim() ? item.text.split(/\r?\n/) : ["No output available."])]);
+	return [...primary, ...secondary];
+}
+
 function missionControlHelpLines(): string[] {
 	return [
 		"Help",
-		"Dashboard: header/progress, current work, grouped features, progress log, bounded child-output tails",
-		"Inspect mode: focused pane expands with independent scroll context",
-		"Focus panes: tab / shift-tab, or 1-4 jump (Features, Details, Activity, Child Output)",
-		"Selection: ↑/↓/j/k move mission tree selection",
-		"Pane scroll: pgup/pgdn, ctrl-u/ctrl-d, g/G (top/bottom)",
-		"i or enter: toggle inspect mode",
-		"o: cycle child output mode (summary/raw/stderr)",
-		"r: refresh mission artifacts",
-		"p: request pause-after-current (does not kill current worker/validator)",
-		"s: start/resume mission execution",
-		"x: cancel current worker/validator child if supported",
-		"c: clear completed missions from default visibility (artifacts are not deleted)",
-		"?: toggle this help",
-		"q/esc: close Mission Control only",
-		"Mutating actions use explicit shortcuts, audit events, and notifications.",
+		"Overview: ↑/↓ or j/k moves selection · enter opens detail",
+		"Detail: b or escape returns to overview · ↑/↓ or j/k scroll output · g/G top/bottom",
+		"Global: r refreshes artifacts · q quits Mission Control · ? toggles help",
+		"Mission Control is read-only; start/resume/pause/cancel/clear stay in main chat/tools.",
 	];
 }
 
-function missionControlFooter(width: number, view?: MissionControlViewState, selection?: MissionControlSelection, mission?: MissionState): string {
-	const effectiveView = view ?? createMissionControlViewState();
-	const lifecycle = mission ? classifyMissionRunLifecycle(mission.cwd, mission).state : "idle";
-	const scope = selection ? `${selection.kind}` : "recent";
-	const pane = effectiveView.focusedPane;
-	const inspectHint = effectiveView.viewMode === "inspect" ? "enter/i dashboard" : "enter/i inspect";
-	const base = `q close · tab/shift-tab pane · 1-4 jump · ${inspectHint} · ↑/↓ scroll · pgup/pgdn · g/G`;
-	if (pane === "features") return `${base} · features: ↑/↓ select · scope ${scope} · ${lifecycle}`;
-	if (pane === "details") return `${base} · details: scroll selected ${scope} · ${lifecycle}`;
-	if (pane === "activity") return `${base} · activity: scroll log · ${lifecycle}`;
-	return `${base} · child: scroll output · o mode ${effectiveView.childOutputMode} · ${lifecycle}`;
-}
-
-function visibleCompletedMissionsToClear(cwd: string): MissionState[] {
-	return listMissions(cwd).filter((mission) => mission.status === "complete" && !isMissionCleared(cwd, mission.id));
-}
-
-function missionControlAvailableActions(context: MissionControlActionContext): MissionControlAction[] {
-	return [
-		{
-			id: "pause-after-current",
-			key: "p",
-			label: "Pause after current",
-			description: "Record a durable pause request. The active worker/validator is not killed; mission execution stops before launching the next unit of work.",
-			kind: "mutation",
-			severity: "warning",
-			requiresConfirmation: false,
-			isAvailable: ({ mission, ctx }) => Boolean(mission && mission.status === "running" && !hasMissionPauseRequest(ctx.cwd, mission.id)),
-			run: ({ ctx, pi, mission, state }) => executeRunnerCommand({ command: "pause-after-current", missionId: mission?.id, source: "mission_control" }, ctx, pi, state),
-		},
-		{
-			id: "cancel-current-child",
-			key: "x",
-			label: "Cancel current child",
-			description: "Request cancellation of the currently running worker/validator child process when supported by the active runner.",
-			kind: "mutation",
-			severity: "destructive",
-			requiresConfirmation: true,
-			confirmation: ({ mission }) => ({
-				title: "Cancel current mission child?",
-				message: mission ? `Request cancellation for the currently running child in ${mission.id}.` : "Cancel current worker/validator child.",
-			}),
-			isAvailable: ({ mission, ctx }) => Boolean(mission && isMissionRunActive(ctx.cwd, mission.id)),
-			run: ({ ctx, pi, mission, state }) => executeRunnerCommand({ command: "cancel-current-child", missionId: mission?.id, source: "mission_control" }, ctx, pi, state),
-		},
-		{
-			id: "start-resume",
-			key: "s",
-			label: "Start/resume mission",
-			description: "Start or resume mission execution using the existing runMission path.",
-			kind: "mutation",
-			severity: "execution",
-			requiresConfirmation: false,
-			isAvailable: ({ mission, ctx }) => {
-				if (!mission || isMissionRunActive(ctx.cwd, mission.id)) return false;
-				if (mission.status === "planned" || mission.status === "paused" || mission.status === "blocked") return true;
-				return mission.status === "running" && classifyMissionRunLifecycle(ctx.cwd, mission).state === "interrupted";
-			},
-			run: ({ pi, mission }) => {
-				const missionId = mission?.id;
-				if (!missionId) return { ok: false, text: "No mission selected." };
-				pi.sendUserMessage(`/missions run ${missionId}`, { deliverAs: "followUp" });
-				return { ok: true, text: `Queued /missions run ${missionId}.` };
-			},
-		},
-		{
-			id: "clear-completed",
-			key: "c",
-			label: "Clear completed missions",
-			description: "Hide completed missions from default Mission Control visibility using the same backing behavior as /missions clear. Mission artifacts are not deleted and mission statuses stay complete.",
-			kind: "mutation",
-			severity: "destructive",
-			requiresConfirmation: true,
-			confirmation: ({ ctx }) => {
-				const count = visibleCompletedMissionsToClear(ctx.cwd).length;
-				return {
-					title: "Clear completed missions?",
-					message: `This will hide ${count} completed mission${count === 1 ? "" : "s"} from default Mission Control visibility. Artifacts will not be deleted and statuses will remain complete.`,
-				};
-			},
-			isAvailable: ({ ctx }) => visibleCompletedMissionsToClear(ctx.cwd).length > 0,
-			run: ({ ctx, state }) => {
-				const result = clearCompletedMissions(ctx.cwd);
-				updateWidget(ctx, activeMissionFromState(ctx.cwd, state) ?? latestVisibleMission(ctx.cwd));
-				return { ok: true, text: result.text, details: result };
-			},
-		},
-	];
-}
-
-function matchesMissionControlActionKey(data: string, action: MissionControlAction): boolean {
-	return data === action.key;
-}
-
-function missionControlActionEventData(context: MissionControlActionContext, action: MissionControlAction, extra: Record<string, unknown> = {}): Record<string, unknown> {
-	return {
-		actionId: action.id,
-		key: action.key,
-		label: action.label,
-		severity: action.severity,
-		missionId: context.mission?.id,
-		...extra,
-	};
-}
-
-async function dispatchMissionControlAction(data: string, context: MissionControlActionContext): Promise<boolean> {
-	const action = missionControlAvailableActions(context).find((candidate) => matchesMissionControlActionKey(data, candidate));
-	if (!action) return false;
-	if (context.view.pendingActionId) {
-		context.ctx.ui.notify(`Mission Control action already pending: ${context.view.pendingActionId}`, "warning");
-		return true;
-	}
-	if (action.isAvailable && !action.isAvailable(context)) {
-		context.ctx.ui.notify(`Mission Control action unavailable: ${action.label}`, "warning");
-		return true;
-	}
-	const dir = context.mission ? missionDir(context.ctx.cwd, context.mission.id) : undefined;
-	if (action.requiresConfirmation) {
-		if (dir) appendEvent(dir, "mission_control_action_confirmation_bypassed", missionControlActionEventData(context, action));
-	}
-	context.view.pendingActionId = action.id;
-	if (dir) appendEvent(dir, "mission_control_action_started", missionControlActionEventData(context, action));
-	context.ctx.ui.notify(`Mission Control action started: ${action.label}`, "info");
-	try {
-		const result = await action.run(context);
-		if (dir) appendEvent(dir, "mission_control_action_finished", missionControlActionEventData(context, action, { ok: result.ok }));
-		context.ctx.ui.notify(result.text, result.ok ? "info" : "warning");
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		if (dir) appendEvent(dir, "mission_control_action_failed", missionControlActionEventData(context, action, { error: message }));
-		context.ctx.ui.notify(`Mission Control action failed: ${message}`, "error");
-	} finally {
-		context.view.pendingActionId = undefined;
-	}
-	return true;
-}
-
-function missionControlTarget(cwd: string, state: MissionOrchestratorSessionState | undefined, targetMissionId?: string): MissionState | undefined {
-	if (targetMissionId) return loadMission(cwd, targetMissionId);
-	return activeMissionFromState(cwd, state);
+function missionControlFooter(width: number, view: MissionControlViewState): string {
+	const text = view.mode === "detail"
+		? "q quit · b/esc back · ↑/↓/j/k scroll output · g/G top/bottom · r refresh · ? help · read-only"
+		: "q/esc quit · ↑/↓/j/k move · enter detail · r refresh · ? help · read-only";
+	return clipLine(text, width);
 }
 
 function fitToViewport(lines: string[], width: number, height?: number): string[] {
@@ -2625,56 +2409,28 @@ function fitToViewport(lines: string[], width: number, height?: number): string[
 	return [...filled, ...Array.from({ length: target - filled.length }, () => " ".repeat(Math.max(1, width)))];
 }
 
-function missionControlLines(cwd: string, state: MissionOrchestratorSessionState | undefined, width: number, height: number | undefined, view: MissionControlViewState, targetMissionId?: string): string[] {
-	let active: MissionState | undefined;
-	try {
-		active = missionControlTarget(cwd, state, targetMissionId);
-	} catch {
-		return fitToViewport(["Mission Control", "", `Mission not found: ${targetMissionId}`, "", "q/esc close"], Math.max(1, width), height);
-	}
-	const missions = active ? [active] : visibleMissions(cwd).slice(0, 10);
+function missionControlLines(cwd: string, _state: MissionOrchestratorSessionState | undefined, width: number, height: number | undefined, view: MissionControlViewState, targetMissionId?: string): string[] {
 	const safeWidth = Math.max(1, width);
-	if (active) {
-		const block = latestBlockFromArtifacts(active);
-		if (block) {
-			const id = blockSelectionId(block);
-			if (view.lastAutoFocusedBlockId !== id) {
-				view.selectedId = id;
-				view.lastAutoFocusedBlockId = id;
-			}
-		} else {
-			view.lastAutoFocusedBlockId = undefined;
-		}
-		const selection = missionControlSelectionById(active, view.selectedId, block);
-		view.selectedId = selectionId(selection);
-		const focusText = missionControlFocusText(view);
-		return fitToViewport([
-			...missionControlDashboardLines(active, selection, safeWidth, view, block),
-			focusText,
-			...(view.showHelp ? ["", ...missionControlHelpLines()] : []),
-			"",
-			missionControlFooter(safeWidth, view, selection, active),
-		], safeWidth, height);
+	let vm: MissionControlViewModel;
+	try {
+		vm = loadMissionControlViewModel(cwd, { includeClearedCompleted: Boolean(targetMissionId) });
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return fitToViewport(["Mission Control", "", `Could not load missions: ${message}`, "", "q/esc close"], safeWidth, height);
 	}
-	const lines = ["Mission Control", "", "No active mission.", ""];
-	if (missions.length > 0) {
-		if (!view.selectedRecentMissionId || !missions.some((mission) => mission.id === view.selectedRecentMissionId)) view.selectedRecentMissionId = missions[0]?.id;
-		lines.push("Recent visible missions:");
-		for (const mission of missions) lines.push(`${mission.id === view.selectedRecentMissionId ? ">" : " "} ${mission.id}  ${mission.status}  ${progressText(mission)}  ${mission.title}`);
-	} else {
-		lines.push("No active or visible missions found.", "Start one with /missions [goal].");
+	if (targetMissionId && !vm.missions.some((mission) => mission.id === targetMissionId)) {
+		return fitToViewport(["Mission Control", "", `Mission not found: ${targetMissionId}`, "", "q/esc close"], safeWidth, height);
 	}
-	if (view.showHelp) lines.push("", ...missionControlHelpLines());
-	lines.push("", "q/esc close · ↑/↓/j/k move recent mission · c clear completed · r refresh · ? help");
+	if (vm.missions.length === 0) {
+		return fitToViewport(["Mission Control", "Read-only overview", "", "No visible missions found.", "Start one with /missions [goal].", "", missionControlFooter(safeWidth, view)], safeWidth, height);
+	}
+	const selected = selectedMissionView(vm, view, targetMissionId);
+	if (selected) view.selectedMissionId = selected.id;
+	if (targetMissionId) view.mode = "detail";
+	const lines = view.mode === "detail" && selected
+		? missionControlDetailLines(selected, view, safeWidth, height)
+		: missionControlOverviewLines(vm, view, safeWidth);
 	return fitToViewport(lines, safeWidth, height);
-}
-
-function missionControlMoveRecentMission(cwd: string, selectedId: string | undefined, delta: number): string | undefined {
-	const missions = visibleMissions(cwd).slice(0, 10);
-	if (missions.length === 0) return undefined;
-	const currentIndex = Math.max(0, missions.findIndex((mission) => mission.id === selectedId));
-	const nextIndex = Math.min(missions.length - 1, Math.max(0, currentIndex + delta));
-	return missions[nextIndex]?.id;
 }
 
 function hasSessionSwitchControls(ctx: ExtensionContext): ctx is ExtensionCommandContext {
@@ -2724,11 +2480,8 @@ type MissionControlInputDispatchResult = "handled" | "ignored";
 
 interface MissionControlInputDispatchContext {
 	ctx: ExtensionContext;
-	pi: ExtensionAPI;
-	state?: MissionOrchestratorSessionState;
 	view: MissionControlViewState;
 	targetMissionId?: string;
-	active?: MissionState;
 	close: () => void;
 	requestRender: () => void;
 }
@@ -2747,100 +2500,29 @@ function missionControlScrollDelta(data: string): number {
 	return 0;
 }
 
-function missionControlPaneJump(data: string): MissionControlPaneId | undefined {
-	if (data === "1") return "features";
-	if (data === "2") return "details";
-	if (data === "3") return "activity";
-	if (data === "4") return "child-output";
-	return undefined;
-}
-
-function cycleChildOutputMode(mode: ChildOutputMode): ChildOutputMode {
-	if (mode === "summary") return "raw";
-	if (mode === "raw") return "stderr";
-	return "summary";
-}
-
 function dispatchMissionControlInput(data: string, context: MissionControlInputDispatchContext): MissionControlInputDispatchResult {
-	if (data === "q" || matchesKey(data, "escape")) {
+	if (data === "q") {
 		context.close();
 		return "handled";
 	}
-	if (data === "\t" || matchesKey(data, "tab")) {
-		context.view.focusedPane = moveMissionControlFocus(context.view.focusedPane, 1);
-		context.requestRender();
-		return "handled";
-	}
-	if (data === "\u001b[Z" || matchesKey(data, "shift+tab")) {
-		context.view.focusedPane = moveMissionControlFocus(context.view.focusedPane, -1);
-		context.requestRender();
-		return "handled";
-	}
-	const paneJump = missionControlPaneJump(data);
-	if (paneJump) {
-		context.view.focusedPane = paneJump;
-		context.requestRender();
-		return "handled";
-	}
-	if (data === "i" || matchesKey(data, "enter")) {
-		context.view.viewMode = context.view.viewMode === "dashboard" ? "inspect" : "dashboard";
-		context.requestRender();
-		return "handled";
-	}
-
-	const actionContext = { ctx: context.ctx, pi: context.pi, state: context.state, view: context.view, targetMissionId: context.targetMissionId, mission: context.active };
-	const matchedAction = missionControlAvailableActions(actionContext).find((action) => matchesMissionControlActionKey(data, action));
-	if (matchedAction) {
-		if (matchedAction.id === "start-resume") {
-			const missionId = context.active?.id;
-			if (!missionId) {
-				context.ctx.ui.notify("No mission selected to start.", "warning");
-				return "handled";
-			}
-			context.close();
-			setTimeout(() => {
-				context.pi.sendUserMessage(`/missions run ${missionId}`);
-			}, 25);
-			return "handled";
-		}
-		void dispatchMissionControlAction(data, actionContext).then(() => {
+	if (matchesKey(data, "escape")) {
+		if (context.view.mode === "detail" && !context.targetMissionId) {
+			context.view.mode = "overview";
+			context.view.outputScrollOffset = 0;
 			context.requestRender();
-		});
-		return "handled";
-	}
-
-	const moveBy = missionControlInputMoveDelta(data);
-	if (moveBy !== 0) {
-		if (!context.active) {
-			context.view.selectedRecentMissionId = missionControlMoveRecentMission(context.ctx.cwd, context.view.selectedRecentMissionId, moveBy);
-		} else if (context.view.focusedPane === "features") {
-			context.view.selectedId = moveMissionControlSelection(context.active, context.view.selectedId, moveBy);
 		} else {
-			const pane = context.view.focusedPane;
-			context.view.scrollOffsets[pane] = Math.max(0, (context.view.scrollOffsets[pane] ?? 0) + moveBy);
+			context.close();
 		}
+		return "handled";
+	}
+	if (data === "b" && context.view.mode === "detail" && !context.targetMissionId) {
+		context.view.mode = "overview";
+		context.view.outputScrollOffset = 0;
 		context.requestRender();
 		return "handled";
 	}
-	const scrollBy = missionControlScrollDelta(data);
-	if (scrollBy !== 0) {
-		const pane = context.view.focusedPane;
-		context.view.scrollOffsets[pane] = Math.max(0, (context.view.scrollOffsets[pane] ?? 0) + scrollBy);
-		context.requestRender();
-		return "handled";
-	}
-	if (data === "g") {
-		context.view.scrollOffsets[context.view.focusedPane] = 0;
-		context.requestRender();
-		return "handled";
-	}
-	if (data === "G") {
-		context.view.scrollOffsets[context.view.focusedPane] = Number.MAX_SAFE_INTEGER;
-		context.requestRender();
-		return "handled";
-	}
-	if (data === "o") {
-		context.view.childOutputMode = cycleChildOutputMode(context.view.childOutputMode);
+	if (data === "?" ) {
+		context.view.showHelp = !context.view.showHelp;
 		context.requestRender();
 		return "handled";
 	}
@@ -2848,8 +2530,35 @@ function dispatchMissionControlInput(data: string, context: MissionControlInputD
 		context.requestRender();
 		return "handled";
 	}
-	if (data === "?") {
-		context.view.showHelp = !context.view.showHelp;
+	if (matchesKey(data, "enter") && context.view.mode === "overview") {
+		context.view.mode = "detail";
+		context.view.outputScrollOffset = 0;
+		context.requestRender();
+		return "handled";
+	}
+	const moveBy = missionControlInputMoveDelta(data);
+	if (moveBy !== 0) {
+		if (context.view.mode === "detail") context.view.outputScrollOffset = Math.max(0, context.view.outputScrollOffset + moveBy);
+		else {
+			const vm = loadMissionControlViewModel(context.ctx.cwd);
+			context.view.selectedMissionId = moveMissionControlOverviewSelection(vm, context.view.selectedMissionId, moveBy);
+		}
+		context.requestRender();
+		return "handled";
+	}
+	const scrollBy = missionControlScrollDelta(data);
+	if (scrollBy !== 0 && context.view.mode === "detail") {
+		context.view.outputScrollOffset = Math.max(0, context.view.outputScrollOffset + scrollBy);
+		context.requestRender();
+		return "handled";
+	}
+	if (data === "g" && context.view.mode === "detail") {
+		context.view.outputScrollOffset = 0;
+		context.requestRender();
+		return "handled";
+	}
+	if (data === "G" && context.view.mode === "detail") {
+		context.view.outputScrollOffset = Number.MAX_SAFE_INTEGER;
 		context.requestRender();
 		return "handled";
 	}
@@ -2906,19 +2615,10 @@ async function openMissionControl(ctx: ExtensionContext, state: MissionOrchestra
 				finalize();
 			},
 			handleInput: (data: string) => {
-				let active: MissionState | undefined;
-				try {
-					active = missionControlTarget(ctx.cwd, state, targetMissionId);
-				} catch {
-					active = undefined;
-				}
 				dispatchMissionControlInput(data, {
 					ctx,
-					pi,
-					state,
 					view,
 					targetMissionId,
-					active,
 					close,
 					requestRender: () => {
 						if (!closed) tui.requestRender();
