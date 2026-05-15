@@ -1230,6 +1230,26 @@ function nextSuggestedAction(mission: MissionState, lifecycle: MissionRunLifecyc
 	return `Mission is complete. Use /missions clear to hide completed missions from default Mission Control UI.`;
 }
 
+function missionFooterProgressBar(completed: number, total: number, width = 4): string {
+	if (total <= 0) return "▱".repeat(width);
+	const filled = Math.max(0, Math.min(width, Math.round((completed / total) * width)));
+	return `${"▰".repeat(filled)}${"▱".repeat(width - filled)}`;
+}
+
+function missionFooterStatusText(mission: MissionControlMissionView): string {
+	if (mission.status === "blocked" && mission.currentBlock) return `${mission.status} · ${mission.currentBlock.reasonCategory}`;
+	if (mission.status === "failed" && mission.currentBlock) return `${mission.status} · ${mission.currentBlock.reasonCategory}`;
+	return mission.status;
+}
+
+function chooseFooterMission(vm: MissionControlViewModel, preferredMissionId?: string): MissionControlMissionView | undefined {
+	if (preferredMissionId) {
+		const preferred = vm.missions.find((entry) => entry.id === preferredMissionId && entry.status !== "complete");
+		if (preferred) return preferred;
+	}
+	return vm.sections.find((section) => section.id !== "completed" && section.missions.length > 0)?.missions[0];
+}
+
 function updateWidget(ctx: ExtensionContext, mission?: MissionState): void {
 	// Mission Control is now the rich mission visibility surface. Keep only the
 	// compact footer/status indicator here and always clear the legacy mission
@@ -1239,13 +1259,18 @@ function updateWidget(ctx: ExtensionContext, mission?: MissionState): void {
 	// Clear first so stale footer text from an older active/cleared mission cannot
 	// survive if anything below throws while reconciling disk artifacts.
 	ctx.ui.setStatus("missions", undefined);
-	if (!mission || mission.status === "complete" || isMissionCleared(mission.cwd, mission.id)) return;
-	const features = missionFeatureList(mission);
-	const done = features.filter((f) => f.status === "complete" || f.status === "skipped").length;
-	const run = currentOrLastRunContext(mission);
-	const lifecycle = classifyMissionRunLifecycle(mission.cwd, mission);
-	const statusLabel = lifecycle.state === "interrupted" ? "interrupted" : mission.status;
-	ctx.ui.setStatus("missions", `🚀 ${done}/${features.length} ${statusLabel}${run ? ` ${run.runId}` : ""}`);
+	const vm = loadMissionControlViewModel(ctx.cwd);
+	const selected = chooseFooterMission(vm, mission && !isMissionCleared(mission.cwd, mission.id) ? mission.id : undefined);
+	if (!selected) return;
+	const runningCount = vm.sections.find((section) => section.id === "running")?.missions.filter((entry) => entry.id !== selected.id).length ?? 0;
+	const blockedCount = vm.sections.find((section) => section.id === "blockedFailed")?.missions.filter((entry) => entry.id !== selected.id).length ?? 0;
+	const parts = [
+		`mission: ${missionFooterStatusText(selected)}`,
+		`${selected.progress.completed}/${selected.progress.total} ${missionFooterProgressBar(selected.progress.completed, selected.progress.total)}`,
+	];
+	if (runningCount > 0) parts.push(`+${runningCount} running`);
+	if (blockedCount > 0) parts.push(`${blockedCount} blocked`);
+	ctx.ui.setStatus("missions", truncateToWidth(parts.join(" · "), 120));
 }
 
 function clearMissionRunStatus(ctx: ExtensionContext): void {
