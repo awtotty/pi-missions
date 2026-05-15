@@ -148,20 +148,20 @@ Recovery packet details: [`docs/runtime-orchestrator-recovery-artifacts.md`](doc
 
 Recently completed:
 
-- milestone-canonical mission schema;
-- milestone-level deterministic run loop;
-- read-only multi-mission Mission Control;
-- event-driven runtime orchestrator recovery;
-- split `mission-plan` from runtime `mission-orchestrator`;
-- release-critical runtime modularization.
+- milestone-canonical mission schema
+- milestone-level deterministic run loop
+- read-only multi-mission Mission Control
+- event-driven runtime orchestrator recovery
+- split `mission-plan` from runtime `mission-orchestrator`
+- release-critical runtime modularization
 
 Next:
 
-- release docs/package validation and npm publish;
-- planning readiness checklist and run estimates;
-- user config for role models and validation failure caps;
-- token/cost tracking and mission budgets;
-- headless/remote execution and portable mission bundles.
+- planning readiness checklist and run estimates
+- user config overrides
+- token/cost tracking and budgets
+- durable mission resume
+- headless/remote execution
 
 Full roadmap: [`docs/roadmap.md`](docs/roadmap.md).
 
