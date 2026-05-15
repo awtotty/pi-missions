@@ -36,12 +36,38 @@ Legend: `[done]` completed · `[partial]` partly implemented, needs hardening ·
 
 Goal: get `pi-missions` to a publicly useful npm release today. The remaining release-critical sequence is:
 
-1. Build the dedicated mission orchestrator recovery loop so validation failures route to the mission's own orchestrator session, not ad-hoc manual main-chat recovery.
+1. Build the event-driven runtime orchestrator recovery loop.
 2. Modularize the runtime enough for a maintainable release, prioritizing runner/state/status/UI seams over perfect architecture.
 3. Do a release-readiness docs pass.
 4. Run package validation and publish to npm.
 
 Everything after that is polish, hardening, or advanced capability.
+
+### Runtime orchestration clarification
+
+The runtime mission orchestrator is distinct from initial planning and from main chat:
+
+- Planning happens in the current/main user session before execution starts.
+- The runtime mission orchestrator is a dedicated mission session created or assigned for execution.
+- It is event-driven and turn-based, not always-on while workers/validators run.
+- It runs only at orchestration points such as validation failure, worker block, no-runnable-work, ambiguous/stale state, retry-limit exceeded, or explicit user redirect.
+- It may mutate mission metadata and control state through mission tools/APIs to keep execution moving.
+- It must not edit repository implementation code by default.
+- The deterministic runner still owns sequencing, locks, artifact expectations, and invariant enforcement.
+- Workers and validators produce artifacts; they do not steer mission state.
+- Main chat is the human planning, command, question, and override channel.
+- Mission Control remains read-only observability.
+
+Recovery flow target:
+
+```text
+runner detects recoverable block or milestone validation failure
+→ runner writes block metadata and recovery packet
+→ runner triggers a runtime orchestrator turn
+→ runtime orchestrator inspects artifacts and updates mission metadata/control state when safe
+→ runtime orchestrator resumes, asks the user, or leaves the mission blocked with clear reason
+→ runner continues only after state is valid/runnable
+```
 
 ## North star
 
@@ -197,11 +223,12 @@ Important observations from dogfooding:
    - Mission Control and chat are clients of runner state, not owners of it.
    - Preserve a path to future headless/cloud mission execution.
 
-10. **Deterministic runner, dedicated orchestrator repairs**
+10. **Deterministic runner, event-driven runtime orchestrator**
    - Workers and validators produce artifacts; they do not choose mission state transitions.
-   - On milestone validation failure, the runner hands control to the mission's dedicated orchestrator session.
-   - Main chat remains the human command/override channel.
-   - The mission orchestrator may revise metadata, add/adjust repair work, or resume after explicit intent.
+   - The runtime mission orchestrator is a turn-based coordinator, not an always-on process.
+   - On recoverable blocks or milestone validation failure, the runner triggers the dedicated runtime orchestrator session.
+   - The runtime orchestrator may revise mission metadata/control state through mission tools, add/adjust repair work, ask the user, or resume.
+   - Main chat remains the human planning, command, question, and override channel.
 
 ## Phase 0: stabilize the foundation
 
@@ -427,14 +454,17 @@ Acceptance criteria:
 - Pane scroll/focus behavior is predictable and tested.
 - Compact/narrow layouts remain usable.
 
-### 2.3 Dedicated mission orchestrator recovery loop
+### 2.3 Event-driven runtime orchestrator recovery loop
 
-Rather than making an embedded Mission Control chat the primary feature or relying on ad-hoc manual main-chat recovery, make the dedicated mission orchestrator session responsible for keeping execution moving after validation failures and recoverable blocks.
+Rather than making an embedded Mission Control chat the primary feature or relying on ad-hoc manual main-chat recovery, make the dedicated runtime mission orchestrator session responsible for keeping execution moving after validation failures and recoverable blocks.
 
 Required behavior:
 
-- Validation failure creates a recovery packet and routes a turn to the mission's dedicated orchestrator session.
-- The mission orchestrator inspects recovery artifacts, classifies the issue, and revises mission metadata or asks the user only when needed.
+- Validation failure creates a recovery packet and routes a turn to the mission's dedicated runtime orchestrator session.
+- Worker blocks, no-runnable-work, retry-limit exceeded, and ambiguous/stale states can also trigger a runtime orchestrator turn.
+- The runtime orchestrator inspects recovery artifacts, classifies the issue, and may revise mission metadata/control state through mission tools.
+- The runtime orchestrator is turn-based and event-driven; it does not stay always-on while normal workers/validators run.
+- The runtime orchestrator asks the user through main chat only when product requirements, tradeoffs, credentials, or external inputs are needed.
 - “status update” in main chat returns concise current mission state.
 - “pause after current” routes to the runner safely.
 - “resume” routes through the confirmation/runner path.
@@ -743,7 +773,7 @@ Acceptance criteria:
 
 Recommended implementation order:
 
-1. Build the dedicated mission orchestrator recovery loop for validation failures and recoverable blocks.
+1. Build the event-driven runtime orchestrator recovery loop for validation failures and recoverable blocks.
 2. Continue modularizing runtime areas needed for release: runner/state transitions, locks, status formatting, activity view models, and UI panes.
 3. Do a release-readiness docs pass covering quickstart, lifecycle, recovery, Mission Control, configuration, and release validation.
 4. Run package validation, `npm pack` smoke testing, and publish to npm.
