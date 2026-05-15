@@ -70,6 +70,7 @@ import { artifactValidationErrorSummary, validateMissionArtifact } from "./runti
 import { ACTIVE_MISSION_CHILD_ABORTERS, ACTIVE_MISSION_RUNS, activeMissionRunKey, isMissionRunActive, tryCancelCurrentChild } from "./runner/active-runs.js";
 import { acquireRunnerLock, hasMissionExecutionStarted, isPidAlive, lockHeartbeatExpired, readRunnerLock, releaseRunnerLock, RUNNER_HEARTBEAT_INTERVAL_MS, upsertRunnerLockHeartbeat } from "./runner/locks.js";
 import { describeBlock, dispatchMissionBlockRecovery, persistMissionBlock } from "./runner/recovery.js";
+import { chooseFooterMission, formatMissionStatusSummary, mark, missionFooterProgressBar, missionFooterStatusText, missionListTextFromMissions, nextSuggestedAction } from "./status/formatting.js";
 
 function sessionIdentity(ctx: ExtensionContext): { sessionId: string; sessionPath: string } | undefined {
 	const sessionPath = ctx.sessionManager.getSessionFile() || "";
@@ -929,40 +930,6 @@ function classifyMissionRunLifecycle(cwd: string, mission: MissionState): Missio
 	return { state: "completed", run, reason: "latest run context is not running" };
 }
 
-function nextSuggestedAction(mission: MissionState, lifecycle: MissionRunLifecycleClassification, run?: MissionRunContext, block?: MissionBlockMetadata): string {
-	if (mission.status === "planning") return "Continue planning, then persist the plan when it is ready.";
-	if (mission.status === "planned") return `Run /missions run ${mission.id} to start execution.`;
-	if (lifecycle.state === "interrupted") {
-		const runHint = run ? `Inspect ${run.runDir} for transcript/stderr evidence from ${run.runId}.` : `Inspect ${missionDir(mission.cwd, mission.id)} run artifacts.`;
-		return `${runHint} Then use /missions run ${mission.id} to attempt safe recovery/resume. Mission Control is read-only.`;
-	}
-	if (mission.status === "running") return run ? `Monitor ${run.runDir} or wait for run ${run.runId} to finish.` : "Mission is running; wait for the next worker or validator update.";
-	if (mission.status === "paused") return `Run /missions resume ${mission.id} when ready.`;
-	if (mission.status === "blocked") return block ? `Inspect the recovery packet and block artifacts for ${block.runId}, decide the recovery path, then revise or resume the mission.` : `Inspect ${missionDir(mission.cwd, mission.id)} and decide whether to revise or resume the mission.`;
-	if (mission.status === "failed") return block ? `Inspect failure artifacts in ${block.runDir} before retrying or revising.` : `Inspect ${missionDir(mission.cwd, mission.id)} before retrying or revising.`;
-	return `Mission is complete. Use /missions clear to hide completed missions from default Mission Control UI.`;
-}
-
-function missionFooterProgressBar(completed: number, total: number, width = 4): string {
-	if (total <= 0) return "▱".repeat(width);
-	const filled = Math.max(0, Math.min(width, Math.round((completed / total) * width)));
-	return `${"▰".repeat(filled)}${"▱".repeat(width - filled)}`;
-}
-
-function missionFooterStatusText(mission: MissionControlMissionView): string {
-	if (mission.status === "blocked" && mission.currentBlock) return `${mission.status} · ${mission.currentBlock.reasonCategory}`;
-	if (mission.status === "failed" && mission.currentBlock) return `${mission.status} · ${mission.currentBlock.reasonCategory}`;
-	return mission.status;
-}
-
-function chooseFooterMission(vm: MissionControlViewModel, preferredMissionId?: string): MissionControlMissionView | undefined {
-	if (preferredMissionId) {
-		const preferred = vm.missions.find((entry) => entry.id === preferredMissionId && entry.status !== "complete");
-		if (preferred) return preferred;
-	}
-	return vm.sections.find((section) => section.id !== "completed" && section.missions.length > 0)?.missions[0];
-}
-
 function updateWidget(ctx: ExtensionContext, mission?: MissionState): void {
 	// Mission Control is now the rich mission visibility surface. Keep only the
 	// compact footer/status indicator here and always clear the legacy mission
@@ -1003,14 +970,6 @@ function updateMissionRunStatus(ctx: ExtensionContext, _label: string, _text?: s
 	ctx.ui.setStatus("missions-run", undefined);
 }
 
-function mark(status: string): string {
-	if (status === "complete") return "✓";
-	if (status === "running") return "⏳";
-	if (status === "failed" || status === "blocked") return "✗";
-	if (status === "skipped") return "↷";
-	return "○";
-}
-
 function existingPaths(paths: string[]): string[] {
 	return paths.filter((file) => fs.existsSync(file));
 }
@@ -1035,26 +994,17 @@ function summarizeMission(mission: MissionState): string {
 	const lifecycle = classifyMissionRunLifecycle(mission.cwd, mission);
 	const lifecycleEvaluation = evaluateMissionLifecycleTransition(mission, lifecycle);
 	const block = latestBlockFromArtifacts(mission);
-	return [
-		`Mission: ${mission.title}`,
-		`ID: ${mission.id}`,
-		`Status: ${mission.status}`,
-		`Progress: ${done}/${features.length} features`,
-		`Dir: ${missionDir(mission.cwd, mission.id)}`,
-		`Run lifecycle: ${lifecycle.state}${lifecycle.reason ? ` (${lifecycle.reason})` : ""}`,
-		`Lifecycle evaluation: ${lifecycleEvaluation}`,
-		run ? `${run.label}: ${run.runId}` : "Current/last run: none recorded",
-		run ? `Run item: ${run.kind} ${run.itemId} — ${run.itemTitle}` : undefined,
-		run ? `Run artifacts: ${run.runDir}` : undefined,
-		block ? `Blocked reason: ${describeBlock(block)}` : undefined,
-		block?.artifactPaths.length ? `Block artifacts: ${block.artifactPaths.join(", ")}` : undefined,
-		`Next suggested action: ${nextSuggestedAction(mission, lifecycle, run, block)}`,
-		"",
-		...missionMilestones(mission).flatMap((m) => [
-			`${mark(m.status)} ${m.id}: ${m.title}${m.validationRunId ? ` [validator ${m.validationRunId}]` : ""}`,
-			...m.features.map((f) => `  ${mark(f.status)} ${f.id}: ${f.title}${f.runId ? ` [run ${f.runId}]` : ""}${f.userTestingPending ? " [awaiting user-testing]" : ""}${f.commit ? ` (${f.commit})` : ""}`),
-		]),
-	].filter((line): line is string => line !== undefined).join("\n");
+	return formatMissionStatusSummary({
+		mission,
+		featureCount: features.length,
+		completedFeatureCount: done,
+		milestones: missionMilestones(mission),
+		run,
+		lifecycle,
+		lifecycleEvaluation,
+		block,
+		describeBlock,
+	});
 }
 
 function boundedExcerpt(text: string, maxChars = 700): string {
@@ -1107,8 +1057,7 @@ function persistedPlanSummary(mission: MissionState, dir: string, objectiveMd: s
 }
 
 function missionListText(cwd: string): string {
-	const missions = listMissions(cwd);
-	return missions.length ? missions.map((m) => `${m.id}  ${m.status}${isMissionCleared(cwd, m.id) ? " (cleared)" : ""}  ${m.title}`).join("\n") : "No missions found.";
+	return missionListTextFromMissions(listMissions(cwd), (missionId) => isMissionCleared(cwd, missionId));
 }
 
 function visibleMissions(cwd: string): MissionState[] {
