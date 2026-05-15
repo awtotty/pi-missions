@@ -215,17 +215,13 @@ async function runMissionControlLifecycleCheck() {
 }
 
 function runResponsiveLayoutChecks() {
-	const missionControlLayoutMode = compileNamedFunction("missionControlLayoutMode", {});
-	const missionControlFooter = compileNamedFunction("missionControlFooter", { missionControlLayoutMode, MISSION_CONTROL_POLL_MS: 1500, createMissionControlViewState: () => ({ showHelp: false, focusedPane: "features", scrollOffsets: { features: 0, details: 0, activity: 0, "child-output": 0 }, viewMode: "dashboard" }), classifyMissionRunLifecycle: () => ({ state: "idle" }) });
-
-	assert(missionControlLayoutMode(130) === "wide", "layout should be wide at >=120 columns");
-	assert(missionControlLayoutMode(100) === "medium", "layout should be medium at >=90 and <120 columns");
-	assert(missionControlLayoutMode(70) === "narrow", "layout should be narrow at >=62 and <90 columns");
-	assert(missionControlLayoutMode(40) === "compact", "layout should be compact below 62 columns");
-	assert(missionControlFooter(40).includes("q close") && missionControlFooter(40).includes("tab"), "compact footer should keep close + navigation hints");
-	const featuresIdx = source.indexOf('const featuresPanel = paneLines("features"');
-	const detailsIdx = source.indexOf('const detailsPanel = paneLines("details"');
-	assert(featuresIdx >= 0 && detailsIdx > featuresIdx, "dashboard layout must build Features pane before Details pane");
+	assert(source.includes("function fitToViewport") && source.includes("exactPadLineToWidth"), "read-only overlay must fit output to the terminal viewport");
+	assert(source.includes("function panelLines") && source.includes('panelLines(section.title') && source.includes('panelLines("Mission Summary"'), "read-only overlay must render boxed overview and detail panels");
+	assert(source.includes("clipLine") && source.includes("missionControlFooter"), "footer and rows must be clipped for narrow terminal widths");
+	assert(source.includes("limitedPanelLines") && source.includes("outputScrollOffset"), "detail output must stay bounded and scrollable");
+	assert(source.includes('overlay: true') && source.includes('width: "100%"') && source.includes('maxHeight: "100%"'), "Mission Control should remain a full-screen overlay");
+	assert(source.includes('q/esc quit') && source.includes('enter detail') && source.includes('read-only'), "overview footer should keep close/navigation/read-only hints");
+	assert(source.includes('b/esc back') && source.includes('g/G top/bottom'), "detail footer should keep back and output navigation hints");
 }
 
 function runFeatureFlowAndRegressionChecks(computeRecoveryGatePlan) {
@@ -313,7 +309,7 @@ for (const token of [
 	"ensureValidatorFailureReportArtifacts",
 	"mission_runner_lock_recovered",
 	"mission_recovery_gate_repaired",
-	'executeRunnerCommand({ command: "pause-after-current"',
+	'if (input.command === "pause-after-current")',
 ]) {
 	assert(source.includes(token), `missing required control-plane guardrail: ${token}`);
 }

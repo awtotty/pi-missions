@@ -1185,7 +1185,7 @@ function nextSuggestedAction(mission: MissionState, lifecycle: MissionRunLifecyc
 	if (mission.status === "planned") return `Run /missions run ${mission.id} to start execution.`;
 	if (lifecycle.state === "interrupted") {
 		const runHint = run ? `Inspect ${run.runDir} for transcript/stderr evidence from ${run.runId}.` : `Inspect ${missionDir(mission.cwd, mission.id)} run artifacts.`;
-		return `${runHint} Then use /missions run ${mission.id} (or Mission Control: s) to attempt safe recovery/resume.`;
+		return `${runHint} Then use /missions run ${mission.id} to attempt safe recovery/resume. Mission Control is read-only.`;
 	}
 	if (mission.status === "running") return run ? `Monitor ${run.runDir} or wait for run ${run.runId} to finish.` : "Mission is running; wait for the next worker or validator update.";
 	if (mission.status === "paused") return `Run /missions resume ${mission.id} when ready.`;
@@ -2349,13 +2349,10 @@ function missionControlOverviewLines(vm: MissionControlViewModel, view: MissionC
 }
 
 function missionControlSectionLines(section: MissionControlSectionView, selectedId: string | undefined, width: number): string[] {
-	const missions = section.id === "completed" ? section.missions.slice(0, 5) : section.missions;
-	const lines = missions.flatMap((mission, index) => [
+	return section.missions.flatMap((mission, index) => [
 		...(index === 0 ? [] : [""]),
 		...missionControlMissionSummaryLines(mission, width, mission.id === selectedId),
 	]);
-	if (section.id === "completed" && section.missions.length > missions.length) lines.push(`… ${section.missions.length - missions.length} more completed mission(s)`);
-	return lines;
 }
 
 function missionControlDetailLines(mission: MissionControlMissionView, view: MissionControlViewState, width: number, height?: number): string[] {
@@ -4186,7 +4183,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("mission-control", {
-		description: "Open interactive Mission Control dashboard and controls",
+		description: "Open read-only Mission Control overview and detail overlay",
 		handler: async (args, ctx) => {
 			const targetMissionId = args.trim() || undefined;
 			await openMissionControl(ctx, orchestratorState, targetMissionId, pi);

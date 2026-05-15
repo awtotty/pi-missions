@@ -8,36 +8,42 @@ const dispatchSource = dispatchStart >= 0 && dispatchEnd > dispatchStart ? sourc
 
 const checks = [
 	{
-		ok: source.includes('type MissionControlPaneId = "features" | "details" | "activity" | "child-output"'),
-		error: "Mission Control must define an explicit stable pane id union.",
+		ok: source.includes("loadMissionControlViewModel") && source.includes("MissionControlViewModel") && source.includes("MissionControlMissionView"),
+		error: "Mission Control must render from the shared read-only view model.",
 	},
 	{
-		ok: source.includes("focusedPane: MissionControlPaneId") && source.includes("scrollOffsets: Record<MissionControlPaneId, number>") && source.includes("viewMode: MissionControlViewMode"),
-		error: "Mission Control view state must track focused pane, pane scroll offsets, and view mode.",
+		ok: source.includes('mode: "overview"') && source.includes('view.mode = "detail"') && source.includes("outputScrollOffset"),
+		error: "Mission Control view state must track overview/detail mode and detail output scroll offset.",
 	},
 	{
-		ok: source.includes("function dispatchMissionControlInput") && source.includes("function missionControlInputMoveDelta"),
+		ok: source.includes("function dispatchMissionControlInput") && source.includes("function missionControlInputMoveDelta") && source.includes("function missionControlScrollDelta"),
 		error: "Mission Control key handling must be centralized in deterministic dispatch helpers.",
-	},
-	{
-		ok: source.includes('matchedAction.id === "start-resume"') && source.includes("context.close();") && source.includes("setTimeout(() =>") && source.includes("/missions run"),
-		error: "Mission Control start/resume must still close the overlay before queueing mission execution.",
 	},
 	{
 		ok: dispatchSource.length > 0 && !dispatchSource.includes("ctx.ui.confirm") && !dispatchSource.includes("ui.confirm"),
 		error: "Mission Control input handling must not call modal ctx.ui.confirm.",
 	},
 	{
-		ok: source.includes('missionControlPaneTitle("Features", "features"') && source.includes('missionControlPaneTitle("Details", "details"') && source.includes('missionControlPaneTitle("Progress Log", "activity"') && source.includes('missionControlPaneTitle("Child Output", "child-output"'),
-		error: "Mission Control must render focus affordances for all stable panes.",
+		ok: dispatchSource.length > 0
+			&& !dispatchSource.includes('command: "start"')
+			&& !dispatchSource.includes('command: "resume"')
+			&& !dispatchSource.includes('command: "pause-after-current"')
+			&& !dispatchSource.includes('command: "cancel-current-child"')
+			&& !dispatchSource.includes('command: "retry-feature"')
+			&& !dispatchSource.includes('clearCompletedMissions'),
+		error: "Mission Control overlay input must remain read-only and not dispatch mutation controls.",
+	},
+	{
+		ok: source.includes('panelLines(section.title') && source.includes('panelLines("Mission Summary"') && source.includes("mission.detailOutput.label"),
+		error: "Mission Control must render boxed overview sections, a detail summary, and labeled output.",
 	},
 ];
 
 const failures = checks.filter((check) => !check.ok);
 if (failures.length) {
-	console.error("F1 mission control pane model validation failed:");
+	console.error("F1 mission control read-only model validation failed:");
 	for (const failure of failures) console.error(`- ${failure.error}`);
 	process.exit(1);
 }
 
-console.log("F1 mission control pane model validation passed.");
+console.log("F1 mission control read-only model validation passed.");
