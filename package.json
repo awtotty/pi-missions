@@ -3,12 +3,17 @@
   "version": "0.1.0",
   "description": "Unofficial pi port of Factory-style long-running mission orchestration.",
   "type": "module",
-  "keywords": ["pi-package", "pi", "missions", "orchestration"],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "missions",
+    "orchestration"
+  ],
   "license": "MIT",
   "files": [
     "README.md",
     "LICENSE",
-    "extensions/",
+    "dist/",
     "skills/",
     "prompts/",
     "scripts/",
@@ -24,15 +29,27 @@
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "vitest": "^2.1.9"
   },
   "pi": {
-    "extensions": ["./extensions/missions/index.ts"],
-    "skills": ["./skills"],
-    "prompts": ["./prompts"]
+    "extensions": [
+      "./dist/missions/index.js"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts"
+    ]
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "validate": "npm run validate:f1 && npm run validate:f3 && npm run validate:f3-nav && npm run validate:f4 && npm run validate:f4-ux && npm run validate:f5 && npm run validate:f5-ux && npm run validate:f7 && npm run validate:f8 && npm run validate:f9 && npm run validate:f10",
+    "check": "npm run typecheck && npm test && npm run validate && npm run build",
+    "prepack": "npm run build",
     "validate:f1": "node ./scripts/validate-f1-mission-control-pane-model.mjs",
     "validate:f3": "node ./scripts/validate-f3-runner-command-routing.mjs",
     "validate:f3-nav": "node ./scripts/validate-f3-mission-control-navigation.mjs",
