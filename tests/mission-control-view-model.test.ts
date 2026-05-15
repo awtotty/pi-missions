@@ -126,4 +126,50 @@ describe("mission control view model", () => {
 
 		expect(vm.missions.map((item) => item.id)).toEqual(["visible"]);
 	});
+
+	it("selects running active transcript output and labels stderr separately", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "mission-control-vm-"));
+		tmpRoots.push(root);
+		const state = mission("run-output", "running", {
+			activeRun: { schemaVersion: 1, kind: "worker", itemId: "F2", runId: "run-active", parentPid: 1, parentSessionMarker: "pid-1", startedAt: "now", intent: "active" },
+		});
+		const runDir = path.join(root, state.id, "runs", "run-active");
+		fs.mkdirSync(runDir, { recursive: true });
+		fs.writeFileSync(path.join(root, state.id, "mission.json"), JSON.stringify(state));
+		fs.writeFileSync(path.join(runDir, "transcript.jsonl"), `${JSON.stringify({ role: "assistant", content: "working on it" })}\n`);
+		fs.writeFileSync(path.join(runDir, "stderr.txt"), "warning line\n");
+
+		const vm = loadMissionControlViewModel(process.cwd(), { root });
+
+		expect(vm.missions[0].detailOutput).toMatchObject({ label: "Active worker transcript tail (run-active)", source: "transcript" });
+		expect(vm.missions[0].detailOutput.text).toContain("assistant: working on it");
+		expect(vm.missions[0].detailOutput.secondary?.[0]).toMatchObject({ label: "Active worker stderr tail (run-active)", source: "stderr" });
+	});
+
+	it("falls back to block artifacts, completion reports, objectives, and next-step context", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "mission-control-vm-"));
+		tmpRoots.push(root);
+		const blocked = mission("blocked", "blocked", { latestBlock: { ...block, runDir: path.join(root, "blocked", "runs", "run-blocked"), artifactPaths: [] } });
+		const complete = mission("complete", "complete", { features: [{ id: "F1", title: "Done", description: "", status: "complete", validationRunId: "run-validation" }] });
+		const planned = mission("planned", "planned");
+		const pausedNoObjective = mission("paused", "paused");
+		for (const state of [blocked, complete, planned, pausedNoObjective]) {
+			fs.mkdirSync(path.join(root, state.id), { recursive: true });
+			fs.writeFileSync(path.join(root, state.id, "mission.json"), JSON.stringify(state));
+		}
+		fs.mkdirSync(path.join(root, "blocked", "runs", "run-blocked"), { recursive: true });
+		fs.writeFileSync(path.join(root, "blocked", "runs", "run-blocked", "handoff.md"), "# blocked handoff");
+		fs.mkdirSync(path.join(root, "complete", "runs", "run-validation"), { recursive: true });
+		fs.writeFileSync(path.join(root, "complete", "runs", "run-validation", "validation-report.md"), "# validation passed");
+		fs.mkdirSync(path.join(root, "planned", "plan"), { recursive: true });
+		fs.writeFileSync(path.join(root, "planned", "plan", "objective.md"), "# objective");
+
+		const vm = loadMissionControlViewModel(process.cwd(), { root, includeClearedCompleted: true });
+		const byId = Object.fromEntries(vm.missions.map((item) => [item.id, item]));
+
+		expect(byId.blocked.detailOutput).toMatchObject({ label: "Current blocked run artifact (run-blocked)", source: "handoff" });
+		expect(byId.complete.detailOutput).toMatchObject({ label: "Latest validation report (run-validation)", source: "validation-report" });
+		expect(byId.planned.detailOutput).toMatchObject({ label: "Mission objective", source: "objective" });
+		expect(byId.paused.detailOutput).toMatchObject({ label: "Next-step context", source: "next-step" });
+	});
 });
