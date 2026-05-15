@@ -2,31 +2,31 @@
 
 This roadmap describes how `pi-missions` should evolve from the current early extension into a production-ready, Factory Missions-aligned pi extension.
 
-`pi-missions` is inspired by the product target Factory Missions for Droid: a planning-heavy, long-running orchestration system where a user approves scope, monitors execution in Mission Control, and intervenes as a project manager while workers and validators make progress through git-backed handoffs.
+`pi-missions` is inspired by Factory Missions for Droid: a planning-heavy, long-running orchestration system where a user approves scope, monitors execution in Mission Control, and intervenes as a project manager while workers and validators make progress through git-backed handoffs.
 
 ## Headline roadmap
 
-Legend: ✅ done · 🟡 partially done / needs hardening · ⚪ not started
+Legend: `[done]` completed · `[partial]` partly implemented, needs hardening · `[todo]` not started
 
-- ✅ Build/test/check foundation
-- ✅ Built extension entrypoint for package publication
-- ✅ Read-only multi-mission Mission Control
-- ✅ Compact mission footer/status cleanup
-- ✅ Milestone-canonical mission schema
-- ✅ Milestone-level deterministic run loop
-- ✅ Three-role model: orchestrator, worker, validator
-- 🟡 Main-chat orchestrator intervention UX
-- 🟡 Blocked-state recovery packets and guidance
-- 🟡 Runtime modularization: core helpers and Mission Control view model extracted
-- 🟡 Mission lifecycle, recovery, and release-validation docs
-- 🟡 Production packaging smoke checks
-- ⚪ Restart verification and stale status cleanup
-- ⚪ Planning readiness checklist and run estimates
-- ⚪ Repair provenance for validation-generated follow-up work
-- ⚪ Configuration inheritance and mission preflight diagnostics
-- ⚪ CI and formal release process
-- ⚪ Headless / remote mission execution
-- ⚪ Portable mission export/import and telemetry
+- `[done]` Build/test/check foundation
+- `[done]` Built extension entrypoint for package publication
+- `[done]` Read-only multi-mission Mission Control
+- `[done]` Compact mission footer/status cleanup
+- `[done]` Milestone-canonical mission schema
+- `[done]` Milestone-level deterministic run loop
+- `[done]` Three-role model: orchestrator, worker, validator
+- `[partial]` Main-chat orchestrator intervention UX
+- `[partial]` Blocked-state recovery packets and guidance
+- `[partial]` Runtime modularization: core helpers and Mission Control view model extracted
+- `[partial]` Mission lifecycle, recovery, and release-validation docs
+- `[partial]` Production packaging smoke checks
+- `[todo]` Restart verification and stale status cleanup
+- `[todo]` Planning readiness checklist and run estimates
+- `[todo]` Repair provenance for validation-generated follow-up work
+- `[todo]` Configuration inheritance and mission preflight diagnostics
+- `[todo]` CI and formal release process
+- `[todo]` Headless / remote mission execution
+- `[todo]` Portable mission export/import and telemetry
 
 ## North star
 
@@ -183,9 +183,10 @@ Important observations from dogfooding:
    - Preserve a path to future headless/cloud mission execution.
 
 10. **Deterministic runner, orchestrator repairs**
-   - Workers and validators produce artifacts; they do not choose mission state transitions.
-   - On milestone validation failure, the runner hands control to the main-chat orchestrator.
-   - The orchestrator may revise metadata, add/adjust repair work, or resume after explicit intent.
+
+- Workers and validators produce artifacts; they do not choose mission state transitions.
+- On milestone validation failure, the runner hands control to the main-chat orchestrator.
+- The orchestrator may revise metadata, add/adjust repair work, or resume after explicit intent.
 
 ## Phase 0: stabilize the foundation
 
