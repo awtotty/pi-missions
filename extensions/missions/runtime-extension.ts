@@ -3311,7 +3311,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			if (!subcommand || subcommand === "new" || !["status", "run", "resume", "list", "clear", "models"].includes(subcommand)) {
 				const goal = subcommand === "new" ? args : rawArgs.trim();
 				await startMissionOrchestrator(goal, ctx, pi);
-				return { ok: true, text: "Mission orchestrator loaded." };
+				return { ok: true, text: "Mission planning loaded." };
 			}
 			if (subcommand === "models") {
 				const modelArgs = args.split(/\s+/).filter(Boolean);

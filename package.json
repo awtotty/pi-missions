@@ -41,7 +41,7 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
-    "validate": "npm run validate:f1 && npm run validate:f3 && npm run validate:f3-nav && npm run validate:f4 && npm run validate:f4-ux && npm run validate:mission-control-readonly && npm run validate:f5 && npm run validate:f5-ux && npm run validate:f7 && npm run validate:f8 && npm run validate:f9 && npm run validate:runtime-recovery-loop && npm run validate:f10",
+    "validate": "npm run validate:f1 && npm run validate:f3 && npm run validate:f3-nav && npm run validate:f4 && npm run validate:f4-ux && npm run validate:mission-control-readonly && npm run validate:f5 && npm run validate:f5-ux && npm run validate:f7 && npm run validate:f8 && npm run validate:f9 && npm run validate:runtime-recovery-loop && npm run validate:f10 && npm run validate:readme-commands",
     "check": "npm run typecheck && npm test && npm run validate && npm run build",
     "prepack": "npm run build",
     "validate:f1": "node ./scripts/validate-f1-mission-control-pane-model.mjs",
@@ -56,6 +56,7 @@
     "validate:f8": "node ./scripts/validate-f8-feature-execution-vs-milestones.mjs",
     "validate:f9": "node ./scripts/validate-f9-recovery-protocol.mjs",
     "validate:runtime-recovery-loop": "node ./scripts/validate-runtime-orchestrator-recovery-loop.mjs",
-    "validate:f10": "node ./scripts/validate-f10-simulation-harness.mjs"
+    "validate:f10": "node ./scripts/validate-f10-simulation-harness.mjs",
+    "validate:readme-commands": "node ./scripts/validate-readme-commands.mjs"
   }
 }
