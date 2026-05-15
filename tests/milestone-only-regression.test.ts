@@ -184,16 +184,24 @@ describe("milestone-only mission runtime regressions", () => {
 			currentMilestoneId: "M1",
 			milestones: [{
 				id: "M1",
-				title: "Milestone",
+				title: "Milestone 1",
 				status: "running" as const,
 				features: [
 					{ id: "F1", title: "First", description: "Do first", dependencies: [], status: "complete" as const },
 					{ id: "F2", title: "Second", description: "Do second", dependencies: ["F1"], status: "pending" as const },
 				],
+			}, {
+				id: "M2",
+				title: "Milestone 2",
+				status: "pending" as const,
+				features: [
+					{ id: "F3", title: "Third", description: "Do next milestone", dependencies: ["F2"], status: "pending" as const },
+				],
 			}],
 		};
 
 		const milestone = runtimeTesting.currentRunnableMilestone(mission)!;
+		expect(milestone.id).toBe("M1");
 		expect(runtimeTesting.findNextFeatureInMilestone(mission, milestone)?.id).toBe("F2");
 		expect(runtimeTesting.milestoneAwaitingScrutinyValidation(milestone)).toBe(false);
 
@@ -203,9 +211,12 @@ describe("milestone-only mission runtime regressions", () => {
 
 		milestone.validationState = { runId: "validator-M1" };
 		milestone.validationRunId = "validator-M1";
+		milestone.status = "complete";
 		expect(runtimeTesting.milestoneAwaitingScrutinyValidation(milestone)).toBe(false);
-		runtimeTesting.transitionMissionToComplete(mission);
-		expect(mission.status).toBe("complete");
+		const nextMilestone = runtimeTesting.currentRunnableMilestone(mission)!;
+		expect(nextMilestone.id).toBe("M2");
+		expect(runtimeTesting.findNextFeatureInMilestone(mission, nextMilestone)?.id).toBe("F3");
+		expect(mission.status).toBe("running");
 		expect(milestone.status).toBe("complete");
 	});
 
@@ -268,5 +279,19 @@ describe("milestone-only mission runtime regressions", () => {
 		const limitExceeded = runtimeTesting.transitionMilestoneValidationFailureToBlocked(mission, mission.milestones[1]);
 		expect(limitExceeded).toMatchObject({ failureCount: 2, failureLimit: 2, limitExceeded: true });
 		expect(limitExceeded.status).toContain("validation failure limit exceeded");
+
+		const defaultLimitMission = {
+			...mission,
+			status: "running" as const,
+			validation: undefined,
+			milestones: [
+				{ id: "M3", title: "Default limit", status: "running" as const, features: [], validationState: { failureCount: 4 } },
+			],
+		};
+		const defaultLimitExceeded = runtimeTesting.transitionMilestoneValidationFailureToBlocked(defaultLimitMission, defaultLimitMission.milestones[0]);
+		expect(defaultLimitExceeded).toMatchObject({ failureCount: 5, failureLimit: 5, limitExceeded: true });
+		expect(defaultLimitExceeded.status).toContain("validation failure limit exceeded");
+		expect(defaultLimitMission.status).toBe("blocked");
+		expect(defaultLimitMission.milestones[0].status).toBe("failed");
 	});
 });
