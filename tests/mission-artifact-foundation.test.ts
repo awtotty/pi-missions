@@ -46,7 +46,7 @@ describe("artifact schema validators", () => {
 		}).ok).toBe(true);
 	});
 
-	it("reports canonical artifact path summaries for nested validation issues", () => {
+	it("reports canonical artifact path summaries for nested scrutiny validation issues", () => {
 		const result = validateMissionArtifact("scrutiny-validation-report", {
 			status: "pass",
 			summary: "Malformed nested fields.",
@@ -63,6 +63,42 @@ describe("artifact schema validators", () => {
 			{ path: "/assertions/0/status", message: "must be one of: pass, fail, inconclusive" },
 		]));
 		expect(artifactValidationErrorSummary("scrutiny-validation-report", result.issues)).toContain("/assertions/0/status must be one of");
+	});
+
+	it("reports canonical artifact path summaries for malformed user-testing reports", () => {
+		const result = validateMissionArtifact("user-testing-report", {
+			status: "skipped",
+			summary: "Missing required fields and malformed command.",
+			commandsRun: [{ command: "npm test", exitCode: "0", notes: 123 }],
+		});
+
+		expect(result.ok).toBe(false);
+		expect(result.issues).toEqual(expect.arrayContaining([
+			{ path: "/status", message: "must be one of: pass, fail, inconclusive" },
+			{ path: "/featureId", message: "is required" },
+			{ path: "/commandsRun/0/exitCode", message: "must be a number" },
+			{ path: "/commandsRun/0/notes", message: "must be a string" },
+		]));
+		expect(artifactValidationErrorSummary("user-testing-report", result.issues)).toContain("User-testing report schema error: /status must be one of");
+	});
+
+	it("reports canonical artifact path summaries for malformed reviewer reports", () => {
+		const result = validateMissionArtifact("reviewer-report", {
+			reviewerId: "reviewer-1",
+			status: "pass",
+			summary: "Malformed findings and command.",
+			featureId: "F2",
+			commandsRun: [{ command: "git diff --check", exitCode: "0" }],
+			findings: [{ id: "R1", severity: "note", title: "Incomplete finding" }],
+		});
+
+		expect(result.ok).toBe(false);
+		expect(result.issues).toEqual(expect.arrayContaining([
+			{ path: "/commandsRun/0/exitCode", message: "must be a number" },
+			{ path: "/findings/0/severity", message: "must be one of: critical, major, minor" },
+			{ path: "/findings/0/description", message: "is required" },
+		]));
+		expect(artifactValidationErrorSummary("reviewer-report", result.issues)).toContain("Reviewer report schema error: /commandsRun/0/exitCode must be a number");
 	});
 });
 
