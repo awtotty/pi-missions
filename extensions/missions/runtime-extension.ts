@@ -1285,11 +1285,13 @@ function clearMissionRunStatus(ctx: ExtensionContext): void {
 	ctx.ui.setStatus("missions-run", undefined);
 }
 
-function updateMissionRunStatus(ctx: ExtensionContext, label: string, text?: string): void {
+function updateMissionRunStatus(ctx: ExtensionContext, _label: string, _text?: string): void {
+	// The compact `missions` footer item is the only always-on mission status.
+	// Child output already streams into transcript/stderr artifacts and is visible
+	// through Mission Control detail. Mirroring it in the footer creates noisy,
+	// stale duplicate status text during long-running missions.
 	ctx.ui.setWidget("missions-run", undefined);
-	const latestLine = text?.split("\n").map((line) => line.trim()).filter(Boolean).at(-1);
-	const suffix = latestLine ? ` · ${truncateToWidth(latestLine, 80)}` : "";
-	ctx.ui.setStatus("missions-run", truncateToWidth(`${label}${suffix}`, 120));
+	ctx.ui.setStatus("missions-run", undefined);
 }
 
 function mark(status: string): string {
