@@ -114,7 +114,7 @@ function parseTranscriptSessionIdentity(transcriptFile: string): { sessionId?: s
 	return {};
 }
 
-function nextChildAttemptNumber(cwd: string, missionId: string, role: "worker" | "validator" | "user-testing-validator" | "reviewer", featureId: string | undefined): number {
+function nextChildAttemptNumber(cwd: string, missionId: string, role: "worker" | "validator" | "user-testing-validator", featureId: string | undefined): number {
 	const registry = readChildSessionRegistry(cwd, missionId);
 	return registry.records.filter((record) => record.role === role && record.featureId === featureId).length + 1;
 }
@@ -1489,7 +1489,7 @@ function summarizeMission(mission: MissionState): string {
 		"",
 		...missionMilestones(mission).flatMap((m) => [
 			`${mark(m.status)} ${m.id}: ${m.title}${m.validationRunId ? ` [validator ${m.validationRunId}]` : ""}`,
-			...m.features.map((f) => `  ${mark(f.status)} ${f.id}: ${f.title}${f.runId ? ` [run ${f.runId}]` : ""}${f.reviewerRunIds?.length ? ` [reviewers ${f.reviewerRunIds.join(",")}]` : ""}${f.reviewerPending ? " [awaiting reviewers]" : ""}${f.userTestingPending ? " [awaiting user-testing]" : ""}${f.commit ? ` (${f.commit})` : ""}`),
+			...m.features.map((f) => `  ${mark(f.status)} ${f.id}: ${f.title}${f.runId ? ` [run ${f.runId}]` : ""}${f.userTestingPending ? " [awaiting user-testing]" : ""}${f.commit ? ` (${f.commit})` : ""}`),
 		]),
 	].filter((line): line is string => line !== undefined).join("\n");
 }
@@ -2055,8 +2055,6 @@ function missionDetailsLines(selection: MissionControlSelection, run?: MissionRu
 		if (selection.feature.runId) lines.push(`Run: ${selection.feature.runId}`);
 		if (selection.feature.validationRunId) lines.push(`Validation run: ${selection.feature.validationRunId}`);
 		if (selection.feature.userTestingRunId) lines.push(`User-testing run: ${selection.feature.userTestingRunId}`);
-		if (selection.feature.reviewerRunIds?.length) lines.push(`Reviewer runs: ${selection.feature.reviewerRunIds.join(", ")}`);
-		lines.push(`Reviewer fanout required: ${isFeatureReviewRequired(selection.feature) ? "yes" : "no"}`);
 		lines.push(`User testing required: ${isFeatureUserTestingRequired(selection.feature) ? "yes" : "no"}`);
 		if (selection.feature.commit) lines.push(`Commit: ${selection.feature.commit}`);
 		lines.push(`Description: ${selection.feature.description}`);
@@ -2803,24 +2801,11 @@ function featureHandoffExists(mission: MissionState, feature: MissionFeature): b
 
 function featureAwaitingValidation(mission: MissionState, feature: MissionFeature): boolean {
 	if (!featureHandoffExists(mission, feature)) return false;
-	if (feature.reviewerPending || (isFeatureReviewRequired(feature) && !(feature.reviewerRunIds?.length))) return false;
 	if (feature.status === "running") return !feature.validationRunId;
 	// Recovery repair may reset a worker-success feature to pending while preserving
 	// its run/commit. If it has not had any validation attempt yet, validate that
 	// existing implementation before launching later feature work.
 	return feature.status === "pending" && Boolean(feature.commit) && !feature.validationRunId;
-}
-
-function reviewerConfig(feature: MissionFeature): Array<{ id: string; focusAreas?: string; instructions?: string }> {
-	return (feature.reviewers ?? []).filter((reviewer) => typeof reviewer?.id === "string" && reviewer.id.trim()).map((reviewer) => ({
-		id: reviewer.id.trim(),
-		focusAreas: typeof reviewer.focusAreas === "string" && reviewer.focusAreas.trim() ? reviewer.focusAreas.trim() : undefined,
-		instructions: typeof reviewer.instructions === "string" && reviewer.instructions.trim() ? reviewer.instructions.trim() : undefined,
-	}));
-}
-
-function isFeatureReviewRequired(feature: MissionFeature): boolean {
-	return reviewerConfig(feature).length > 0;
 }
 
 function featureAwaitingUserTesting(feature: MissionFeature): boolean {
@@ -2831,22 +2816,6 @@ function featureAwaitingUserTesting(feature: MissionFeature): boolean {
 	// existed: if a required feature is running with passed scrutiny and no user-testing
 	// run yet, resume user-testing.
 	return feature.userTestingPending !== false;
-}
-
-function findFeatureAwaitingReviewers(mission: MissionState): { milestone: MissionMilestone; feature: MissionFeature } | undefined {
-	const statuses = featureStatusById(mission);
-	for (const feature of missionFeatureList(mission)) {
-		if (feature.status === "complete" || feature.status === "skipped") continue;
-		if (!areFeatureDependenciesSatisfied(feature, statuses)) return undefined;
-		if (feature.status === "running" && (feature.reviewerPending || (isFeatureReviewRequired(feature) && !(feature.reviewerRunIds?.length)))) {
-			const milestone = milestoneForFeature(mission, feature.id);
-			return milestone ? { milestone, feature } : undefined;
-		}
-		if (featureAwaitingValidation(mission, feature)) return undefined;
-		if (feature.status === "pending") return undefined;
-		return undefined;
-	}
-	return undefined;
 }
 
 function findFeatureAwaitingUserTesting(mission: MissionState): { milestone: MissionMilestone; feature: MissionFeature } | undefined {
@@ -2902,9 +2871,7 @@ function normalizeBlockedFeatureForRetry(mission: MissionState, feature: Mission
 		feature.status = "pending";
 		feature.validationRunId = undefined;
 		feature.userTestingRunId = undefined;
-		feature.reviewerRunIds = undefined;
 		feature.userTestingPending = false;
-		feature.reviewerPending = false;
 		return true;
 	}
 	return false;
@@ -2996,7 +2963,6 @@ function clearResolvedFeatureBlock(mission: MissionState, featureId: string): vo
 function transitionValidatorPassToFeatureComplete(mission: MissionState, milestone: MissionMilestone, feature: MissionFeature): void {
 	feature.status = "complete";
 	feature.userTestingPending = false;
-	feature.reviewerPending = false;
 	clearResolvedFeatureBlock(mission, feature.id);
 	milestone.status = milestone.features.every((item) => item.status === "complete" || item.status === "skipped") ? "complete" : "pending";
 	mission.status = "running";
@@ -3005,8 +2971,6 @@ function transitionValidatorPassToFeatureComplete(mission: MissionState, milesto
 function transitionValidatorFailToFeaturePendingForRetry(mission: MissionState, feature: MissionFeature): void {
 	feature.status = "pending";
 	feature.userTestingPending = false;
-	feature.reviewerRunIds = undefined;
-	feature.reviewerPending = false;
 	mission.status = "running";
 }
 
@@ -3023,7 +2987,6 @@ function transitionFeatureToUserTestingRunning(mission: MissionState, milestone:
 function transitionUserTestingFailToFeaturePendingAndMissionBlocked(mission: MissionState, feature: MissionFeature): void {
 	feature.status = "pending";
 	feature.userTestingPending = false;
-	feature.reviewerPending = false;
 	mission.status = "blocked";
 }
 
@@ -3207,7 +3170,7 @@ Do not stop after stating that you will implement. Use tools to complete the wor
 		// Worker success is an implementation attempt. The feature is marked
 		// complete only after feature-level validation passes.
 		feature.status = "running";
-		feature.reviewerPending = isFeatureReviewRequired(feature);
+		feature.userTestingPending = isFeatureUserTestingRequired(feature);
 	} else {
 		feature.status = handoff.status === "blocked" ? "failed" : "failed";
 		mission.status = "blocked";
@@ -3238,106 +3201,6 @@ Do not stop after stating that you will implement. Use tools to complete the wor
 	clearActiveRunOwnership(mission);
 	saveMission(mission.cwd, mission);
 	updateWidget(ctx, mission);
-	return block;
-}
-
-function reviewerEvidenceContext(mission: MissionState, feature: MissionFeature): string {
-	const runIds = feature.reviewerRunIds ?? [];
-	if (runIds.length === 0) return "Reviewer evidence: none recorded.";
-	const lines = ["Reviewer evidence (advisory; treat as inputs, not final verdict):"];
-	for (const runId of runIds) {
-		const runDir = path.join(missionDir(mission.cwd, mission.id), "runs", runId);
-		const reportJson = path.join(runDir, "review-report.json");
-		const status = fs.existsSync(reportJson) ? (readJson<{ status?: string }>(reportJson).status ?? "unknown") : "missing";
-		lines.push(`- run: ${runId}`);
-		lines.push(`  - report: ${fs.existsSync(reportJson) ? reportJson : "missing"}`);
-		lines.push(`  - status: ${status}`);
-	}
-	return lines.join("\n");
-}
-
-async function runReviewerFanout(ctx: ExtensionContext, mission: MissionState, milestone: MissionMilestone, feature: MissionFeature, signal?: AbortSignal): Promise<MissionBlockSummary | undefined> {
-	const dir = missionDir(mission.cwd, mission.id);
-	const reviewers = reviewerConfig(feature);
-	if (reviewers.length === 0) {
-		feature.reviewerPending = false;
-		saveMission(mission.cwd, mission);
-		return undefined;
-	}
-	const runs = await Promise.all(reviewers.map(async (reviewer) => {
-		const runId = `${String(Date.now())}-reviewer-${feature.id}-${reviewer.id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-		const runDir = path.join(dir, "runs", runId);
-		ensureDir(runDir);
-		const record: MissionChildSessionRecord = {
-			schemaVersion: 1,
-			missionId: mission.id,
-			runId,
-			role: "reviewer",
-			reviewerId: reviewer.id,
-			featureId: feature.id,
-			milestoneId: milestone.id,
-			attempt: nextChildAttemptNumber(mission.cwd, mission.id, "reviewer", feature.id),
-			status: "running",
-			runDir,
-			transcriptPath: path.join(runDir, "transcript.jsonl"),
-			stderrPath: path.join(runDir, "stderr.txt"),
-			sessionId: parseRunOwnershipSessionId(runDir),
-			startedAt: nowIso(),
-		};
-		upsertChildSessionRecord(mission.cwd, mission.id, record);
-		const prompt = `Act as a read-only mission reviewer. Do not edit files. Do not run git commit.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\nFeature: ${feature.id} - ${feature.title}\nReviewer id: ${reviewer.id}\n${reviewer.focusAreas ? `Focus areas: ${reviewer.focusAreas}\n` : ""}${reviewer.instructions ? `Instructions:\n${reviewer.instructions}\n` : ""}\nWrite review-report.json and review-report.md in the run directory. Findings are advisory for scrutiny validation.`;
-		const result = await runPiChild({
-			cwd: mission.cwd,
-			model: resolveRoleModel(mission.cwd, mission, "validator"),
-			systemPromptFiles: [BASE_SKILLS.reviewer, path.join(dir, "skills/reviewer/SKILL.md")],
-			prompt,
-			transcriptFile: path.join(runDir, "transcript.jsonl"),
-			signal,
-		});
-		fs.writeFileSync(path.join(runDir, "stderr.txt"), result.stderr);
-		let reportOk = false;
-		const reportFile = path.join(runDir, "review-report.json");
-		if (fs.existsSync(reportFile)) {
-			try {
-				const parsed = readJson<any>(reportFile);
-				reportOk = validateMissionArtifact("reviewer-report", parsed).ok;
-			} catch {
-				reportOk = false;
-			}
-		}
-		const session = parseTranscriptSessionIdentity(path.join(runDir, "transcript.jsonl"));
-		upsertChildSessionRecord(mission.cwd, mission.id, {
-			...record,
-			status: result.exitCode === 0 && reportOk ? "complete" : "failed",
-			sessionId: session.sessionId ?? record.sessionId,
-			sessionPath: session.sessionPath,
-			finishedAt: nowIso(),
-		});
-		appendEvent(dir, "reviewer_finished", { featureId: feature.id, reviewerId: reviewer.id, runId, exitCode: result.exitCode, reportOk });
-		return { runId, runDir, exitCode: result.exitCode, reportOk };
-	}));
-	feature.reviewerRunIds = runs.map((run) => run.runId);
-	feature.reviewerPending = false;
-	saveMission(mission.cwd, mission);
-	const failed = runs.find((run) => run.exitCode !== 0 || !run.reportOk);
-	if (!failed) return undefined;
-	mission.status = "blocked";
-	const block: MissionBlockSummary = {
-		kind: "validator",
-		missionId: mission.id,
-		missionTitle: mission.title,
-		milestoneId: milestone.id,
-		milestoneTitle: milestone.title,
-		featureId: feature.id,
-		featureTitle: feature.title,
-		runId: failed.runId,
-		runDir: failed.runDir,
-		exitCode: failed.exitCode,
-		status: "reviewer infrastructure/artifact failure",
-		artifactPaths: existingPaths([path.join(failed.runDir, "review-report.json"), path.join(failed.runDir, "review-report.md"), path.join(failed.runDir, "transcript.jsonl"), path.join(failed.runDir, "stderr.txt")]),
-	};
-	persistMissionBlock(dir, mission, block, "reviewer_infrastructure_failure");
-	saveMission(mission.cwd, mission);
 	return block;
 }
 
@@ -3395,9 +3258,9 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 	updateWidget(ctx, mission);
 	appendEvent(dir, "validator_started", { milestoneId: milestone.id, featureId: targetFeature?.id, runId, ownership, childSession: validatorSessionRecord });
 	const featureReviewContext = targetFeature
-		? [`Feature attempt available for validation:`, `- ${targetFeature.id} - ${targetFeature.title}`, `  status: ${targetFeature.status}`, `  commit: ${targetFeature.commit ?? "not recorded"}`, `  worker run: ${targetFeature.runId ?? "not recorded"}`, `  run directory: ${targetFeature.runId ? path.join(dir, "runs", targetFeature.runId) : "not recorded"}`, reviewerEvidenceContext(mission, targetFeature)].join("\n")
+		? [`Feature attempt available for validation:`, `- ${targetFeature.id} - ${targetFeature.title}`, `  status: ${targetFeature.status}`, `  commit: ${targetFeature.commit ?? "not recorded"}`, `  worker run: ${targetFeature.runId ?? "not recorded"}`, `  run directory: ${targetFeature.runId ? path.join(dir, "runs", targetFeature.runId) : "not recorded"}`].join("\n")
 		: completedFeatureReviewContext(dir, milestone);
-	const prompt = `Use the mission-validator skill and the mission-specific scrutiny validator skill if present. Validate this ${targetFeature ? "feature implementation attempt" : "completed milestone"} adversarially.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\n${targetFeature ? `Feature: ${targetFeature.id} - ${targetFeature.title}\n\nFeature description:\n${targetFeature.description}\n` : ""}\n${featureReviewContext}\n\nTreat reviewer reports as advisory evidence only. Reviewer findings or fail/inconclusive statuses should inform this scrutiny report, not automatically accept/reject the feature unless reviewer infrastructure/artifact failures made validation impossible.\n\nPerform a per-feature adversarial code review for each completed feature listed above, using the recorded commits and handoff paths where available. Inspect relevant diffs/handoffs, assess whether tests and procedure were adequate, and report code-review defects or procedure findings. Also check the feature against the validation contract and mission plan. Run appropriate checks. Write validation-report.json and validation-report.md in the run directory.
+	const prompt = `Use the mission-validator skill and the mission-specific scrutiny validator skill if present. Validate this ${targetFeature ? "feature implementation attempt" : "completed milestone"} adversarially.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\n${targetFeature ? `Feature: ${targetFeature.id} - ${targetFeature.title}\n\nFeature description:\n${targetFeature.description}\n` : ""}\n${featureReviewContext}\n\nPerform a per-feature adversarial code review for each completed feature listed above, using the recorded commits and handoff paths where available. Inspect relevant diffs/handoffs, assess whether tests and procedure were adequate, and report code-review defects or procedure findings. Also check the feature against the validation contract and mission plan. Run appropriate checks. Write validation-report.json and validation-report.md in the run directory.
 
 Do not stop after stating that you will validate. Use tools to complete the validation before any final response. Your final response is allowed only after validation-report.json and validation-report.md exist.`;
 	const result = await runPiChild({
@@ -3702,9 +3565,7 @@ function executeRunnerCommand(input: RunnerCommandInput, ctx: ExtensionContext, 
 		feature.runId = undefined;
 		feature.validationRunId = undefined;
 		feature.userTestingRunId = undefined;
-		feature.reviewerRunIds = undefined;
 		feature.userTestingPending = false;
-		feature.reviewerPending = false;
 		mission.status = "blocked";
 		mission.updatedAt = nowIso();
 		saveMission(missionCwd, mission);
@@ -3743,19 +3604,6 @@ class MissionExecutionRunner {
 	async run(): Promise<void> {
 		while (true) {
 			let mission = loadMission(this.ctx.cwd, this.missionId);
-			const awaitingReviewers = findFeatureAwaitingReviewers(mission);
-			if (awaitingReviewers) {
-				const reviewerBlock = await runReviewerFanout(this.ctx, mission, awaitingReviewers.milestone, awaitingReviewers.feature, this.childSignal);
-				mission = loadMission(this.ctx.cwd, this.missionId);
-				if (mission.status === "blocked" || mission.status === "failed") {
-					if (reviewerBlock) emitMissionBlockMessage(this.pi, reviewerBlock);
-					this.ctx.ui.notify(`Reviewer fanout blocked mission. See ${this.dir}`, "error");
-					clearMissionRunStatus(this.ctx);
-					return;
-				}
-				if (applyPauseAfterCurrentIfRequested(this.ctx, this.missionId, `reviewer:${awaitingReviewers.feature.id}`)) return;
-				continue;
-			}
 			const awaitingUserTesting = findFeatureAwaitingUserTesting(mission);
 			if (awaitingUserTesting) {
 				const userTestingBlock = await runUserTestingValidator(this.ctx, mission, awaitingUserTesting.milestone, awaitingUserTesting.feature, this.childSignal);
@@ -3797,17 +3645,6 @@ class MissionExecutionRunner {
 			if (applyPauseAfterCurrentIfRequested(this.ctx, this.missionId, `worker:${next.feature.id}`)) return;
 			const milestone = missionMilestones(mission).find((m) => m.id === next.milestone.id)!;
 			const feature = milestone.features.find((f) => f.id === next.feature.id)!;
-			if (feature.reviewerPending) {
-				const reviewerBlock = await runReviewerFanout(this.ctx, mission, milestone, feature, this.childSignal);
-				mission = loadMission(this.ctx.cwd, this.missionId);
-				if (mission.status === "blocked" || mission.status === "failed") {
-					if (reviewerBlock) emitMissionBlockMessage(this.pi, reviewerBlock);
-					this.ctx.ui.notify(`Reviewer fanout blocked mission. See ${this.dir}`, "error");
-					clearMissionRunStatus(this.ctx);
-					return;
-				}
-				if (applyPauseAfterCurrentIfRequested(this.ctx, this.missionId, `reviewer:${next.feature.id}`)) return;
-			}
 			const validatorBlock = await runValidator(this.ctx, mission, milestone, this.childSignal, feature);
 			mission = loadMission(this.ctx.cwd, this.missionId);
 			if (mission.status === "blocked" || mission.status === "failed") {
@@ -4060,7 +3897,6 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			workerSkillMd: Type.String({ description: "Mission-specific worker SKILL.md content." }),
 			validatorScrutinySkillMd: Type.String({ description: "Mission-specific scrutiny validator SKILL.md content." }),
 			validatorUserTestingSkillMd: Type.Optional(Type.String({ description: "Mission-specific QA/user-testing validator SKILL.md content, if applicable." })),
-			reviewerSkillMd: Type.Optional(Type.String({ description: "Mission-specific read-only reviewer SKILL.md content, if applicable." })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const active = activeMissionFromState(ctx.cwd, orchestratorState);
@@ -4083,7 +3919,6 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			ensureDir(path.join(dir, "skills/worker"));
 			ensureDir(path.join(dir, "skills/validator-scrutiny"));
 			ensureDir(path.join(dir, "skills/validator-user-testing"));
-			ensureDir(path.join(dir, "skills/reviewer"));
 			const mission = normalizeMissionShape(params.mission as MissionState);
 			mission.id = missionId;
 			mission.cwd = existingMission?.cwd || (typeof requestedMission.cwd === "string" && requestedMission.cwd.trim() ? requestedMission.cwd.trim() : ctx.cwd);
@@ -4111,7 +3946,6 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			fs.writeFileSync(path.join(dir, "skills/worker/SKILL.md"), params.workerSkillMd);
 			fs.writeFileSync(path.join(dir, "skills/validator-scrutiny/SKILL.md"), params.validatorScrutinySkillMd);
 			if (params.validatorUserTestingSkillMd) fs.writeFileSync(path.join(dir, "skills/validator-user-testing/SKILL.md"), params.validatorUserTestingSkillMd);
-			if (params.reviewerSkillMd) fs.writeFileSync(path.join(dir, "skills/reviewer/SKILL.md"), params.reviewerSkillMd);
 			const autoResume = shouldAutoResumeAfterPlanRevision(ctx.cwd, existingMission, mission);
 			appendEvent(dir, existingMission ? "interactive_plan_revised" : "interactive_plan_written", { title: mission.title, features: missionFeatureList(mission).length, status: mission.status, autoResume });
 			updateWidget(ctx, mission);

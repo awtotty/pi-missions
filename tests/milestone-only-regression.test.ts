@@ -148,7 +148,7 @@ describe("milestone-only mission runtime regressions", () => {
 		expect(retry).toContain("const feature = missionFeatureList(mission).find((item) => item.id === featureId);");
 		expect(retry).not.toContain("mission.features");
 
-		for (const name of ["findFeatureAwaitingValidation", "findFeatureAwaitingReviewers", "findFeatureAwaitingUserTesting", "incompleteFeatures"]) {
+		for (const name of ["findFeatureAwaitingValidation", "findFeatureAwaitingUserTesting", "incompleteFeatures"]) {
 			const body = functionBody(name);
 			expect(body).toContain("missionFeatureList(mission)");
 			expect(body).not.toContain("mission.features");

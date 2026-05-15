@@ -22,7 +22,6 @@ for (const token of [
 	'validateMissionArtifact("worker-handoff", parsed)',
 	'validateMissionArtifact("scrutiny-validation-report", parsed)',
 	'validateMissionArtifact("user-testing-report", parsed)',
-	'validateMissionArtifact("reviewer-report", parsed)',
 	'artifactValidationErrorSummary("worker-handoff", validation.issues)',
 	'artifactValidationErrorSummary("scrutiny-validation-report", validation.issues)',
 	'artifactValidationErrorSummary("user-testing-report", validation.issues)',
@@ -44,14 +43,14 @@ for (const token of [
 	assertIncludes(runtimeSource, token, `missing user-testing flow token: ${token}`);
 }
 
-// Reviewer fanout advisory routing into scrutiny.
-for (const token of [
-	"Act as a read-only mission reviewer. Do not edit files. Do not run git commit.",
-	"Findings are advisory for scrutiny validation.",
-	"Treat reviewer reports as advisory evidence only.",
+// Scrutiny validators own code-review/advisory assessment; no standalone reviewer fanout remains.
+for (const forbidden of [
+	"runReviewerFanout",
+	"findFeatureAwaitingReviewers",
+	"Act as a read-only mission reviewer",
 	"reviewerEvidenceContext(mission, targetFeature)",
 ]) {
-	assertIncludes(runtimeSource, token, `missing reviewer advisory token: ${token}`);
+	if (runtimeSource.includes(forbidden)) fail(`standalone reviewer execution path remains: ${forbidden}`);
 }
 
 // Existing command/tool behavior preservation.
@@ -70,12 +69,12 @@ for (const token of [
 
 // Documentation/manual validation coverage for this flow.
 for (const token of [
-	"### New mission flow: schemas, optional user-testing, and reviewer advisory routing",
+	"### New mission flow: schemas, optional user-testing, and scrutiny-owned code review",
 	"Confirm `extensions/missions/index.ts` remains runtime bootstrap glue",
-	"Corrupt one of `handoff.json`, `validation-report.json`, `user-testing-report.json`, or `review-report.json`",
+	"Corrupt one of `handoff.json`, `validation-report.json`, or `user-testing-report.json`",
 	"Confirm scrutiny pass with `userTesting.required: false` marks the feature complete (user-testing is skipped).",
 	"Confirm user-testing `pass` marks feature complete; `fail` or `inconclusive` blocks the mission",
-	"treats reviewer output as advisory evidence rather than final pass/fail.",
+	"scrutiny validators own code review without standalone reviewer fanout.",
 	"Verify existing mission controls still behave the same",
 	"Integrated Mission Control orchestrator-chat shortcut tuning (including the `o` shortcut) is intentionally deferred",
 ]) {
