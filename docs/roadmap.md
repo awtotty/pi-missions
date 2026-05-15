@@ -33,7 +33,7 @@ The extension already has a strong foundation:
 - Sequential feature execution through fresh child sessions.
 - Required worker handoffs and git commits.
 - Scrutiny validation and optional user-testing/reviewer flows.
-- Mission Control panes for features, details, activity, and child output.
+- Mission Control panes for milestones/features, details, activity, and child output.
 - Start/resume/pause/cancel control routing.
 - Runner lock/ownership artifacts and recovery-oriented state.
 - Per-role model defaults.
@@ -295,7 +295,7 @@ Mission Control should not directly reason over raw, partially duplicated missio
 Required behavior:
 
 - Derive mission, milestone, feature, active-run, block, and artifact display state from one canonical function/module.
-- Reconcile or clearly flag duplicated top-level vs milestone feature state.
+- Read feature state from milestone-canonical mission data and clearly flag only unmigrated legacy artifacts.
 - Suppress stale block summaries once a mission has recovered, resumed, or completed past that block.
 - Show current active run and latest relevant run distinctly.
 - Represent complete, running, paused, blocked, and recovered states consistently across `/missions status`, `mission_status`, and Mission Control.
@@ -369,7 +369,7 @@ Acceptance criteria:
 
 Goal: remove duplicate feature state and make milestone grouping the single source of truth for execution, validation, status, recovery, and UI.
 
-Dogfooding exposed a serious defect: milestone feature state and top-level feature state can drift. This caused false `no_runnable_pending_work` blocks after successful validation retries. Since Factory-style validation cadence is milestone-based, `mission.milestones[].features` should be canonical and top-level `mission.features` should no longer be persisted for milestone missions.
+Dogfooding exposed a serious defect: milestone feature state and top-level feature state can drift. This caused false `no_runnable_pending_work` blocks after successful validation retries. Since Factory-style validation cadence is milestone-based, `mission.milestones[].features` is canonical and top-level `mission.features` must not be persisted for new milestone missions.
 
 Required behavior:
 
@@ -378,7 +378,7 @@ Required behavior:
 - Hybrid legacy missions load by merging useful top-level metadata into milestone features once, then saving milestone-canonical state.
 - Runner, validators, recovery, status, Mission Control, and tools read feature state from milestones only.
 - `plan/features.json` may remain as a derived compatibility artifact, but it is not mission runtime state.
-- Skills and docs stop instructing orchestrators to emit top-level `features` for new milestone missions.
+- Skills and docs instruct orchestrators to emit milestone-canonical mission state and never top-level `features` for new plans.
 
 Acceptance criteria:
 
@@ -577,7 +577,7 @@ Acceptance criteria:
 Recommended implementation order:
 
 1. Finish the read-only multi-mission Mission Control rework.
-2. Immediately migrate mission state to milestone-canonical schema and remove duplicate top-level feature runtime state.
+2. Complete the milestone-canonical schema cutover and keep docs/skills aligned so duplicate top-level feature runtime state does not return.
 3. Make main-chat mission intervention the first-class orchestrator-chat experience.
 4. Clean up stale block/recovery display and blocked-state guidance everywhere, including footer/status UI.
 5. Continue modularizing runtime areas needed for Mission Control: UI panes, input handling, status formatting, and run/activity view models.

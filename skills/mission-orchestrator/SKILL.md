@@ -26,9 +26,9 @@ Before calling `mission_write_plan`, present a visible, reviewable plan draft in
 
 When ready, persist drafts with the `mission_write_plan` tool. This writes these artifacts into the mission directory but does not start or run the mission:
 
-- `mission.json`: machine-readable mission state.
+- `mission.json`: machine-readable mission state. Runtime feature state lives only under `milestones[].features`; do not emit or preserve a top-level `features` array for new plans.
 - `plan/objective.md`: user goal, constraints, non-goals, assumptions.
-- `plan/features.json`: ordered feature list.
+- `plan/features.json`: derived ordered feature list for review/compatibility, not runtime state.
 - `plan/validation-contract.json`: assertions created before code is written.
 - `plan/validation-contract.md`: human-readable version of the contract.
 - `skills/worker/SKILL.md`: mission-specific worker procedure.
@@ -39,7 +39,7 @@ After the user has reviewed the visible plan draft and validation-contract summa
 
 ## mission.json schema
 
-Use this shape:
+Use this milestone-canonical shape. Features are stored only inside milestones; top-level `mission.features` is legacy input only and must not be emitted for new plans.
 
 ```json
 {
@@ -55,22 +55,31 @@ Use this shape:
     "worker": "default",
     "validator": "default"
   },
+  "currentMilestoneId": "M1",
   "currentFeatureId": "F1",
-  "features": [
+  "milestones": [
     {
-      "id": "F1",
-      "title": "Feature title",
-      "description": "Concrete implementation task",
-      "dependencies": [],
-      "status": "pending"
+      "id": "M1",
+      "title": "Milestone title",
+      "description": "Milestone validation intent and scope",
+      "status": "pending",
+      "features": [
+        {
+          "id": "F1",
+          "title": "Feature title",
+          "description": "Concrete implementation task",
+          "dependencies": [],
+          "status": "pending"
+        }
+      ]
     }
   ]
 }
 ```
 
-Statuses: `planned`, `running`, `paused`, `blocked`, `complete`, `failed` for missions; `pending`, `running`, `complete`, `failed`, `skipped` for features. Features are complete only after worker handoff and required validation phases pass.
+Statuses: `planned`, `running`, `paused`, `blocked`, `complete`, `failed` for missions; `pending`, `running`, `complete`, `failed`, `skipped` for milestones and features. Features are complete only after worker handoff and required validation phases pass.
 
-When a feature needs explicit user testing, include optional metadata on that feature:
+When a feature needs explicit user testing, include optional metadata on the feature inside its milestone:
 
 ```json
 {

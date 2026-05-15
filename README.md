@@ -2,7 +2,7 @@
 
 **pi-missions 0.1.0** is an unofficial [pi](https://pi.dev) port inspired by [Factory Missions for Droid](https://factory.ai/news/missions).
 
-It adds long-running, sequential mission orchestration to pi: plan in chat, persist a reviewable mission plan, execute features one at a time in fresh child contexts, validate each feature, and monitor progress in Mission Control.
+It adds long-running, sequential mission orchestration to pi: plan in chat, persist a reviewable milestone-based mission plan, execute milestone features one at a time in fresh child contexts, validate progress, and monitor progress in Mission Control.
 
 > Early release: APIs, artifacts, commands, and behavior may change without notice before a stable release.
 
@@ -10,7 +10,8 @@ It adds long-running, sequential mission orchestration to pi: plan in chat, pers
 
 - Chat-first mission planning with an orchestrator skill.
 - Persisted mission artifacts under a global `~/.pi/missions/<mission-id>/` store.
-- Sequential worker execution, one feature at a time.
+- Milestone-canonical planning where runtime feature state lives under `milestones[].features`.
+- Sequential worker execution, one milestone feature at a time.
 - Required worker handoffs and git commits.
 - Scrutiny validation against a pre-written validation contract.
 - Optional user-testing validator and read-only reviewer fanout.
@@ -58,7 +59,7 @@ After local edits, use `/reload` inside pi.
 ## Typical flow
 
 1. Run `/missions <goal>`.
-2. Refine scope, assumptions, features, and validation contract in chat.
+2. Refine scope, assumptions, milestones, nested features, and validation contract in chat.
 3. Save the plan with the mission tools when ready.
 4. Start execution with `/missions run` or `mission_start_execution` after explicit confirmation.
 5. Use `/mission-control` or `/missions status` to monitor progress.
@@ -92,11 +93,11 @@ Mission data is stored globally so target repositories do not need `.gitignore` 
 
 ```text
 ~/.pi/missions/<mission-id>/
-  mission.json
+  mission.json              # milestone-canonical runtime state; features live under milestones[].features
   event-log.jsonl
   plan/
     objective.md
-    features.json
+    features.json           # derived ordered feature list for review/compatibility, not runtime state
     validation-contract.json
     validation-contract.md
   skills/
@@ -127,7 +128,7 @@ npm run check           # Full local gate: typecheck, tests, validation, build
 
 Run focused validation scripts while iterating on a specific area, then run `npm run check` before handing work off or cutting a package. `npm run validate:mission-control-readonly` is the Mission Control read-only regression harness for multi-mission sections, overview/detail navigation, output rendering, docs, and absence of overlay mutation controls.
 
-The package manifest loads the built extension entrypoint (`dist/missions/index.js`) for publication. Local source edits should still preserve the public commands, tools, mission artifact layout, and Mission Control interaction model documented above.
+The package manifest loads the built extension entrypoint (`dist/missions/index.js`) for publication. Local source edits should still preserve the public commands, tools, milestone-canonical mission artifact layout, and Mission Control interaction model documented above.
 
 ## Design notes
 
