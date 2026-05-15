@@ -41,6 +41,35 @@ The extension already has a strong foundation:
 
 The main gaps are not conceptual. They are about Factory alignment, robustness, product polish, and release engineering.
 
+## Completed roadmap work
+
+### Foundation mission completed: `mission-roadmap-p0-foundation`
+
+The first roadmap mission completed successfully and established the baseline needed for larger changes.
+
+Completed commits:
+
+- `d653117` — F1 add build/test/check infrastructure.
+- `4dcc2f2` — F2 add schema foundation tests.
+- `114380d` — F2 cover invalid artifact report schemas.
+- `817bb42` — F3 extract runtime helper modules.
+- `144a33d` — F4 document contributor workflow.
+
+Outcomes:
+
+- Added production-oriented `build`, `validate`, and `check` scripts.
+- Added Vitest-based tests that run without a live pi session.
+- Added initial artifact validation coverage.
+- Extracted low-risk runtime helper modules under `extensions/missions/core/`.
+- Updated contributor workflow docs.
+
+Important observations from dogfooding:
+
+- Background mission execution while the main chat remains usable is a strong UX pattern and should be preserved as a core invariant.
+- Main-chat intervention works well as the practical “chat with orchestrator” experience: the user can ask for status, recovery, pause/resume, or plan changes while workers continue in the background.
+- Mission status and Mission Control can surface stale block information after recovery; stale status indicators are a high-priority quality issue.
+- Mission Control is currently too buggy and unhelpful to be the primary user cockpit. It needs a focused rework before deeper Factory-alignment features depend on it.
+
 ## Guiding principles
 
 1. **Factory alignment over workflow-DLS complexity**
@@ -235,46 +264,96 @@ Acceptance criteria:
 - The mission can resume after repair planning without treating the whole mission as failed.
 - Reports distinguish original scope from validation-generated follow-up work.
 
-## Phase 2: make Mission Control a project-manager cockpit
+## Phase 2: rework Mission Control and status UX
 
-Goal: allow the user to manage the mission the way Factory describes: monitoring, unblocking, redirecting, and replanning through the orchestrator.
+Goal: make Mission Control and mission status reliable, useful, and aligned with the main-chat orchestration model before building more advanced Factory-style behavior on top of them.
 
-### 2.1 Integrate orchestrator chat
+Dogfooding showed that the best orchestrator-chat UX is not necessarily an embedded chat inside Mission Control. The main chat can serve as the orchestrator channel as long as the mission context is lightweight, current, and actionable. Mission Control should become an observability and control surface, while main chat remains the place for natural-language intervention.
 
-Mission Control should provide an obvious way to talk to the orchestrator.
+Core UX invariants:
+
+- Mission execution must continue in the background without monopolizing the main chat.
+- The user can keep chatting while workers and validators run.
+- Main chat can inspect mission status, diagnose blocks, revise plans, pause/resume, and otherwise intercept a running mission.
+- Mission Control must never show stale or misleading state after recovery.
+- Mission Control should be useful even when the user never opens a separate orchestrator chat UI.
+
+### 2.1 Rebuild Mission Control around a clean view model
+
+Mission Control should not directly reason over raw, partially duplicated mission state. Introduce a single derived view model that status output and Mission Control can share.
+
+Required behavior:
+
+- Derive mission, milestone, feature, active-run, block, and artifact display state from one canonical function/module.
+- Reconcile or clearly flag duplicated top-level vs milestone feature state.
+- Suppress stale block summaries once a mission has recovered, resumed, or completed past that block.
+- Show current active run and latest relevant run distinctly.
+- Represent complete, running, paused, blocked, and recovered states consistently across `/missions status`, `mission_status`, and Mission Control.
+
+Acceptance criteria:
+
+- A recovered mission does not keep presenting an old block as the current problem.
+- A complete mission does not show obsolete recovery guidance.
+- Status text and Mission Control agree on current milestone, current feature, active run, and block state.
+- View-model behavior is covered by unit tests with synthetic mission artifacts.
+
+### 2.2 Simplify Mission Control panes and interactions
+
+Mission Control should prioritize clarity over density.
+
+Required behavior:
+
+- Keep a stable feature/milestone tree.
+- Show one obvious current-state summary.
+- Show recent activity with meaningful labels, not raw noise.
+- Show child output only when it helps diagnose the selected run.
+- Make controls discoverable and safe.
+
+Acceptance criteria:
+
+- A user can answer “what is running?”, “what completed?”, “what is blocked?”, and “what should I do next?” within a few seconds.
+- Key hints are accurate for the current focus/pane.
+- Pane scroll/focus behavior is predictable and tested.
+- Compact/narrow layouts remain usable.
+
+### 2.3 Main-chat intervention as the orchestrator-chat feature
+
+Rather than making an embedded Mission Control chat the primary feature, make main-chat mission intervention first-class.
 
 Required interactions:
 
-- Open/switch to orchestrator chat from Mission Control.
-- Ask the orchestrator to replan.
-- Add a constraint.
-- Prioritize/deprioritize a feature.
-- Drop or defer scope.
-- Convert a validator finding into follow-up work.
-- Pause after current and request a plan revision.
+- “status update” returns concise current mission state.
+- “pause after current” routes to the runner safely.
+- “resume” routes through the confirmation/runner path.
+- “why is it blocked?” inspects recovery artifacts and explains the cause.
+- “drop/defer/add/change this feature” revises the plan and records why.
+- “turn this validator finding into repair work” creates or updates follow-up work.
 
 Acceptance criteria:
 
-- A user can redirect a running or blocked mission without manually locating mission IDs or artifact paths.
-- Mission Control records intervention events in the mission event log.
+- The lightweight mission context is sufficient for the main assistant to identify the active mission and inspect details on demand.
+- Mission Control can point users back to main chat for natural-language intervention instead of embedding a second chat surface.
+- Plan revisions from main-chat intervention are recorded in mission artifacts/event logs.
 
-### 2.2 Improve blocked-state UX
+### 2.4 Improve blocked-state and recovery UX
 
-Blocked missions should be actionable.
-
-Acceptance criteria:
-
-- Mission Control shows the block reason, failed run, relevant artifacts, dirty git status if any, and recommended next actions.
-- `/missions status` includes concise recovery guidance.
-- `/mission-orchestrator` opens with enough context to recover without re-reading everything manually.
-
-### 2.3 Improve child-output and activity inspection
+Blocked missions should be actionable and should not require manual artifact archaeology.
 
 Acceptance criteria:
 
-- Child output clearly distinguishes stdout-like transcript, stderr, final response, artifact parse errors, and validation findings.
-- Activity log supports filtering by feature, milestone, child role, and severity.
+- Mission Control shows the current block reason, failed run, relevant artifacts, dirty git status if any, and recommended next actions.
+- `/missions status` includes concise recovery guidance only when the mission is actually blocked.
+- Recovered historical blocks remain inspectable as history but are not presented as current blockers.
+- `/mission-orchestrator` or main-chat recovery opens with enough context to recover without re-reading everything manually.
+
+### 2.5 Improve child-output and activity inspection
+
+Acceptance criteria:
+
+- Child output clearly distinguishes transcript messages, stderr, final response, artifact parse errors, and validation findings.
+- Activity log supports filtering or at least grouping by feature, milestone, child role, and severity.
 - Long outputs remain bounded and responsive.
+- Validator pass/fail summaries are visible without opening raw artifacts.
 
 ## Phase 3: strengthen validation and user testing
 
@@ -428,14 +507,15 @@ Acceptance criteria:
 
 Recommended implementation order:
 
-1. Modularize runtime and add build/check scripts.
-2. Add canonical schemas and Vitest tests for state/artifacts/runner commands.
-3. Make milestone validation the primary execution cadence.
-4. Add planning readiness checklist and run estimates.
-5. Add explicit repair features generated from validation findings.
-6. Add Mission Control orchestrator-intervention workflow.
-7. Document configuration inheritance, recovery, and lifecycle states.
-8. Prepare npm package and CI release process.
+1. Rework Mission Control/status around a shared, tested view model.
+2. Make main-chat mission intervention the first-class orchestrator-chat experience.
+3. Clean up stale block/recovery display and blocked-state guidance.
+4. Continue modularizing runtime areas needed for Mission Control: UI panes, input handling, status formatting, and run/activity view models.
+5. Make milestone validation the primary execution cadence.
+6. Add planning readiness checklist and run estimates.
+7. Add explicit repair features generated from validation findings.
+8. Document configuration inheritance, recovery, and lifecycle states.
+9. Prepare npm package and CI release process.
 
 ## Definition of production ready
 
