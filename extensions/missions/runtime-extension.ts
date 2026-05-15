@@ -20,6 +20,7 @@ import {
 	writeJson,
 } from "./runtime-core.js";
 import {
+	DEFAULT_MILESTONE_VALIDATION_FAILURE_LIMIT,
 	LEGACY_ACTIVE_PLANNING_ENTRY,
 	MISSION_ROLES,
 	ORCHESTRATOR_STATE_ENTRY,
@@ -497,6 +498,30 @@ function missionMilestones(mission: MissionState): MissionMilestone[] {
 	return [];
 }
 
+function effectiveMilestoneValidationFailureLimit(mission: MissionState, milestone: MissionMilestone): number {
+	const milestoneLimit = milestone.validationState?.failureLimit;
+	if (typeof milestoneLimit === "number" && Number.isInteger(milestoneLimit) && milestoneLimit > 0) return milestoneLimit;
+	const missionLimit = mission.validation?.failureLimit;
+	if (typeof missionLimit === "number" && Number.isInteger(missionLimit) && missionLimit > 0) return missionLimit;
+	return DEFAULT_MILESTONE_VALIDATION_FAILURE_LIMIT;
+}
+
+function milestoneValidationFailureCount(milestone: MissionMilestone): number {
+	const count = milestone.validationState?.failureCount;
+	return typeof count === "number" && Number.isInteger(count) && count >= 0 ? count : 0;
+}
+
+function incrementMilestoneValidationFailureCount(milestone: MissionMilestone): number {
+	const next = milestoneValidationFailureCount(milestone) + 1;
+	milestone.validationState = { ...milestone.validationState, failureCount: next };
+	return next;
+}
+
+function setMilestoneValidationRunId(milestone: MissionMilestone, runId: string): void {
+	milestone.validationRunId = runId;
+	milestone.validationState = { ...milestone.validationState, runId };
+}
+
 function mergeMissionFeatureState(primary: MissionFeature, secondary: MissionFeature): MissionFeature {
 	const statusRank: Record<ItemStatus, number> = { pending: 0, failed: 1, running: 2, skipped: 3, complete: 4 };
 	const status = statusRank[secondary.status] > statusRank[primary.status] ? secondary.status : primary.status;
@@ -543,9 +568,24 @@ function normalizeMissionShape(mission: MissionState): MissionState {
 	return syncMissionFeatureCopies(mission);
 }
 
+function stripLegacyFeatureValidationState(feature: MissionFeature): MissionFeature {
+	const persisted = { ...feature };
+	delete persisted.validationRunId;
+	delete persisted.userTestingRunId;
+	delete persisted.reviewerRunIds;
+	delete persisted.userTesting;
+	delete persisted.reviewers;
+	delete persisted.userTestingPending;
+	delete persisted.reviewerPending;
+	return persisted;
+}
+
 function missionForPersistence(mission: MissionState): MissionState {
 	const persisted = normalizeMissionShape({ ...mission, milestones: mission.milestones?.map((milestone) => ({ ...milestone, features: milestone.features.map((feature) => ({ ...feature })) })) });
-	if (Array.isArray(persisted.milestones) && persisted.milestones.length > 0) delete persisted.features;
+	if (Array.isArray(persisted.milestones) && persisted.milestones.length > 0) {
+		delete persisted.features;
+		persisted.milestones = persisted.milestones.map((milestone) => ({ ...milestone, features: milestone.features.map(stripLegacyFeatureValidationState) }));
+	}
 	return persisted;
 }
 
@@ -3327,7 +3367,7 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 	ensureDir(runDir);
 	if (targetFeature) transitionWorkerSuccessToValidatorRunning(mission, milestone, targetFeature, runId);
 	else {
-		milestone.validationRunId = runId;
+		setMilestoneValidationRunId(milestone, runId);
 		milestone.status = "running";
 		mission.status = "running";
 		mission.currentMilestoneId = milestone.id;
@@ -3910,6 +3950,9 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 export const __testing = {
 	normalizeMissionShape,
 	missionForPersistence,
+	effectiveMilestoneValidationFailureLimit,
+	milestoneValidationFailureCount,
+	incrementMilestoneValidationFailureCount,
 	saveMission,
 	loadMission,
 };

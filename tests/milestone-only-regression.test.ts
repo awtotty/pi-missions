@@ -97,6 +97,8 @@ describe("milestone-only mission runtime regressions", () => {
 					objective: "Validate persistence after retry/validation transitions",
 					validation: "Save after transition metadata is recorded",
 					status: "running" as const,
+					validationRunId: "validator-run-1",
+					validationState: { runId: "validator-run-1", failureCount: 2 },
 					features: [{
 						id: "F1",
 						title: "Feature",
@@ -104,7 +106,9 @@ describe("milestone-only mission runtime regressions", () => {
 						dependencies: [],
 						status: "complete" as const,
 						runId: "canonical-worker-run",
-						validationRunId: "validator-run-1",
+						validationRunId: "legacy-feature-validator-run",
+						userTestingRunId: "legacy-user-testing-run",
+						reviewerRunIds: ["legacy-reviewer-run"],
 						commit: "abc1234",
 					}],
 				}],
@@ -115,16 +119,19 @@ describe("milestone-only mission runtime regressions", () => {
 			const saved = readJson<typeof mission>(path.join(missionDir, "mission.json"));
 			expect(saved.features).toBeUndefined();
 			expect(saved.milestones[0].status).toBe("complete");
+			expect(saved.milestones[0]).toMatchObject({ validationRunId: "validator-run-1", validationState: { runId: "validator-run-1", failureCount: 2 } });
 			expect(saved.milestones[0].features[0]).toMatchObject({
 				id: "F1",
 				status: "complete",
 				runId: "canonical-worker-run",
-				validationRunId: "validator-run-1",
 				commit: "abc1234",
 			});
+			expect(saved.milestones[0].features[0].validationRunId).toBeUndefined();
+			expect(saved.milestones[0].features[0].userTestingRunId).toBeUndefined();
+			expect(saved.milestones[0].features[0].reviewerRunIds).toBeUndefined();
 			const loaded = runtimeTesting.loadMission(cwd, "mission-stale-duplicate");
 			expect(loaded.features).toBeUndefined();
-			expect(loaded.milestones?.[0]?.features[0]?.validationRunId).toBe("validator-run-1");
+			expect(loaded.milestones?.[0]?.validationRunId).toBe("validator-run-1");
 		} finally {
 			if (originalHome === undefined) delete process.env.PI_MISSIONS_HOME;
 			else process.env.PI_MISSIONS_HOME = originalHome;
@@ -134,6 +141,7 @@ describe("milestone-only mission runtime regressions", () => {
 	it("validation, retry, and persistence paths cannot reintroduce duplicate feature state", () => {
 		const persistence = functionBody("missionForPersistence");
 		expect(persistence).toContain("delete persisted.features");
+		expect(functionBody("stripLegacyFeatureValidationState")).toContain("delete persisted.validationRunId");
 		expect(functionBody("saveMission")).toContain("writeJson(path.join(missionDir(cwd, mission.id), \"mission.json\"), missionForPersistence(mission));");
 
 		const retry = runtimeSource.slice(runtimeSource.indexOf('if (input.command === "retry-feature")'), runtimeSource.indexOf('if (input.command === "block")'));
@@ -145,5 +153,30 @@ describe("milestone-only mission runtime regressions", () => {
 			expect(body).toContain("missionFeatureList(mission)");
 			expect(body).not.toContain("mission.features");
 		}
+	});
+
+	it("tracks milestone validation failure counts with default and override limits", () => {
+		const mission = {
+			schemaVersion: 1 as const,
+			id: "mission-validation-limits",
+			title: "Validation limits",
+			status: "running" as const,
+			createdAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-01T00:00:00.000Z",
+			cwd: "/repo",
+			models: { orchestrator: "default", worker: "default", validator: "default" },
+			validation: { failureLimit: 4 },
+			milestones: [
+				{ id: "M1", title: "Default", status: "pending" as const, features: [], validationState: { failureCount: 1 } },
+				{ id: "M2", title: "Override", status: "pending" as const, features: [], validationState: { failureLimit: 2 } },
+			],
+		};
+
+		expect(runtimeTesting.effectiveMilestoneValidationFailureLimit({ ...mission, validation: undefined }, mission.milestones[0])).toBe(5);
+		expect(runtimeTesting.effectiveMilestoneValidationFailureLimit(mission, mission.milestones[0])).toBe(4);
+		expect(runtimeTesting.effectiveMilestoneValidationFailureLimit(mission, mission.milestones[1])).toBe(2);
+		expect(runtimeTesting.milestoneValidationFailureCount(mission.milestones[0])).toBe(1);
+		expect(runtimeTesting.incrementMilestoneValidationFailureCount(mission.milestones[0])).toBe(2);
+		expect(mission.milestones[1].validationState?.failureCount).toBeUndefined();
 	});
 });

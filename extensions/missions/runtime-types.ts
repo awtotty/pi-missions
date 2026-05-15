@@ -3,11 +3,7 @@ export type ItemStatus = "pending" | "running" | "complete" | "failed" | "skippe
 export type MissionRole = "orchestrator" | "worker" | "validator";
 export type MissionRoleModels = Record<MissionRole, string>;
 
-export interface MissionFeatureReviewer {
-	id: string;
-	focusAreas?: string;
-	instructions?: string;
-}
+export const DEFAULT_MILESTONE_VALIDATION_FAILURE_LIMIT = 5;
 
 export interface MissionFeature {
 	id: string;
@@ -16,17 +12,32 @@ export interface MissionFeature {
 	dependencies?: string[];
 	status: ItemStatus;
 	runId?: string;
-	validationRunId?: string;
-	userTestingRunId?: string;
-	reviewerRunIds?: string[];
 	commit?: string;
+	/** @deprecated Feature-level validation state is legacy; use milestone.validationState/run ids. */
+	validationRunId?: string;
+	/** @deprecated Feature-level user-testing state is legacy; use milestone.validationState.userTestingRunId. */
+	userTestingRunId?: string;
+	/** @deprecated Standalone reviewer state is legacy and will be removed from the run loop. */
+	reviewerRunIds?: string[];
+	/** @deprecated Milestone validation owns user-testing requirements. */
+	userTesting?: { required?: boolean; instructions?: string };
+	/** @deprecated Standalone reviewer config is legacy. */
+	reviewers?: Array<{ id: string; focusAreas?: string; instructions?: string }>;
+	/** @deprecated Feature-level user-testing pending state is legacy. */
+	userTestingPending?: boolean;
+	/** @deprecated Standalone reviewer pending state is legacy. */
+	reviewerPending?: boolean;
+}
+
+export interface MissionMilestoneValidationState {
+	runId?: string;
+	userTestingRunId?: string;
+	failureCount?: number;
+	failureLimit?: number;
 	userTesting?: {
 		required?: boolean;
 		instructions?: string;
 	};
-	reviewers?: MissionFeatureReviewer[];
-	userTestingPending?: boolean;
-	reviewerPending?: boolean;
 }
 
 export interface MissionMilestone {
@@ -37,6 +48,11 @@ export interface MissionMilestone {
 	status: ItemStatus;
 	features: MissionFeature[];
 	validationRunId?: string;
+	validationState?: MissionMilestoneValidationState;
+}
+
+export interface MissionValidationConfig {
+	failureLimit?: number;
 }
 
 export type MissionRunKind = "worker" | "validator" | "user-testing-validator" | "reviewer";
@@ -85,6 +101,7 @@ export interface MissionState {
 	pauseRequestedAt?: string;
 	latestBlock?: MissionBlockMetadata;
 	activeRun?: MissionActiveRunOwnership;
+	validation?: MissionValidationConfig;
 	features?: MissionFeature[];
 	milestones?: MissionMilestone[];
 }
