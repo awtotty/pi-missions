@@ -15,9 +15,11 @@ Legend: `[done]` completed · `[partial]` partly implemented, needs hardening ·
 - `[done]` Milestone-canonical mission schema
 - `[done]` Milestone-level deterministic run loop
 - `[done]` Three-role model: orchestrator, worker, validator
-- `[partial]` Main-chat orchestrator intervention UX
+- `[next]` Dedicated mission orchestrator recovery loop
+- `[next]` Runtime modularization: runner, state transitions, status, and UI panes
+- `[next]` Release-readiness docs pass
+- `[next]` npm pack and public release
 - `[partial]` Blocked-state recovery packets and guidance
-- `[partial]` Runtime modularization: core helpers and Mission Control view model extracted
 - `[partial]` Mission lifecycle, recovery, and release-validation docs
 - `[partial]` Production packaging smoke checks
 - `[todo]` Restart verification and stale status cleanup
@@ -29,6 +31,17 @@ Legend: `[done]` completed · `[partial]` partly implemented, needs hardening ·
 - `[todo]` CI and formal release process
 - `[todo]` Headless / remote mission execution
 - `[todo]` Portable mission export/import and telemetry
+
+## Today's release push
+
+Goal: get `pi-missions` to a publicly useful npm release today. The remaining release-critical sequence is:
+
+1. Build the dedicated mission orchestrator recovery loop so validation failures route to the mission's own orchestrator session, not ad-hoc manual main-chat recovery.
+2. Modularize the runtime enough for a maintainable release, prioritizing runner/state/status/UI seams over perfect architecture.
+3. Do a release-readiness docs pass.
+4. Run package validation and publish to npm.
+
+Everything after that is polish, hardening, or advanced capability.
 
 ## North star
 
@@ -46,7 +59,7 @@ Then:
 4. Enter Mission Control.
 5. Watch workers execute scoped units of work in fresh contexts.
 6. Watch validators verify work at the right cadence.
-7. Redirect, pause, unblock, or replan through the orchestrator when needed.
+7. Redirect, pause, unblock, or replan through the dedicated mission orchestrator when needed, with main chat as the human command/override channel.
 8. Come back hours or days later to a coherent artifact trail, clean git history, and either completed work or an actionable blocked state.
 
 ## Current state
@@ -94,7 +107,7 @@ Completed outcomes:
 Completed outcomes:
 
 - Mission Control is now a read-only observability surface rather than a management/control plane.
-- Main chat is the orchestrator/intervention channel for pause, resume, recovery, and plan revisions.
+- Main chat is the human command/override channel for pause, resume, recovery, and plan revisions; the dedicated mission orchestrator session owns normal recovery coordination.
 - Mission Control supports a multi-mission overview with sections for blocked/failed, running, paused, planned, and completed missions.
 - Shared view-model logic keeps status output and Mission Control closer together.
 - Compact footer mission status was improved and noisy child-run footer output was removed; a full pi restart may be required after build for runtime extension changes to take effect.
@@ -168,7 +181,7 @@ Important observations from dogfooding:
 
 6. **Mission Control is read-only observability**
    - Mission Control should answer what is running, complete, blocked, or next.
-   - Natural-language intervention and control belong in main chat with the orchestrator.
+   - Natural-language intervention and control belong in the dedicated mission orchestrator session or main chat command channel, not inside Mission Control.
 
 7. **Thin deterministic layer, strong invariants**
    - Keep decomposition and judgment in skills/models.
@@ -184,10 +197,11 @@ Important observations from dogfooding:
    - Mission Control and chat are clients of runner state, not owners of it.
    - Preserve a path to future headless/cloud mission execution.
 
-10. **Deterministic runner, orchestrator repairs**
+10. **Deterministic runner, dedicated orchestrator repairs**
    - Workers and validators produce artifacts; they do not choose mission state transitions.
-   - On milestone validation failure, the runner hands control to the main-chat orchestrator.
-   - The orchestrator may revise metadata, add/adjust repair work, or resume after explicit intent.
+   - On milestone validation failure, the runner hands control to the mission's dedicated orchestrator session.
+   - Main chat remains the human command/override channel.
+   - The mission orchestrator may revise metadata, add/adjust repair work, or resume after explicit intent.
 
 ## Phase 0: stabilize the foundation
 
@@ -294,7 +308,7 @@ Required behavior:
 - Workers run feature implementation slices within the current milestone.
 - Scrutiny validation runs after the milestone's worker features complete.
 - Optional user-testing validation runs as a second validator mode at the milestone boundary.
-- A failed milestone validation hands control to the orchestrator before the next milestone begins.
+- A failed milestone validation hands control to the mission's dedicated orchestrator session before the next milestone begins.
 
 Acceptance criteria:
 
@@ -339,18 +353,18 @@ Acceptance criteria:
 - Mission Control displays actual vs estimated runs.
 - Blocked/replanned missions update the estimate when follow-up work is added.
 
-### 1.4 Implement deterministic validation-failure handoff
+### 1.4 Implement dedicated orchestrator validation-failure handoff
 
-Validation failures should produce structured orchestrator intervention, not an automatic model-driven retry loop.
+Validation failures should produce structured intervention by the mission's dedicated orchestrator session, not an automatic worker/validator-driven retry loop and not mandatory manual main-chat recovery.
 
 Required behavior:
 
 - Validator defects are stored with severity, evidence, affected feature/milestone, and suggested fix.
 - Milestone validation failure increments a per-milestone counter.
 - The default effective validation failure limit is 5 per milestone; counters are independent across milestones.
-- Failed validation below the limit blocks/hands off to the main-chat orchestrator for repair planning.
+- Failed validation below the limit blocks/hands off to the mission's dedicated orchestrator session for repair planning.
 - The runner does not automatically reset features, generate fix work, or choose repair scope.
-- The orchestrator can convert defects into follow-up features, adjust existing feature metadata, classify validator defects, ask the user, or resume.
+- The dedicated mission orchestrator can convert defects into follow-up features, adjust existing feature metadata, classify validator defects, ask the user through the main chat when needed, or resume.
 - Follow-up features retain provenance back to the validation run.
 - Mission Control shows validation failure history and repair provenance as observability, not control.
 
@@ -365,13 +379,13 @@ Acceptance criteria:
 
 Goal: make Mission Control and mission status reliable, useful, and aligned with the main-chat orchestration model before building more advanced Factory-style behavior on top of them.
 
-Dogfooding showed that the best orchestrator-chat UX is not necessarily an embedded chat inside Mission Control. The main chat can serve as the orchestrator channel as long as the mission context is lightweight, current, and actionable. Mission Control should become an observability and control surface, while main chat remains the place for natural-language intervention.
+Dogfooding showed that the best UX is not an embedded chat inside Mission Control. Mission Control should be observability only. A dedicated mission orchestrator session should keep execution moving, while main chat remains the human command/override channel with lightweight, current mission context.
 
 Core UX invariants:
 
 - Mission execution must continue in the background without monopolizing the main chat.
 - The user can keep chatting while workers and validators run.
-- Main chat can inspect mission status, diagnose blocks, revise plans, pause/resume, and otherwise intercept a running mission.
+- Main chat can inspect mission status, diagnose blocks, revise plans, pause/resume, and otherwise override or redirect a running mission.
 - Mission Control must never show stale or misleading state after recovery.
 - Mission Control should be useful even when the user never opens a separate orchestrator chat UI.
 
@@ -413,24 +427,27 @@ Acceptance criteria:
 - Pane scroll/focus behavior is predictable and tested.
 - Compact/narrow layouts remain usable.
 
-### 2.3 Main-chat intervention as the orchestrator-chat feature
+### 2.3 Dedicated mission orchestrator recovery loop
 
-Rather than making an embedded Mission Control chat the primary feature, make main-chat mission intervention first-class.
+Rather than making an embedded Mission Control chat the primary feature or relying on ad-hoc manual main-chat recovery, make the dedicated mission orchestrator session responsible for keeping execution moving after validation failures and recoverable blocks.
 
-Required interactions:
+Required behavior:
 
-- “status update” returns concise current mission state.
+- Validation failure creates a recovery packet and routes a turn to the mission's dedicated orchestrator session.
+- The mission orchestrator inspects recovery artifacts, classifies the issue, and revises mission metadata or asks the user only when needed.
+- “status update” in main chat returns concise current mission state.
 - “pause after current” routes to the runner safely.
 - “resume” routes through the confirmation/runner path.
-- “why is it blocked?” inspects recovery artifacts and explains the cause.
+- “why is it blocked?” in main chat inspects recovery artifacts and explains the cause.
 - “drop/defer/add/change this feature” revises the plan and records why.
-- “turn this validator finding into repair work” creates or updates follow-up work.
+- “turn this validator finding into repair work” creates or updates follow-up work with provenance.
 
 Acceptance criteria:
 
+- The dedicated mission orchestrator session receives enough recovery context to act without manual artifact spelunking.
 - The lightweight mission context is sufficient for the main assistant to identify the active mission and inspect details on demand.
-- Mission Control can point users back to main chat for natural-language intervention instead of embedding a second chat surface.
-- Plan revisions from main-chat intervention are recorded in mission artifacts/event logs.
+- Mission Control can point users back to the mission orchestrator/main chat command channel instead of embedding a second chat surface.
+- Plan revisions from orchestrator or main-chat intervention are recorded in mission artifacts/event logs.
 
 ### 2.4 Improve blocked-state and recovery UX
 
@@ -491,7 +508,7 @@ Required behavior:
 - Run workers for the current milestone's feature slices before milestone validators run.
 - Run scrutiny validation at milestone boundary by default.
 - Run user-testing validation at milestone boundary when configured.
-- On validation failure, persist the report, increment that milestone's failure counter, block/handoff to the orchestrator, and stop.
+- On validation failure, persist the report, increment that milestone's failure counter, block/handoff to the dedicated mission orchestrator session, and stop.
 - Do not auto-reset features or auto-select fix work on validator failure.
 - Enforce a per-milestone validation failure limit, default 5.
 
@@ -499,7 +516,7 @@ Acceptance criteria:
 
 - A milestone with multiple features produces worker runs before a single milestone scrutiny validation run.
 - Optional user-testing uses the user-testing validator skill under the same validator role.
-- Validation failures 1 through 4 with default limit hand control to the orchestrator.
+- Validation failures 1 through 4 with default limit hand control to the dedicated mission orchestrator session.
 - Validation failure 5 for the same milestone blocks with an explicit limit-exceeded reason.
 - Failure counters are independent per milestone.
 - Passing validation marks the milestone complete and advances execution.
@@ -726,16 +743,15 @@ Acceptance criteria:
 
 Recommended implementation order:
 
-1. Verify the restarted extension no longer shows child-run footer noise and that Mission Control/status agree after blocked/recovered/completed states.
-2. Make main-chat mission intervention the first-class orchestrator-chat experience, with recovery artifacts summarized automatically.
-3. Continue modularizing runtime areas needed for runner/Mission Control: state transitions, locks, status formatting, activity view models, and UI panes.
-4. Add planning readiness checklist and run estimates.
-5. Add user settings for role models and per-milestone validation failure caps.
-6. Add mission token/cost tracking and budget limits.
-7. Add explicit repair provenance for orchestrator-generated fix work from validation findings.
-8. Document configuration inheritance, recovery, and lifecycle states.
-9. Prepare npm package and CI release process.
-10. Much later: add headless/remote mission execution with export/import, non-interactive run, JSON status/watch, and telemetry.
+1. Build the dedicated mission orchestrator recovery loop for validation failures and recoverable blocks.
+2. Continue modularizing runtime areas needed for release: runner/state transitions, locks, status formatting, activity view models, and UI panes.
+3. Do a release-readiness docs pass covering quickstart, lifecycle, recovery, Mission Control, configuration, and release validation.
+4. Run package validation, `npm pack` smoke testing, and publish to npm.
+5. After release, add planning readiness checklist and run estimates.
+6. After release, add user settings for role models and per-milestone validation failure caps.
+7. After release, add mission token/cost tracking and budget limits.
+8. After release, add explicit repair provenance for orchestrator-generated fix work from validation findings.
+9. Later: add headless/remote mission execution with export/import, non-interactive run, JSON status/watch, and telemetry.
 
 ## Definition of production ready
 

@@ -63,14 +63,14 @@ After local edits, use `/reload` inside pi.
 3. Save the plan with the mission tools when ready.
 4. Start execution with `/missions run` or `mission_start_execution` after explicit confirmation.
 5. Use `/mission-control` or `/missions status` to monitor progress.
-6. If milestone validation fails, the runner blocks and hands control to the main-chat orchestrator; completed work and artifacts are preserved while the orchestrator decides whether to revise the plan and resume.
+6. If milestone validation fails, the runner blocks and hands control to the mission's dedicated orchestrator session; completed work and artifacts are preserved while the orchestrator decides whether to revise the plan and resume. Main chat remains the human command/override channel.
 
 
 ## Execution model
 
 The normal runner loop has three roles: orchestrator, worker, and validator. Workers implement individual features and produce commits plus handoff artifacts. After all runnable features in a milestone are complete or skipped, the runner starts milestone-boundary validators: scrutiny first via `skills/validator-scrutiny/SKILL.md`, then optional user-testing via `skills/validator-user-testing/SKILL.md` when the milestone requests it. There is no standalone reviewer role in the deterministic execution loop; scrutiny validators own adversarial code review.
 
-Child agents produce artifacts, but the runner/orchestrator own mission metadata transitions. A milestone validation failure persists the report, increments that milestone's independent failure counter, blocks the mission, and hands recovery to the main-chat orchestrator instead of automatically choosing fix work. The default effective validation failure limit is 5 per milestone unless mission/milestone metadata overrides it.
+Child agents produce artifacts, but the runner/orchestrator own mission metadata transitions. A milestone validation failure persists the report, increments that milestone's independent failure counter, blocks the mission, and hands recovery to the mission's dedicated orchestrator session instead of automatically choosing fix work. The default effective validation failure limit is 5 per milestone unless mission/milestone metadata overrides it.
 
 ## Mission Control
 

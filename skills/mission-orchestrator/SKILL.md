@@ -136,7 +136,7 @@ Recovery policy:
 
 - Preserve completed commits and feature statuses unless there is evidence the work is invalid.
 - Do not discard or rewrite the validation contract just to make validation pass. Only change requirements when the user changes requirements.
-- For worker failures, prefer retrying the same incomplete feature. For milestone validation failures, decide in the main-chat orchestrator whether existing completed features need correction or whether new fix features should be added; add new scope only when justified.
+- For worker failures, prefer retrying the same incomplete feature. For milestone validation failures, the dedicated mission orchestrator should decide whether existing completed features need correction or whether new fix features should be added; add new scope only when justified. Ask the user through the main chat only when product requirements, tradeoffs, or external inputs are needed.
 - Mark failed/incomplete features back to a resumable state only when the plan makes the next worker action unambiguous.
 - Record why the plan changed in the visible chat summary and in persisted artifacts when revising the plan.
 - Ask the user only for requirement ambiguity, destructive rollback decisions, credentials/secrets, unavailable external systems, or product tradeoffs.
