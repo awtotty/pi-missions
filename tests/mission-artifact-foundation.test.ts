@@ -125,15 +125,17 @@ describe("mission-state path and shape assumptions", () => {
 			updatedAt: "2026-01-01T00:00:00.000Z",
 			cwd: "/repo",
 			models: { orchestrator: "default", worker: "default", validator: "default" },
+			currentMilestoneId: "M1",
 			currentFeatureId: "F1",
-			features: [{ id: "F1", title: "Feature", description: "Do work", dependencies: [], status: "running", runId: "run-1" }],
-			milestones: [{ id: "M1", title: "Milestone", objective: "Validate cadence", validation: "Run checks", status: "running", features: [] }],
+			milestones: [{ id: "M1", title: "Milestone", objective: "Validate cadence", validation: "Run checks", status: "running", features: [{ id: "F1", title: "Feature", description: "Do work", dependencies: [], status: "running", runId: "run-1" }] }],
 			activeRun: { schemaVersion: 1, kind: "worker", itemId: "F1", runId: "run-1", parentPid: 123, parentSessionMarker: "pid-123", startedAt: "2026-01-01T00:00:00.000Z", intent: "active" },
 		};
 
 		writeJson(file, mission);
 
 		expect(fs.existsSync(file)).toBe(true);
-		expect(readJson<typeof mission>(file)).toEqual(mission);
+		const saved = readJson<typeof mission & { features?: unknown[] }>(file);
+		expect(saved).toEqual(mission);
+		expect(saved.features).toBeUndefined();
 	});
 });
