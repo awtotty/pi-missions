@@ -3,12 +3,17 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const runtimeSource = fs.readFileSync(path.join(process.cwd(), "extensions/missions/runtime-extension.ts"), "utf8");
+const recoverySource = fs.readFileSync(path.join(process.cwd(), "extensions/missions/runner/recovery.ts"), "utf8");
+const combinedSource = `${runtimeSource}\n${recoverySource}`;
 
 function functionBody(name: string): string {
-	const start = runtimeSource.indexOf(`function ${name}`);
+	const start = combinedSource.indexOf(`function ${name}`);
 	expect(start).toBeGreaterThanOrEqual(0);
-	const next = runtimeSource.indexOf("\nfunction ", start + 1);
-	return runtimeSource.slice(start, next === -1 ? undefined : next);
+	const next = combinedSource.indexOf("\nfunction ", start + 1);
+	const nextExport = combinedSource.indexOf("\nexport function ", start + 1);
+	const candidates = [next, nextExport].filter((index) => index > start);
+	const end = candidates.length > 0 ? Math.min(...candidates) : undefined;
+	return combinedSource.slice(start, end);
 }
 
 function sourceBetween(startToken: string, endToken: string): string {
@@ -72,7 +77,7 @@ describe("runtime orchestrator recovery routing", () => {
 	it("sends recovery instructions that allow mission metadata/control repair but forbid repository edits by default", () => {
 		const prompt = functionBody("runtimeOrchestratorRecoveryPrompt");
 		const skillInjection = functionBody("runtimeOrchestratorSkillInjectionContent");
-		const inject = sourceBetween("async function injectRuntimeOrchestratorSkill", "function runtimeOrchestratorRecoveryPrompt");
+		const inject = recoverySource.slice(recoverySource.indexOf("async function injectRuntimeOrchestratorSkill"), recoverySource.indexOf("function runtimeOrchestratorRecoveryPrompt"));
 		expect(prompt).toContain("dedicated runtime orchestrator session");
 		expect(prompt).toContain("mission-orchestrator skill has been injected");
 		expect(skillInjection).toContain("BASE_SKILLS.orchestrator");
@@ -91,7 +96,7 @@ describe("runtime orchestrator recovery routing", () => {
 		expect(runner).toContain("const validatorBlock = await runValidator");
 		expect(runner).toContain("const userTestingBlock = await runMilestoneUserTestingValidator");
 		for (const blockName of ["workerBlock", "validatorBlock", "userTestingBlock"]) {
-			const dispatchIndex = runner.indexOf(`await dispatchMissionBlockRecovery(this.ctx, this.pi, mission, ${blockName})`);
+			const dispatchIndex = runner.indexOf(`await dispatchMissionBlockRecovery(this.ctx, this.pi, mission, ${blockName}, buildOrchestratorState)`);
 			expect(dispatchIndex).toBeGreaterThan(0);
 			const clearIndex = runner.lastIndexOf("clearMissionRunStatus(this.ctx)", dispatchIndex);
 			expect(clearIndex).toBeGreaterThan(0);
@@ -108,7 +113,7 @@ describe("runtime orchestrator recovery routing", () => {
 		expectOrdered(runner, [
 			"const validatorBlock = await runValidator(this.ctx, mission, milestone, this.childSignal);",
 			"clearMissionRunStatus(this.ctx);",
-			"if (validatorBlock) await dispatchMissionBlockRecovery(this.ctx, this.pi, mission, validatorBlock);",
+			"if (validatorBlock) await dispatchMissionBlockRecovery(this.ctx, this.pi, mission, validatorBlock, buildOrchestratorState);",
 		]);
 		expectOrdered(runner, [
 			"const pending = incompleteFeatures(mission);",
@@ -116,7 +121,7 @@ describe("runtime orchestrator recovery routing", () => {
 			"const block = writeNoRunnablePendingWorkReport(runDir, mission, pending);",
 			"persistMissionBlock(this.dir, mission, block, \"no_runnable_pending_work\");",
 			"clearMissionRunStatus(this.ctx);",
-			"await dispatchMissionBlockRecovery(this.ctx, this.pi, mission, block);",
+			"await dispatchMissionBlockRecovery(this.ctx, this.pi, mission, block, buildOrchestratorState);",
 		]);
 		expect(functionBody("classifyValidatorBlock")).toContain("return \"validator_report_failed\";");
 		expect(functionBody("writeNoRunnablePendingWorkReport")).toContain("unresolved-pending-work.json");

@@ -4,6 +4,8 @@ function fail(message) { throw new Error(message); }
 function assert(condition, message) { if (!condition) fail(message); }
 
 const runtime = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
+const recovery = fs.readFileSync(new URL("../extensions/missions/runner/recovery.ts", import.meta.url), "utf8");
+const runtimeAndRecovery = `${runtime}\n${recovery}`;
 const runtimeTypes = fs.readFileSync(new URL("../extensions/missions/runtime-types.ts", import.meta.url), "utf8");
 const readme = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const missionControlDocs = fs.readFileSync(new URL("../docs/mission-control.md", import.meta.url), "utf8");
@@ -21,10 +23,13 @@ function sliceBetween(startToken, endToken, label = startToken) {
 
 function functionBody(name) {
 	const startToken = `function ${name}`;
-	const start = runtime.indexOf(startToken);
+	const start = runtimeAndRecovery.indexOf(startToken);
 	assert(start >= 0, `missing function ${name}`);
-	const next = runtime.indexOf("\nfunction ", start + startToken.length);
-	return runtime.slice(start, next === -1 ? undefined : next);
+	const next = runtimeAndRecovery.indexOf("\nfunction ", start + startToken.length);
+	const nextExport = runtimeAndRecovery.indexOf("\nexport function ", start + startToken.length);
+	const candidates = [next, nextExport].filter((index) => index > start);
+	const end = candidates.length > 0 ? Math.min(...candidates) : undefined;
+	return runtimeAndRecovery.slice(start, end);
 }
 
 function assertOrdered(source, tokens, label) {
@@ -44,7 +49,7 @@ const runner = sliceBetween("class MissionExecutionRunner", "async function runM
 const dispatch = functionBody("dispatchMissionBlockRecovery");
 const prompt = functionBody("runtimeOrchestratorRecoveryPrompt");
 const skillInjection = functionBody("runtimeOrchestratorSkillInjectionContent");
-const injectSkill = sliceBetween("async function injectRuntimeOrchestratorSkill", "function runtimeOrchestratorRecoveryPrompt", "injectRuntimeOrchestratorSkill");
+const injectSkill = recovery.slice(recovery.indexOf("async function injectRuntimeOrchestratorSkill"), recovery.indexOf("function runtimeOrchestratorRecoveryPrompt"));
 const blockMessage = functionBody("formatMissionBlockMessage");
 const packetWriter = functionBody("writeRecoveryPacket");
 const noRunnableReport = functionBody("writeNoRunnablePendingWorkReport");
@@ -58,13 +63,13 @@ const missionControlDispatch = sliceBetween(
 assertOrdered(runner, [
 	"const validatorBlock = await runValidator(this.ctx, mission, milestone, this.childSignal);",
 	"clearMissionRunStatus(this.ctx);",
-	"if (validatorBlock) await dispatchMissionBlockRecovery(this.ctx, this.pi, mission, validatorBlock);",
+	"if (validatorBlock) await dispatchMissionBlockRecovery(this.ctx, this.pi, mission, validatorBlock, buildOrchestratorState);",
 	"return;",
 ], "scrutiny validation failure recovery routing");
 assertOrdered(runner, [
 	"const userTestingBlock = await runMilestoneUserTestingValidator(this.ctx, mission, milestone, this.childSignal);",
 	"clearMissionRunStatus(this.ctx);",
-	"if (userTestingBlock) await dispatchMissionBlockRecovery(this.ctx, this.pi, mission, userTestingBlock);",
+	"if (userTestingBlock) await dispatchMissionBlockRecovery(this.ctx, this.pi, mission, userTestingBlock, buildOrchestratorState);",
 	"return;",
 ], "user-testing validation failure recovery routing");
 assert(functionBody("classifyValidatorBlock").includes("return \"validator_report_failed\";"), "validator reports must classify as validator_report_failed recovery blocks");
@@ -76,7 +81,7 @@ assertOrdered(runner, [
 	"const block = writeNoRunnablePendingWorkReport(runDir, mission, pending);",
 	"persistMissionBlock(this.dir, mission, block, \"no_runnable_pending_work\");",
 	"clearMissionRunStatus(this.ctx);",
-	"await dispatchMissionBlockRecovery(this.ctx, this.pi, mission, block);",
+	"await dispatchMissionBlockRecovery(this.ctx, this.pi, mission, block, buildOrchestratorState);",
 	"return;",
 ], "no-runnable-work recovery routing");
 assert(noRunnableReport.includes("unresolved-pending-work.json") && noRunnableReport.includes("unresolved-pending-work.md"), "no-runnable-work recovery must emit deterministic inspection artifacts");
