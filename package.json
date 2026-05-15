@@ -16,9 +16,7 @@
     "dist/",
     "skills/",
     "prompts/",
-    "scripts/",
-    "docs/",
-    "tsconfig.json"
+    "docs/"
   ],
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
