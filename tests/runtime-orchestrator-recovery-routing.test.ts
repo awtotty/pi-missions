@@ -36,6 +36,7 @@ describe("runtime orchestrator recovery routing", () => {
 		expect(dispatch).toContain("ctx.newSession");
 		expect(dispatch).toContain("missions-runtime-orchestrator-recovery");
 		expect(dispatch).toContain("dedicated-runtime-orchestrator-session");
+		expect(dispatch).toContain("injectRuntimeOrchestratorSkill(nextCtx)");
 		expect(dispatch).toContain("triggerTurn: true");
 		expect(dispatch).toContain("runtime_orchestrator_recovery_dispatched");
 	});
@@ -70,7 +71,14 @@ describe("runtime orchestrator recovery routing", () => {
 
 	it("sends recovery instructions that allow mission metadata/control repair but forbid repository edits by default", () => {
 		const prompt = functionBody("runtimeOrchestratorRecoveryPrompt");
+		const skillInjection = functionBody("runtimeOrchestratorSkillInjectionContent");
+		const inject = sourceBetween("async function injectRuntimeOrchestratorSkill", "function runtimeOrchestratorRecoveryPrompt");
 		expect(prompt).toContain("dedicated runtime orchestrator session");
+		expect(prompt).toContain("mission-orchestrator skill has been injected");
+		expect(skillInjection).toContain("BASE_SKILLS.orchestrator");
+		expect(skillInjection).toContain("Use the mission-orchestrator skill");
+		expect(inject).toContain("missions-runtime-orchestrator-skill-injection");
+		expect(inject).toContain("display: false");
 		expect(prompt).toContain("Do not edit repository implementation code by default");
 		expect(prompt).toContain("Use mission tools/APIs");
 		expect(prompt).toContain("resume, ask-user, leave-blocked, retry-repair, or rerun-validation");

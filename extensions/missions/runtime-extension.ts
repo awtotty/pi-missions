@@ -1506,11 +1506,37 @@ function formatMissionBlockMessage(block: MissionBlockSummary, routedToRuntimeOr
 	].filter((line): line is string => Boolean(line)).join("\n");
 }
 
+function runtimeOrchestratorSkillInjectionContent(): string {
+	let orchestratorSkill = "";
+	try {
+		orchestratorSkill = fs.readFileSync(BASE_SKILLS.orchestrator, "utf8");
+	} catch (error) {
+		orchestratorSkill = `Mission orchestrator skill could not be loaded from ${BASE_SKILLS.orchestrator}: ${String(error)}`;
+	}
+	return [
+		"[MISSION RUNTIME ORCHESTRATOR SKILL INJECTION]",
+		"Use the mission-orchestrator skill for this runtime recovery turn. This hidden context gives the dedicated runtime orchestrator the same role-specific skill injection model used for worker and validator child roles.",
+		`Skill file: ${BASE_SKILLS.orchestrator}`,
+		"",
+		orchestratorSkill,
+	].join("\n");
+}
+
+async function injectRuntimeOrchestratorSkill(nextCtx: { sendMessage: ExtensionAPI["sendMessage"] }): Promise<void> {
+	await nextCtx.sendMessage({
+		customType: "missions-runtime-orchestrator-skill-injection",
+		display: false,
+		content: runtimeOrchestratorSkillInjectionContent(),
+		details: { skill: "mission-orchestrator", skillPath: BASE_SKILLS.orchestrator },
+	}, { triggerTurn: false, deliverAs: "followUp" });
+}
+
 function runtimeOrchestratorRecoveryPrompt(mission: MissionState, block: MissionBlockSummary): string {
 	const packetArtifacts = block.artifactPaths.filter((artifact) => artifact.includes(`${path.sep}recovery-packets${path.sep}`));
 	return [
 		"[MISSION RUNTIME ORCHESTRATOR RECOVERY]",
 		"The deterministic mission runner has stopped after a recoverable block. You are the dedicated runtime orchestrator session for this mission.",
+		"The mission-orchestrator skill has been injected into this recovery session as hidden context. Follow it for recovery procedure and authority boundaries.",
 		"Do not edit repository implementation code by default. Use mission tools/APIs to inspect artifacts, revise mission metadata/control state, retry/repair state, resume, ask the user, rerun validation when safe, or leave the mission blocked with a clear reason.",
 		"Main chat remains the human command/question/override channel. Mission Control remains read-only observability.",
 		"",
@@ -1559,8 +1585,9 @@ async function dispatchMissionBlockRecovery(ctx: ExtensionContext, pi: Extension
 		if (existingSessionPath) {
 			await ctx.switchSession(existingSessionPath, {
 				withSession: async (nextCtx) => {
+					await injectRuntimeOrchestratorSkill(nextCtx);
 					await nextCtx.sendMessage({ customType: "missions-runtime-orchestrator-recovery", display: true, content, details: { ...details, reusedSession: true, sessionPath: existingSessionPath } }, { triggerTurn: true, deliverAs: "followUp" });
-					appendEvent(dir, "runtime_orchestrator_recovery_dispatched", { ...details, sessionPath: existingSessionPath, reusedSession: true, triggerTurn: true });
+					appendEvent(dir, "runtime_orchestrator_recovery_dispatched", { ...details, sessionPath: existingSessionPath, reusedSession: true, triggerTurn: true, injectedSkill: "mission-orchestrator", skillPath: BASE_SKILLS.orchestrator });
 				},
 			});
 			return;
@@ -1581,8 +1608,9 @@ async function dispatchMissionBlockRecovery(ctx: ExtensionContext, pi: Extension
 				});
 			},
 			withSession: async (nextCtx) => {
+				await injectRuntimeOrchestratorSkill(nextCtx);
 				await nextCtx.sendMessage({ customType: "missions-runtime-orchestrator-recovery", display: true, content, details: { ...details, reusedSession: false, sessionPath: createdSessionPath } }, { triggerTurn: true, deliverAs: "followUp" });
-				appendEvent(dir, "runtime_orchestrator_recovery_dispatched", { ...details, sessionPath: createdSessionPath, reusedSession: false, triggerTurn: true });
+				appendEvent(dir, "runtime_orchestrator_recovery_dispatched", { ...details, sessionPath: createdSessionPath, reusedSession: false, triggerTurn: true, injectedSkill: "mission-orchestrator", skillPath: BASE_SKILLS.orchestrator });
 			},
 		});
 	} catch (error) {

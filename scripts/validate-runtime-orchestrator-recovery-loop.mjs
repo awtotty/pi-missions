@@ -43,6 +43,8 @@ function assertIncludesAll(source, tokens, label) {
 const runner = sliceBetween("class MissionExecutionRunner", "async function runMission", "MissionExecutionRunner");
 const dispatch = functionBody("dispatchMissionBlockRecovery");
 const prompt = functionBody("runtimeOrchestratorRecoveryPrompt");
+const skillInjection = functionBody("runtimeOrchestratorSkillInjectionContent");
+const injectSkill = sliceBetween("async function injectRuntimeOrchestratorSkill", "function runtimeOrchestratorRecoveryPrompt", "injectRuntimeOrchestratorSkill");
 const blockMessage = functionBody("formatMissionBlockMessage");
 const packetWriter = functionBody("writeRecoveryPacket");
 const noRunnableReport = functionBody("writeNoRunnablePendingWorkReport");
@@ -97,6 +99,8 @@ assertOrdered(dispatch, [
 ], "existing-session reuse before new-session creation");
 assert(dispatch.includes("Mission runtime orchestrator:"), "new session setup must identify the runtime orchestrator session");
 assert(dispatch.includes("buildOrchestratorState(mission.cwd, mission"), "new session setup must seed official orchestrator state");
+assert(dispatch.includes("await injectRuntimeOrchestratorSkill(nextCtx);"), "dispatch must inject the mission-orchestrator skill before recovery turns");
+assert(dispatch.includes("injectedSkill: \"mission-orchestrator\""), "dispatch event must record injected orchestrator skill");
 
 // Main chat remains a display-only fallback/visibility channel, never the default executor when runtime routing is possible.
 assertOrdered(dispatch, [
@@ -110,11 +114,21 @@ assert(blockMessage.includes("display-only visibility for human override") && bl
 
 // Recovery authority must forbid direct repository implementation edits by default while allowing mission metadata/control-state repair.
 for (const expected of [
+	"mission-orchestrator skill has been injected",
 	"Do not edit repository implementation code by default",
 	"Use mission tools/APIs",
 	"mission metadata/control-state recovery",
 	"resume, ask-user, leave-blocked, retry-repair, or rerun-validation",
 ]) assert(prompt.includes(expected), `recovery prompt missing: ${expected}`);
+for (const expected of [
+	"BASE_SKILLS.orchestrator",
+	"Use the mission-orchestrator skill",
+]) assert(skillInjection.includes(expected), `orchestrator skill injection content missing: ${expected}`);
+for (const expected of [
+	"missions-runtime-orchestrator-skill-injection",
+	"display: false",
+	"triggerTurn: false",
+]) assert(injectSkill.includes(expected), `orchestrator skill injection message missing: ${expected}`);
 for (const expected of [
 	"mayUseMissionTools: true",
 	"mayReviseMissionMetadata: true",
