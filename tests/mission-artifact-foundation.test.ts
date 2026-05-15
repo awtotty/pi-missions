@@ -28,21 +28,12 @@ describe("artifact schema validators", () => {
 		expect(result).toEqual(expect.objectContaining({ ok: true, issues: [] }));
 	});
 
-	it("accepts current user-testing and reviewer report artifacts", () => {
+	it("accepts current user-testing report artifacts", () => {
 		expect(validateMissionArtifact("user-testing-report", {
 			status: "inconclusive",
 			summary: "No browser flow applies.",
 			featureId: "F2",
 			commandsRun: [{ command: "npm test", exitCode: 0, notes: "unit-only feature" }],
-		}).ok).toBe(true);
-
-		expect(validateMissionArtifact("reviewer-report", {
-			reviewerId: "reviewer-1",
-			status: "pass",
-			summary: "No blocking findings.",
-			featureId: "F2",
-			commandsRun: [{ command: "git diff --check", exitCode: 0 }],
-			findings: [{ id: "R1", severity: "minor", title: "Nit", description: "Non-blocking note." }],
 		}).ok).toBe(true);
 	});
 
@@ -82,24 +73,6 @@ describe("artifact schema validators", () => {
 		expect(artifactValidationErrorSummary("user-testing-report", result.issues)).toContain("User-testing report schema error: /status must be one of");
 	});
 
-	it("reports canonical artifact path summaries for malformed reviewer reports", () => {
-		const result = validateMissionArtifact("reviewer-report", {
-			reviewerId: "reviewer-1",
-			status: "pass",
-			summary: "Malformed findings and command.",
-			featureId: "F2",
-			commandsRun: [{ command: "git diff --check", exitCode: "0" }],
-			findings: [{ id: "R1", severity: "note", title: "Incomplete finding" }],
-		});
-
-		expect(result.ok).toBe(false);
-		expect(result.issues).toEqual(expect.arrayContaining([
-			{ path: "/commandsRun/0/exitCode", message: "must be a number" },
-			{ path: "/findings/0/severity", message: "must be one of: critical, major, minor" },
-			{ path: "/findings/0/description", message: "is required" },
-		]));
-		expect(artifactValidationErrorSummary("reviewer-report", result.issues)).toContain("Reviewer report schema error: /commandsRun/0/exitCode must be a number");
-	});
 });
 
 describe("mission-state path and shape assumptions", () => {

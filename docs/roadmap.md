@@ -260,7 +260,6 @@ extensions/missions/
     schemas.ts
     handoff.ts
     validation-report.ts
-    review-report.ts
   runner/
     commands.ts
     execution.ts

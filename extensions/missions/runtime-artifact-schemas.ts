@@ -1,6 +1,6 @@
 import { MISSION_RECOVERY_OUTCOMES } from "./runtime-types.js";
 
-type ArtifactKind = "worker-handoff" | "scrutiny-validation-report" | "user-testing-report" | "reviewer-report" | "runtime-orchestrator-recovery-packet";
+type ArtifactKind = "worker-handoff" | "scrutiny-validation-report" | "user-testing-report" | "runtime-orchestrator-recovery-packet";
 
 export interface ArtifactValidationIssue {
 	path: string;
@@ -276,28 +276,6 @@ function validateUserTestingReport(value: unknown): ArtifactValidationIssue[] {
 	return issues;
 }
 
-function validateReviewerReport(value: unknown): ArtifactValidationIssue[] {
-	const issues: ArtifactValidationIssue[] = [];
-	if (!isRecord(value)) {
-		addIssue(issues, "/", "must be a JSON object");
-		return issues;
-	}
-	expectString(issues, value, "reviewerId", true);
-	expectStatus(issues, value, "status", ["pass", "fail", "inconclusive"]);
-	expectString(issues, value, "summary", true);
-	expectString(issues, value, "featureId", true);
-	expectCommandArray(issues, value, "commandsRun", true);
-	const findings = expectObjectArray(issues, value, "findings");
-	for (let i = 0; findings && i < findings.length; i += 1) {
-		const entry = findings[i];
-		expectString(issues, entry.value, "id", true, `/findings/${entry.index}`);
-		expectStatus(issues, entry.value, "severity", ["critical", "major", "minor"], true, `/findings/${entry.index}`);
-		expectString(issues, entry.value, "title", true, `/findings/${entry.index}`);
-		expectString(issues, entry.value, "description", true, `/findings/${entry.index}`);
-	}
-	return issues;
-}
-
 export function validateMissionArtifact<T = Record<string, unknown>>(kind: ArtifactKind, value: unknown): ArtifactValidationResult<T> {
 	const issues = kind === "worker-handoff"
 		? validateWorkerHandoff(value)
@@ -305,9 +283,7 @@ export function validateMissionArtifact<T = Record<string, unknown>>(kind: Artif
 			? validateScrutinyValidationReport(value)
 			: kind === "user-testing-report"
 				? validateUserTestingReport(value)
-				: kind === "reviewer-report"
-					? validateReviewerReport(value)
-					: validateRuntimeOrchestratorRecoveryPacket(value);
+				: validateRuntimeOrchestratorRecoveryPacket(value);
 	return { ok: issues.length === 0, value: issues.length === 0 ? (value as T) : undefined, issues };
 }
 
@@ -318,8 +294,6 @@ export function artifactValidationErrorSummary(kind: ArtifactKind, issues: Artif
 			? "Scrutiny validation-report.json schema error"
 			: kind === "user-testing-report"
 				? "User-testing report schema error"
-				: kind === "reviewer-report"
-					? "Reviewer report schema error"
-					: "Runtime orchestrator recovery packet schema error";
+				: "Runtime orchestrator recovery packet schema error";
 	return `${prefix}: ${issues.map((issue) => `${issue.path} ${issue.message}`).join("; ")}`;
 }
