@@ -172,8 +172,7 @@ function loadClearedMissionIds(cwd: string, root: string): Set<string> {
 }
 
 function flattenFeatures(mission: MissionState): MissionFeature[] {
-	if (mission.milestones?.length) return mission.milestones.flatMap((milestone) => milestone.features ?? []);
-	return mission.features ?? [];
+	return (mission.milestones ?? []).flatMap((milestone) => milestone.features ?? []);
 }
 
 function deriveCurrentTask(mission: MissionState, allFeatures: MissionFeature[]): string {

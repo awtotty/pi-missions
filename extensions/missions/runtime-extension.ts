@@ -488,25 +488,12 @@ function hasRunnablePersistedPlan(cwd: string, mission: MissionState): boolean {
 	}
 }
 
-function isFeatureOnlyMission(mission: MissionState): boolean {
-	return Array.isArray(mission.features) && !Array.isArray(mission.milestones);
-}
-
 function missionFeatureList(mission: MissionState): MissionFeature[] {
-	if (Array.isArray(mission.milestones) && mission.milestones.length > 0) return mission.milestones.flatMap((milestone) => milestone.features);
-	return Array.isArray(mission.features) ? mission.features : [];
+	return missionMilestones(mission).flatMap((milestone) => milestone.features);
 }
 
 function missionMilestones(mission: MissionState): MissionMilestone[] {
 	if (Array.isArray(mission.milestones) && mission.milestones.length > 0) return mission.milestones;
-	if (Array.isArray(mission.features)) {
-		return [{
-			id: "features",
-			title: "Features",
-			status: mission.features.every((feature) => feature.status === "complete" || feature.status === "skipped") ? "complete" : mission.features.some((feature) => feature.status === "running") ? "running" : "pending",
-			features: mission.features,
-		}];
-	}
 	return [];
 }
 
@@ -1900,7 +1887,7 @@ function missionControlSelectableItems(mission: MissionState, block = latestBloc
 	const items: MissionControlSelection[] = [{ kind: "mission", mission }];
 	if (block) items.push({ kind: "block", mission, block });
 	for (const milestone of missionMilestones(mission)) {
-		if (!isFeatureOnlyMission(mission)) items.push({ kind: "milestone", mission, milestone });
+		items.push({ kind: "milestone", mission, milestone });
 		for (const feature of milestone.features) items.push({ kind: "feature", mission, milestone, feature });
 	}
 	return items;
@@ -2117,10 +2104,6 @@ function groupedFeatureLines(mission: MissionState, selection: MissionControlSel
 	};
 	const lines = [row(mission.id, mission.status, mission.id)];
 	if (block) lines.push(`${selectedId === blockSelectionId(block) ? "▸" : " "} ! Block ${block.reasonCategory} on ${block.failedItemId}${selectedId === blockSelectionId(block) ? " ◂" : ""}`);
-	if (isFeatureOnlyMission(mission)) {
-		for (const feature of missionFeatureList(mission)) lines.push(row(feature.id, feature.status, `${feature.id} ${feature.title}`));
-		return lines;
-	}
 	for (const milestone of missionMilestones(mission)) {
 		const done = milestone.features.filter((f) => f.status === "complete" || f.status === "skipped").length;
 		lines.push(row(milestone.id, milestone.status, `${milestone.id} ${milestone.title} (${done}/${milestone.features.length})`));
@@ -2334,10 +2317,6 @@ function compactGroupedFeatureLines(mission: MissionState, selection: MissionCon
 	const row = (id: string, status: string, label: string): string => `${selectedId === id ? "▸" : " "} ${mark(status)} ${label}${selectedId === id ? " ◂" : ""}`;
 	const lines: string[] = [];
 	if (block) lines.push(`${selectedId === blockSelectionId(block) ? "▸" : " "} ! ${block.failedItemId}: ${block.reasonCategory}${selectedId === blockSelectionId(block) ? " ◂" : ""}`);
-	if (isFeatureOnlyMission(mission)) {
-		for (const feature of missionFeatureList(mission)) lines.push(row(feature.id, feature.status, `${feature.id} ${feature.title}`));
-		return lines;
-	}
 	for (const milestone of missionMilestones(mission)) {
 		const done = milestone.features.filter((f) => f.status === "complete" || f.status === "skipped").length;
 		lines.push(row(milestone.id, milestone.status, `${milestone.id} (${done}/${milestone.features.length})`));
@@ -2744,7 +2723,7 @@ function createPlanningMission(cwd: string, requestedId?: string): MissionState 
 		updatedAt: nowIso(),
 		cwd,
 		models: readMissionGlobalSettings(cwd).models,
-		features: [],
+		milestones: [],
 	};
 }
 
@@ -2763,10 +2742,8 @@ function areFeatureDependenciesSatisfied(feature: MissionFeature, statuses: Map<
 	});
 }
 
-function milestoneForFeature(mission: MissionState, featureId: string): MissionMilestone {
-	return missionMilestones(mission).find((milestone) => milestone.features.some((feature) => feature.id === featureId))
-		?? missionMilestones(mission)[0]
-		?? { id: "features", title: "Features", status: "pending", features: missionFeatureList(mission) };
+function milestoneForFeature(mission: MissionState, featureId: string): MissionMilestone | undefined {
+	return missionMilestones(mission).find((milestone) => milestone.features.some((feature) => feature.id === featureId));
 }
 
 function findNextFeature(mission: MissionState): { milestone: MissionMilestone; feature: MissionFeature } | undefined {
@@ -2774,7 +2751,8 @@ function findNextFeature(mission: MissionState): { milestone: MissionMilestone; 
 	for (const feature of missionFeatureList(mission)) {
 		if (feature.status === "complete" || feature.status === "skipped") continue;
 		if (!areFeatureDependenciesSatisfied(feature, statuses)) return undefined;
-		return feature.status === "pending" ? { milestone: milestoneForFeature(mission, feature.id), feature } : undefined;
+		const milestone = milestoneForFeature(mission, feature.id);
+		return feature.status === "pending" ? (milestone ? { milestone, feature } : undefined) : undefined;
 	}
 	return undefined;
 }
@@ -2820,7 +2798,10 @@ function findFeatureAwaitingReviewers(mission: MissionState): { milestone: Missi
 	for (const feature of missionFeatureList(mission)) {
 		if (feature.status === "complete" || feature.status === "skipped") continue;
 		if (!areFeatureDependenciesSatisfied(feature, statuses)) return undefined;
-		if (feature.status === "running" && (feature.reviewerPending || (isFeatureReviewRequired(feature) && !(feature.reviewerRunIds?.length)))) return { milestone: milestoneForFeature(mission, feature.id), feature };
+		if (feature.status === "running" && (feature.reviewerPending || (isFeatureReviewRequired(feature) && !(feature.reviewerRunIds?.length)))) {
+			const milestone = milestoneForFeature(mission, feature.id);
+			return milestone ? { milestone, feature } : undefined;
+		}
 		if (featureAwaitingValidation(mission, feature)) return undefined;
 		if (feature.status === "pending") return undefined;
 		return undefined;
@@ -2833,7 +2814,10 @@ function findFeatureAwaitingUserTesting(mission: MissionState): { milestone: Mis
 	for (const feature of missionFeatureList(mission)) {
 		if (feature.status === "complete" || feature.status === "skipped") continue;
 		if (!areFeatureDependenciesSatisfied(feature, statuses)) return undefined;
-		if (featureAwaitingUserTesting(feature)) return { milestone: milestoneForFeature(mission, feature.id), feature };
+		if (featureAwaitingUserTesting(feature)) {
+			const milestone = milestoneForFeature(mission, feature.id);
+			return milestone ? { milestone, feature } : undefined;
+		}
 		if (featureAwaitingValidation(mission, feature)) return undefined;
 		if (feature.status === "pending") return undefined;
 		return undefined;
@@ -2846,7 +2830,10 @@ function findFeatureAwaitingValidation(mission: MissionState): { milestone: Miss
 	for (const feature of missionFeatureList(mission)) {
 		if (feature.status === "complete" || feature.status === "skipped") continue;
 		if (!areFeatureDependenciesSatisfied(feature, statuses)) return undefined;
-		if (featureAwaitingValidation(mission, feature)) return { milestone: milestoneForFeature(mission, feature.id), feature };
+		if (featureAwaitingValidation(mission, feature)) {
+			const milestone = milestoneForFeature(mission, feature.id);
+			return milestone ? { milestone, feature } : undefined;
+		}
 		// Sequential execution invariant: do not scan past an incomplete earlier
 		// feature. If it is not ready for validation, normal worker selection or
 		// no-runnable-work handling must deal with this feature before later ones.
@@ -2864,7 +2851,8 @@ function incompleteFeatures(mission: MissionState): Array<{ milestone: MissionMi
 			const dependencyStatus = statuses.get(dependencyId);
 			return dependencyStatus !== "complete" && dependencyStatus !== "skipped";
 		});
-		incomplete.push({ milestone: milestoneForFeature(mission, feature.id), feature, unsatisfiedDependencies });
+		const milestone = milestoneForFeature(mission, feature.id);
+		if (milestone) incomplete.push({ milestone, feature, unsatisfiedDependencies });
 	}
 	return incomplete;
 }
@@ -2899,6 +2887,7 @@ function repairMissionExecutionGateState(_cwd: string, mission: MissionState): {
 	const gateFeature = features.find((feature) => feature.id === recoveryPlan.gateFeatureId);
 	if (!gateFeature) return { changed: false, reasons };
 	const gateMilestone = milestoneForFeature(mission, gateFeature.id);
+	if (!gateMilestone) return { changed: false, reasons };
 	if (recoveryPlan.normalizeGateToPending && normalizeBlockedFeatureForRetry(mission, gateFeature)) {
 		changed = true;
 		reasons.push(`reset gate feature ${gateFeature.id} status to pending for retry`);
@@ -4015,7 +4004,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			missionId: Type.Optional(Type.String()),
 			mission: Type.Any({ description: "Complete mission.json object matching the mission-orchestrator schema." }),
 			objectiveMd: Type.String({ description: "Human-readable objective, constraints, non-goals, and assumptions." }),
-			featuresJson: Type.Any({ description: "Ordered feature list. Usually same content as mission.features." }),
+			featuresJson: Type.Any({ description: "Ordered feature list derived from milestone features." }),
 			validationContractJson: Type.Any({ description: "Implementation-independent validation assertions." }),
 			validationContractMd: Type.String({ description: "Human-readable validation contract." }),
 			workerSkillMd: Type.String({ description: "Mission-specific worker SKILL.md content." }),

@@ -21,10 +21,15 @@ function mission(id: string, status: MissionState["status"], extra: Partial<Miss
 		updatedAt: `2026-01-01T00:0${id.length}:00.000Z`,
 		cwd: `/workspace/${id}`,
 		models: { orchestrator: "default", worker: "default", validator: "default" },
-		features: [
-			{ id: "F1", title: "First", description: "", status: "complete" },
-			{ id: "F2", title: "Second", description: "", status: "pending" },
-		],
+		milestones: [{
+			id: "M1",
+			title: "Milestone",
+			status: status === "complete" ? "complete" : status === "running" ? "running" : "pending",
+			features: [
+				{ id: "F1", title: "First", description: "", status: "complete" },
+				{ id: "F2", title: "Second", description: "", status: "pending" },
+			],
+		}],
 		...extra,
 	};
 }
@@ -66,7 +71,7 @@ describe("mission control view model", () => {
 		]);
 	});
 
-	it("computes feature progress from milestones before legacy top-level features", () => {
+	it("computes feature progress from milestone features", () => {
 		const vm = createMissionControlViewModel([
 			mission("progress", "running", {
 				milestones: [{
@@ -150,7 +155,14 @@ describe("mission control view model", () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "mission-control-vm-"));
 		tmpRoots.push(root);
 		const blocked = mission("blocked", "blocked", { latestBlock: { ...block, runDir: path.join(root, "blocked", "runs", "run-blocked"), artifactPaths: [] } });
-		const complete = mission("complete", "complete", { features: [{ id: "F1", title: "Done", description: "", status: "complete", validationRunId: "run-validation" }] });
+		const complete = mission("complete", "complete", {
+			milestones: [{
+				id: "M1",
+				title: "Milestone",
+				status: "complete",
+				features: [{ id: "F1", title: "Done", description: "", status: "complete", validationRunId: "run-validation" }],
+			}],
+		});
 		const planned = mission("planned", "planned");
 		const pausedNoObjective = mission("paused", "paused");
 		for (const state of [blocked, complete, planned, pausedNoObjective]) {
