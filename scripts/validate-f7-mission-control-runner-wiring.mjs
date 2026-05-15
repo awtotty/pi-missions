@@ -1,9 +1,11 @@
 import fs from "node:fs";
 
-const source = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
-const dispatchStart = source.indexOf("function dispatchMissionControlInput");
-const dispatchEnd = source.indexOf("async function openMissionControl", dispatchStart);
-const dispatchSource = dispatchStart >= 0 && dispatchEnd > dispatchStart ? source.slice(dispatchStart, dispatchEnd) : "";
+const runtimeSource = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
+const missionControl = fs.readFileSync(new URL("../extensions/missions/ui/mission-control.ts", import.meta.url), "utf8");
+const source = `${runtimeSource}\n${missionControl}`;
+const dispatchStart = missionControl.indexOf("function dispatchMissionControlInput");
+const dispatchEnd = missionControl.indexOf("export async function openMissionControl", dispatchStart);
+const dispatchSource = dispatchStart >= 0 && dispatchEnd > dispatchStart ? missionControl.slice(dispatchStart, dispatchEnd) : "";
 
 const checks = [
 	{

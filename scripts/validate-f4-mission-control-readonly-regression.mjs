@@ -3,14 +3,16 @@ import fs from "node:fs";
 function fail(message) { throw new Error(message); }
 function assert(condition, message) { if (!condition) fail(message); }
 
-const runtime = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
+const runtimeSource = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
+const missionControl = fs.readFileSync(new URL("../extensions/missions/ui/mission-control.ts", import.meta.url), "utf8");
+const runtime = `${runtimeSource}\n${missionControl}`;
 const viewModel = fs.readFileSync(new URL("../extensions/missions/core/mission-control-view-model.ts", import.meta.url), "utf8");
 const readme = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const guide = fs.readFileSync(new URL("../docs/mission-control.md", import.meta.url), "utf8");
 
-const dispatchStart = runtime.indexOf("function dispatchMissionControlInput(data: string, context: MissionControlInputDispatchContext): MissionControlInputDispatchResult {");
-const dispatchEnd = dispatchStart >= 0 ? runtime.indexOf("\n}\n\nasync function openMissionControl", dispatchStart) : -1;
-const dispatchBody = dispatchStart >= 0 && dispatchEnd > dispatchStart ? runtime.slice(dispatchStart, dispatchEnd) : "";
+const dispatchStart = missionControl.indexOf("function dispatchMissionControlInput(data: string, context: MissionControlInputDispatchContext): MissionControlInputDispatchResult {");
+const dispatchEnd = dispatchStart >= 0 ? missionControl.indexOf("\n}\n\nexport async function openMissionControl", dispatchStart) : -1;
+const dispatchBody = dispatchStart >= 0 && dispatchEnd > dispatchStart ? missionControl.slice(dispatchStart, dispatchEnd) : "";
 
 assert(viewModel.includes("MISSION_CONTROL_SECTION_ORDER"), "shared view model must define stable section order");
 for (const section of ["Blocked / Failed", "Running", "Paused", "Planned", "Completed"]) {

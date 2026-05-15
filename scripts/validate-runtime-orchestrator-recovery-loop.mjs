@@ -5,7 +5,8 @@ function assert(condition, message) { if (!condition) fail(message); }
 
 const runtime = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
 const recovery = fs.readFileSync(new URL("../extensions/missions/runner/recovery.ts", import.meta.url), "utf8");
-const runtimeAndRecovery = `${runtime}\n${recovery}`;
+const missionControl = fs.readFileSync(new URL("../extensions/missions/ui/mission-control.ts", import.meta.url), "utf8");
+const runtimeAndRecovery = `${runtime}\n${recovery}\n${missionControl}`;
 const runtimeTypes = fs.readFileSync(new URL("../extensions/missions/runtime-types.ts", import.meta.url), "utf8");
 const readme = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const missionControlDocs = fs.readFileSync(new URL("../docs/mission-control.md", import.meta.url), "utf8");
@@ -13,12 +14,12 @@ const releaseValidationDocs = fs.readFileSync(new URL("../docs/release-validatio
 const roadmapDocs = fs.readFileSync(new URL("../docs/roadmap.md", import.meta.url), "utf8");
 const orchestratorSkill = fs.readFileSync(new URL("../skills/mission-orchestrator/SKILL.md", import.meta.url), "utf8");
 
-function sliceBetween(startToken, endToken, label = startToken) {
-	const start = runtime.indexOf(startToken);
+function sliceBetween(startToken, endToken, label = startToken, source = runtime) {
+	const start = source.indexOf(startToken);
 	assert(start >= 0, `missing ${label}`);
-	const end = endToken ? runtime.indexOf(endToken, start + startToken.length) : -1;
+	const end = endToken ? source.indexOf(endToken, start + startToken.length) : -1;
 	assert(!endToken || end > start, `missing end marker for ${label}: ${endToken}`);
-	return runtime.slice(start, endToken ? end : undefined);
+	return source.slice(start, endToken ? end : undefined);
 }
 
 function functionBody(name) {
@@ -55,8 +56,9 @@ const packetWriter = functionBody("writeRecoveryPacket");
 const noRunnableReport = functionBody("writeNoRunnablePendingWorkReport");
 const missionControlDispatch = sliceBetween(
 	"function dispatchMissionControlInput(data: string, context: MissionControlInputDispatchContext): MissionControlInputDispatchResult {",
-	"async function openMissionControl",
+	"export async function openMissionControl",
 	"dispatchMissionControlInput",
+	missionControl,
 );
 
 // Validation failures must stop the deterministic runner and route recovery only after the validator child returns.
@@ -149,7 +151,7 @@ for (const expected of [
 	"Mission Control is read-only",
 	"read-only",
 	"q/esc quit",
-]) assert(runtime.includes(expected), `Mission Control read-only UI marker missing: ${expected}`);
+]) assert(runtimeAndRecovery.includes(expected), `Mission Control read-only UI marker missing: ${expected}`);
 for (const forbidden of [
 	"executeRunnerCommand",
 	"clearCompletedMissions",

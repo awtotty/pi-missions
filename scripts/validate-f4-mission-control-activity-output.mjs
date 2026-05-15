@@ -2,7 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
-const source = fs.readFileSync(path.join(repoRoot, "extensions", "missions", "runtime-extension.ts"), "utf8");
+const runtimeSource = fs.readFileSync(path.join(repoRoot, "extensions", "missions", "runtime-extension.ts"), "utf8");
+const missionControlSource = fs.readFileSync(path.join(repoRoot, "extensions", "missions", "ui", "mission-control.ts"), "utf8");
+const source = `${runtimeSource}\n${missionControlSource}`;
 
 const checks = [
 	["DETAIL_OUTPUT_VIEW_MODEL", source.includes("MissionControlOutputView") && source.includes("mission.detailOutput")],

@@ -2,10 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
-const source = fs.readFileSync(path.join(repoRoot, "extensions", "missions", "runtime-extension.ts"), "utf8");
-const dispatchStart = source.indexOf("function dispatchMissionControlInput");
-const dispatchEnd = source.indexOf("async function openMissionControl", dispatchStart);
-const dispatchSource = dispatchStart >= 0 && dispatchEnd > dispatchStart ? source.slice(dispatchStart, dispatchEnd) : "";
+const runtimeSource = fs.readFileSync(path.join(repoRoot, "extensions", "missions", "runtime-extension.ts"), "utf8");
+const missionControlSource = fs.readFileSync(path.join(repoRoot, "extensions", "missions", "ui", "mission-control.ts"), "utf8");
+const source = `${runtimeSource}\n${missionControlSource}`;
+const dispatchStart = missionControlSource.indexOf("function dispatchMissionControlInput");
+const dispatchEnd = missionControlSource.indexOf("export async function openMissionControl", dispatchStart);
+const dispatchSource = dispatchStart >= 0 && dispatchEnd > dispatchStart ? missionControlSource.slice(dispatchStart, dispatchEnd) : "";
 
 const checks = [
 	["OVERVIEW_DETAIL_MODES", source.includes('mode: "overview"') && source.includes('view.mode = "detail"') && source.includes('view.mode = "overview"')],

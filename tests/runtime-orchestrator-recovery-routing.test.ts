@@ -4,7 +4,8 @@ import { describe, expect, it } from "vitest";
 
 const runtimeSource = fs.readFileSync(path.join(process.cwd(), "extensions/missions/runtime-extension.ts"), "utf8");
 const recoverySource = fs.readFileSync(path.join(process.cwd(), "extensions/missions/runner/recovery.ts"), "utf8");
-const combinedSource = `${runtimeSource}\n${recoverySource}`;
+const missionControlSource = fs.readFileSync(path.join(process.cwd(), "extensions/missions/ui/mission-control.ts"), "utf8");
+const combinedSource = `${runtimeSource}\n${recoverySource}\n${missionControlSource}`;
 
 function functionBody(name: string): string {
 	const start = combinedSource.indexOf(`function ${name}`);
@@ -16,12 +17,12 @@ function functionBody(name: string): string {
 	return combinedSource.slice(start, end);
 }
 
-function sourceBetween(startToken: string, endToken: string): string {
-	const start = runtimeSource.indexOf(startToken);
+function sourceBetween(startToken: string, endToken: string, source = runtimeSource): string {
+	const start = source.indexOf(startToken);
 	expect(start).toBeGreaterThanOrEqual(0);
-	const end = runtimeSource.indexOf(endToken, start + startToken.length);
+	const end = source.indexOf(endToken, start + startToken.length);
 	expect(end).toBeGreaterThan(start);
-	return runtimeSource.slice(start, end);
+	return source.slice(start, end);
 }
 
 function expectOrdered(source: string, tokens: string[]): void {
@@ -128,7 +129,7 @@ describe("runtime orchestrator recovery routing", () => {
 	});
 
 	it("keeps Mission Control read-only without recovery mutation controls", () => {
-		const dispatch = sourceBetween("function dispatchMissionControlInput", "async function openMissionControl");
+		const dispatch = sourceBetween("function dispatchMissionControlInput", "export async function openMissionControl", missionControlSource);
 		for (const forbidden of [
 			"executeRunnerCommand",
 			"clearCompletedMissions",
@@ -142,6 +143,6 @@ describe("runtime orchestrator recovery routing", () => {
 		]) {
 			expect(dispatch).not.toContain(forbidden);
 		}
-		expect(runtimeSource).toContain("Mission Control is read-only");
+		expect(missionControlSource).toContain("Mission Control is read-only");
 	});
 });

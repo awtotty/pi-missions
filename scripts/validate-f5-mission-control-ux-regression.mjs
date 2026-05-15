@@ -3,10 +3,12 @@ import fs from "node:fs";
 function fail(message) { throw new Error(message); }
 function assert(condition, message) { if (!condition) fail(message); }
 
-const source = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
-const dispatchStart = source.indexOf("function dispatchMissionControlInput(data: string, context: MissionControlInputDispatchContext): MissionControlInputDispatchResult {");
-const dispatchEnd = dispatchStart >= 0 ? source.indexOf("\n}\n\nasync function openMissionControl", dispatchStart) : -1;
-const dispatchBody = dispatchStart >= 0 && dispatchEnd > dispatchStart ? source.slice(dispatchStart, dispatchEnd) : "";
+const runtimeSource = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
+const missionControl = fs.readFileSync(new URL("../extensions/missions/ui/mission-control.ts", import.meta.url), "utf8");
+const source = `${runtimeSource}\n${missionControl}`;
+const dispatchStart = missionControl.indexOf("function dispatchMissionControlInput(data: string, context: MissionControlInputDispatchContext): MissionControlInputDispatchResult {");
+const dispatchEnd = dispatchStart >= 0 ? missionControl.indexOf("\n}\n\nexport async function openMissionControl", dispatchStart) : -1;
+const dispatchBody = dispatchStart >= 0 && dispatchEnd > dispatchStart ? missionControl.slice(dispatchStart, dispatchEnd) : "";
 
 assert(source.includes("function fitToViewport"), "Mission Control must fit rendered lines to the viewport");
 assert(source.includes("function panelLines") && source.includes('panelLines(section.title') && source.includes('panelLines("Mission Summary"'), "Mission Control must render boxed overview/detail sections");

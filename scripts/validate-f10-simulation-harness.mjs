@@ -4,10 +4,13 @@ import ts from "typescript";
 function fail(message) { throw new Error(message); }
 function assert(condition, message) { if (!condition) fail(message); }
 
-const source = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
+const runtimeSource = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
+const missionControlSource = fs.readFileSync(new URL("../extensions/missions/ui/mission-control.ts", import.meta.url), "utf8");
+const source = `${runtimeSource}\n${missionControlSource}`;
 const lockSource = fs.readFileSync(new URL("../extensions/missions/runner/locks.ts", import.meta.url), "utf8");
 const sourceFiles = [
-	ts.createSourceFile("runtime-extension.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS),
+	ts.createSourceFile("runtime-extension.ts", runtimeSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS),
+	ts.createSourceFile("mission-control.ts", missionControlSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS),
 	ts.createSourceFile("locks.ts", lockSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS),
 ];
 
@@ -190,7 +193,7 @@ async function runMissionControlLifecycleCheck() {
 
 	const openMissionControl = compileNamedFunction("openMissionControl", {
 		MISSION_CONTROL_POLL_MS: 5,
-		loadMission: () => ({ id: "M1" }),
+		loadMissionControlViewModel: () => ({ missions: [{ id: "M1" }] }),
 		missionControlLines: () => ["Mission Control"],
 		missionControlTarget: () => ({ id: "M1" }),
 		createMissionControlViewState: () => ({ showHelp: false, focusedPane: "features", scrollOffsets: { features: 0, details: 0, activity: 0, "child-output": 0 }, viewMode: "dashboard" }),
