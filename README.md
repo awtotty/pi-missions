@@ -126,19 +126,19 @@ Mission data is stored globally so target repositories do not need `.gitignore` 
 
 ## Development checks
 
-Additional contributor validation notes live in [`docs/release-validation.md`](docs/release-validation.md). `npm run validate:f5-ux` is the Mission Control UX regression harness for responsive render behavior, focus traversal, footer/status hints, start safety, and stale block/status handling.
+Additional contributor validation notes live in [`docs/release-validation.md`](docs/release-validation.md). The default contributor workflow is:
 
 ```bash
-npm run typecheck
-npm run validate:f3
-npm run validate:f4
-npm run validate:f5
-npm run validate:f5-ux
-npm run validate:f7
-npm run validate:f8
-npm run validate:f9
-npm run validate:f10
+npm run typecheck       # TypeScript compile-time checks without emitting files
+npm test                # Vitest unit/behavior tests
+npm run validate        # Mission regression harnesses under scripts/
+npm run build           # Emit the publishable extension to dist/
+npm run check           # Full local gate: typecheck, tests, validation, build
 ```
+
+Run focused validation scripts while iterating on a specific area, then run `npm run check` before handing work off or cutting a package. `npm run validate:f5-ux` is the Mission Control UX regression harness for responsive render behavior, focus traversal, footer/status hints, start safety, and stale block/status handling.
+
+The package manifest loads the built extension entrypoint (`dist/missions/index.js`) for publication. Local source edits should still preserve the public commands, tools, mission artifact layout, and Mission Control interaction model documented above.
 
 ## Design notes
 

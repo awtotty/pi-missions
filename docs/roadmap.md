@@ -76,7 +76,7 @@ Goal: make the existing extension safer to modify and easier to release without 
 
 ### 0.1 Modularize the runtime
 
-`extensions/missions/runtime-extension.ts` is currently too large. Split it into focused modules.
+`extensions/missions/runtime-extension.ts` is currently too large. Split it into focused modules. The first foundation pass has established the seam by extracting low-risk pure helpers for paths, settings, JSON IO, and event logs into `extensions/missions/core/`; future work should continue with artifacts, runner, UI, tools, and commands without changing public command/tool names or the mission artifact layout.
 
 Suggested structure:
 
@@ -120,7 +120,7 @@ Acceptance criteria:
 
 ### 0.2 Add production build output
 
-Move from raw TypeScript extension loading to built JavaScript for published packages.
+Move from raw TypeScript extension loading to built JavaScript for published packages. The contributor workflow is now `npm run typecheck`, `npm test`, `npm run validate`, `npm run build`, and the aggregate `npm run check` before handoff or release.
 
 Acceptance criteria:
 
