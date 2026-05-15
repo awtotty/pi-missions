@@ -5,12 +5,18 @@ function fail(message) { throw new Error(message); }
 function assert(condition, message) { if (!condition) fail(message); }
 
 const source = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
-const sourceFile = ts.createSourceFile("runtime-extension.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+const lockSource = fs.readFileSync(new URL("../extensions/missions/runner/locks.ts", import.meta.url), "utf8");
+const sourceFiles = [
+	ts.createSourceFile("runtime-extension.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS),
+	ts.createSourceFile("locks.ts", lockSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS),
+];
 
 function extractFunctionSource(name) {
-	for (const stmt of sourceFile.statements) {
-		if (!ts.isFunctionDeclaration(stmt) || !stmt.name || stmt.name.text !== name) continue;
-		return stmt.getText(sourceFile);
+	for (const sourceFile of sourceFiles) {
+		for (const stmt of sourceFile.statements) {
+			if (!ts.isFunctionDeclaration(stmt) || !stmt.name || stmt.name.text !== name) continue;
+			return stmt.getText(sourceFile);
+		}
 	}
 	fail(`missing function ${name}`);
 }
@@ -27,7 +33,7 @@ async function loadRecoveryGateModule() {
 }
 
 function compileNamedFunction(name, deps) {
-	const fnText = extractFunctionSource(name);
+	const fnText = extractFunctionSource(name).replace(/^export\s+/, "");
 	const transpiled = ts.transpileModule(fnText, {
 		compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
 		fileName: `${name}.ts`,
@@ -132,7 +138,7 @@ function runRunnerLockCoverage() {
 		Date,
 	});
 	assert(lockHeartbeatExpired({ heartbeatAt: "2026-01-01T00:00:00.000Z", heartbeatTimeoutMs: 1 }) === true, "stale heartbeat must be detected");
-	assert(source.includes("recoveredFrom"), "stale lock recovery must persist recoveredFrom metadata");
+	assert(lockSource.includes("recoveredFrom"), "stale lock recovery must persist recoveredFrom metadata");
 
 	const acquireRunnerLock = compileNamedFunction("acquireRunnerLock", {
 		withRunnerLockGuard: async (_cwd, _missionId, work) => await work(),
