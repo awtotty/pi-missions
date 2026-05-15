@@ -10,6 +10,7 @@ function assertIncludes(haystack, needle, message) {
 
 const indexSource = fs.readFileSync(new URL("../extensions/missions/index.ts", import.meta.url), "utf8");
 const runtimeSource = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
+const runtimeTypesSource = fs.readFileSync(new URL("../extensions/missions/runtime-types.ts", import.meta.url), "utf8");
 const manualValidationSource = fs.readFileSync(new URL("../docs/release-validation.md", import.meta.url), "utf8");
 
 // Module split coverage: index.ts should stay bootstrap-only.
@@ -51,6 +52,19 @@ for (const forbidden of [
 	"reviewerEvidenceContext(mission, targetFeature)",
 ]) {
 	if (runtimeSource.includes(forbidden)) fail(`standalone reviewer execution path remains: ${forbidden}`);
+}
+
+for (const forbidden of ["user-testing-validator"]) {
+	if (`${runtimeSource}\n${runtimeTypesSource}`.includes(forbidden)) fail(`validator mode modeled as standalone role/run kind: ${forbidden}`);
+}
+for (const token of [
+	'type MissionRunKind = "worker" | "validator"',
+	'type MissionValidatorMode = "scrutiny" | "user-testing"',
+	'validatorMode?: MissionValidatorMode',
+	'role: "worker" | "validator"',
+	'role: "validator",\n\t\tvalidatorMode: "user-testing"',
+]) {
+	assertIncludes(`${runtimeSource}\n${runtimeTypesSource}`, token, `missing three-role validator-mode token: ${token}`);
 }
 
 // Existing command/tool behavior preservation.

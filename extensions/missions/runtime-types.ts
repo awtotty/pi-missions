@@ -55,10 +55,12 @@ export interface MissionValidationConfig {
 	failureLimit?: number;
 }
 
-export type MissionRunKind = "worker" | "validator" | "user-testing-validator";
+export type MissionRunKind = "worker" | "validator";
+export type MissionValidatorMode = "scrutiny" | "user-testing";
 export interface MissionActiveRunOwnership {
 	schemaVersion: 1;
 	kind: MissionRunKind;
+	validatorMode?: MissionValidatorMode;
 	itemId: string;
 	runId: string;
 	parentPid: number;
@@ -155,7 +157,8 @@ export interface MissionChildSessionRecord {
 	schemaVersion: 1;
 	missionId: string;
 	runId: string;
-	role: "worker" | "validator" | "user-testing-validator";
+	role: "worker" | "validator";
+	validatorMode?: MissionValidatorMode;
 	featureId?: string;
 	milestoneId: string;
 	attempt: number;
@@ -201,7 +204,8 @@ export interface RunResult {
 export type BlockReasonCategory = "child_exit_nonzero" | "missing_handoff" | "dirty_worktree" | "worker_reported_blocked" | "validator_report_failed" | "missing_validation_report" | "no_runnable_pending_work";
 
 export interface MissionBlockSummary {
-	kind: "worker" | "validator" | "user-testing-validator";
+	kind: "worker" | "validator";
+	validatorMode?: MissionValidatorMode;
 	missionId: string;
 	missionTitle: string;
 	milestoneId: string;
@@ -221,7 +225,8 @@ export interface MissionBlockMetadata {
 	schemaVersion: 1;
 	timestamp: string;
 	reasonCategory: BlockReasonCategory;
-	kind: "worker" | "validator" | "user-testing-validator";
+	kind: "worker" | "validator";
+	validatorMode?: MissionValidatorMode;
 	failedItemId: string;
 	failedItemTitle: string;
 	missionId: string;
@@ -239,7 +244,8 @@ export interface MissionRunContext {
 	label: string;
 	runId: string;
 	runDir: string;
-	kind: "worker" | "validator" | "user-testing-validator";
+	kind: "worker" | "validator";
+	validatorMode?: MissionValidatorMode;
 	itemId: string;
 	itemTitle: string;
 	status?: string;

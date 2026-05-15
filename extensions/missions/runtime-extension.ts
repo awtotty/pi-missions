@@ -43,6 +43,7 @@ import {
 	type MissionRoleModels,
 	type MissionRunContext,
 	type MissionRunKind,
+	type MissionValidatorMode,
 	type MissionRunLifecycleClassification,
 	type MissionRunLifecycleState,
 	type MissionRunnerLockArtifact,
@@ -114,9 +115,9 @@ function parseTranscriptSessionIdentity(transcriptFile: string): { sessionId?: s
 	return {};
 }
 
-function nextChildAttemptNumber(cwd: string, missionId: string, role: "worker" | "validator" | "user-testing-validator", featureId: string | undefined): number {
+function nextChildAttemptNumber(cwd: string, missionId: string, role: "worker" | "validator", featureId: string | undefined, validatorMode?: MissionValidatorMode): number {
 	const registry = readChildSessionRegistry(cwd, missionId);
-	return registry.records.filter((record) => record.role === role && record.featureId === featureId).length + 1;
+	return registry.records.filter((record) => record.role === role && record.featureId === featureId && (!validatorMode || record.validatorMode === validatorMode)).length + 1;
 }
 
 function upsertChildSessionRecord(cwd: string, missionId: string, record: MissionChildSessionRecord): void {
@@ -180,10 +181,11 @@ function ensureOfficialOrchestratorSessionRecord(ctx: ExtensionContext, mission:
 	});
 }
 
-function setActiveRunOwnership(mission: MissionState, run: { kind: MissionRunKind; itemId: string; runId: string; startedAt?: string }): MissionActiveRunOwnership {
+function setActiveRunOwnership(mission: MissionState, run: { kind: MissionRunKind; validatorMode?: MissionValidatorMode; itemId: string; runId: string; startedAt?: string }): MissionActiveRunOwnership {
 	const ownership: MissionActiveRunOwnership = {
 		schemaVersion: 1,
 		kind: run.kind,
+		validatorMode: run.validatorMode,
 		itemId: run.itemId,
 		runId: run.runId,
 		parentPid: process.pid,
@@ -1066,7 +1068,8 @@ function missionRunContexts(mission: MissionState): MissionRunContext[] {
 					label: `${feature.status === "running" ? "Current" : "Last"} user-testing run`,
 					runId: feature.userTestingRunId,
 					runDir: path.join(missionDir(mission.cwd, mission.id), "runs", feature.userTestingRunId),
-					kind: "user-testing-validator",
+					kind: "validator",
+					validatorMode: "user-testing",
 					itemId: feature.id,
 					itemTitle: feature.title,
 					status: feature.status,
@@ -1109,7 +1112,7 @@ function isPidAlive(pid: number): boolean | undefined {
 }
 
 function runArtifactStatus(run: MissionRunContext): string | undefined {
-	const file = path.join(run.runDir, run.kind === "worker" ? "handoff.json" : run.kind === "user-testing-validator" ? "user-testing-report.json" : "validation-report.json");
+	const file = path.join(run.runDir, run.kind === "worker" ? "handoff.json" : run.validatorMode === "user-testing" ? "user-testing-report.json" : "validation-report.json");
 	if (!fs.existsSync(file)) return undefined;
 	try {
 		const parsed = readJson<{ status?: unknown }>(file);
@@ -1444,7 +1447,7 @@ function formatMissionBlockMessage(block: MissionBlockSummary): string {
 		...(block.artifactPaths.length > 0 ? block.artifactPaths.map((file) => `- ${file}`) : ["- No handoff/report artifact found; inspect transcript/stderr in the run directory."]),
 		"",
 		"Suggested next inspection steps:",
-		block.kind === "worker" ? "1. Read handoff.json and handoff.md if present." : block.kind === "user-testing-validator" ? "1. Read user-testing-report.json and user-testing-report.md if present." : "1. Read validation-report.json and validation-report.md if present.",
+		block.kind === "worker" ? "1. Read handoff.json and handoff.md if present." : block.validatorMode === "user-testing" ? "1. Read user-testing-report.json and user-testing-report.md if present." : "1. Read validation-report.json and validation-report.md if present.",
 		"2. Inspect transcript.jsonl and stderr.txt in the run directory for the child-agent failure mode.",
 		"3. Check `git status --short` and review any relevant diffs/commits mentioned by the artifacts.",
 		"4. Decide whether this is an implementation defect, validation defect, planning issue, environmental/tooling issue, or procedural failure; revise/resume the mission only after the recovery path is clear.",
@@ -1807,8 +1810,8 @@ function missionActivityViewModel(mission: MissionState, selectedIndexFromEnd = 
 }
 
 function runArtifactSummaryLines(run: MissionRunContext): string[] {
-	const jsonFile = path.join(run.runDir, run.kind === "worker" ? "handoff.json" : run.kind === "user-testing-validator" ? "user-testing-report.json" : "validation-report.json");
-	const mdFile = path.join(run.runDir, run.kind === "worker" ? "handoff.md" : run.kind === "user-testing-validator" ? "user-testing-report.md" : "validation-report.md");
+	const jsonFile = path.join(run.runDir, run.kind === "worker" ? "handoff.json" : run.validatorMode === "user-testing" ? "user-testing-report.json" : "validation-report.json");
+	const mdFile = path.join(run.runDir, run.kind === "worker" ? "handoff.md" : run.validatorMode === "user-testing" ? "user-testing-report.md" : "validation-report.md");
 	const transcriptFile = path.join(run.runDir, "transcript.jsonl");
 	const stderrFile = path.join(run.runDir, "stderr.txt");
 	const childSession = childSessionRecordForRun(run);
@@ -1827,13 +1830,13 @@ function runArtifactSummaryLines(run: MissionRunContext): string[] {
 	if (fs.existsSync(jsonFile)) {
 		try {
 			const artifact = readJson<Record<string, unknown>>(jsonFile);
-			const validation = validateMissionArtifact(run.kind === "worker" ? "worker-handoff" : run.kind === "user-testing-validator" ? "user-testing-report" : "scrutiny-validation-report", artifact);
+			const validation = validateMissionArtifact(run.kind === "worker" ? "worker-handoff" : run.validatorMode === "user-testing" ? "user-testing-report" : "scrutiny-validation-report", artifact);
 			const status = typeof artifact.status === "string" ? artifact.status : undefined;
 			const commit = typeof artifact.commit === "string" ? artifact.commit : undefined;
 			const summary = typeof artifact.summary === "string" ? artifact.summary : undefined;
 			if (status || commit) lines.push(`Artifact status: ${[status, commit ? `commit ${commit}` : undefined].filter(Boolean).join(" · ")}`);
 			if (summary) lines.push(`Artifact summary: ${summary}`);
-			if (!validation.ok) lines.push(artifactValidationErrorSummary(run.kind === "worker" ? "worker-handoff" : run.kind === "user-testing-validator" ? "user-testing-report" : "scrutiny-validation-report", validation.issues));
+			if (!validation.ok) lines.push(artifactValidationErrorSummary(run.kind === "worker" ? "worker-handoff" : run.validatorMode === "user-testing" ? "user-testing-report" : "scrutiny-validation-report", validation.issues));
 		} catch {
 			lines.push(`Artifact summary: ${jsonFile} could not be parsed`);
 		}
@@ -1995,7 +1998,7 @@ function missionControlPlaneLines(mission: MissionState): string[] {
 	const registry = readChildSessionRegistry(mission.cwd, mission.id);
 	const workerAttempts = currentFeatureId ? registry.records.filter((record) => record.role === "worker" && record.featureId === currentFeatureId).length : 0;
 	const validatorAttempts = currentFeatureId ? registry.records.filter((record) => record.role === "validator" && record.featureId === currentFeatureId).length : 0;
-	const userTestingAttempts = currentFeatureId ? registry.records.filter((record) => record.role === "user-testing-validator" && record.featureId === currentFeatureId).length : 0;
+	const userTestingAttempts = currentFeatureId ? registry.records.filter((record) => record.role === "validator" && record.validatorMode === "user-testing" && record.featureId === currentFeatureId).length : 0;
 	return [
 		lockLine,
 		`Current feature attempt: ${currentFeatureId ? `${currentFeatureId} #${Math.max(1, workerAttempts)}` : "none"}`,
@@ -2031,7 +2034,7 @@ function blockInspectionLines(block: MissionBlockMetadata): string[] {
 		...(block.status ? [`Reported status: ${block.status}`] : []),
 		...artifactLines,
 		"Suggested inspection steps:",
-		block.kind === "worker" ? "1. Read handoff.json and handoff.md if present." : block.kind === "user-testing-validator" ? "1. Read user-testing-report.json and user-testing-report.md if present." : "1. Read validation-report.json and validation-report.md if present.",
+		block.kind === "worker" ? "1. Read handoff.json and handoff.md if present." : block.validatorMode === "user-testing" ? "1. Read user-testing-report.json and user-testing-report.md if present." : "1. Read validation-report.json and validation-report.md if present.",
 		"2. Inspect transcript.jsonl and stderr.txt in the run directory if artifacts are missing or incomplete.",
 		"3. Decide whether to revise the mission plan, fix the implementation, or resume execution.",
 	];
@@ -2120,7 +2123,7 @@ function currentItemLines(selection: MissionControlSelection, run?: MissionRunCo
 	const registry = readChildSessionRegistry(selection.mission.cwd, selection.mission.id);
 	const workerAttempts = registry.records.filter((record) => record.role === "worker" && record.featureId === selection.feature.id).length;
 	const validatorAttempts = registry.records.filter((record) => record.role === "validator" && record.featureId === selection.feature.id).length;
-	const userTestingAttempts = registry.records.filter((record) => record.role === "user-testing-validator" && record.featureId === selection.feature.id).length;
+	const userTestingAttempts = registry.records.filter((record) => record.role === "validator" && record.validatorMode === "user-testing" && record.featureId === selection.feature.id).length;
 	const lines = [
 		`${mark(selection.feature.status)} Feature ${selection.feature.id}`,
 		`Status: ${selection.feature.status}`,
@@ -3363,17 +3366,18 @@ async function runUserTestingValidator(ctx: ExtensionContext, mission: MissionSt
 	const runDir = path.join(dir, "runs", runId);
 	ensureDir(runDir);
 	transitionFeatureToUserTestingRunning(mission, milestone, feature, runId);
-	const ownership = setActiveRunOwnership(mission, { kind: "user-testing-validator", itemId: feature.id, runId });
+	const ownership = setActiveRunOwnership(mission, { kind: "validator", validatorMode: "user-testing", itemId: feature.id, runId });
 	saveMission(mission.cwd, mission);
 	persistRunOwnershipArtifact(runDir, ownership);
 	const validatorSessionRecord: MissionChildSessionRecord = {
 		schemaVersion: 1,
 		missionId: mission.id,
 		runId,
-		role: "user-testing-validator",
+		role: "validator",
+		validatorMode: "user-testing",
 		featureId: feature.id,
 		milestoneId: milestone.id,
-		attempt: nextChildAttemptNumber(mission.cwd, mission.id, "user-testing-validator", feature.id),
+		attempt: nextChildAttemptNumber(mission.cwd, mission.id, "validator", feature.id, "user-testing"),
 		status: "running",
 		runDir,
 		transcriptPath: path.join(runDir, "transcript.jsonl"),
@@ -3420,7 +3424,8 @@ async function runUserTestingValidator(ctx: ExtensionContext, mission: MissionSt
 	else {
 		transitionUserTestingFailToFeaturePendingAndMissionBlocked(mission, feature);
 		block = {
-			kind: "user-testing-validator",
+			kind: "validator",
+			validatorMode: "user-testing",
 			missionId: mission.id,
 			missionTitle: mission.title,
 			milestoneId: milestone.id,
@@ -3471,11 +3476,11 @@ function autoOpenMissionControl(ctx: ExtensionContext, mission: MissionState, pi
 
 function transitionInterruptedOrStaleRunToPausedForResume(mission: MissionState, run?: MissionRunContext): void {
 	for (const milestone of missionMilestones(mission)) {
-		if ((run?.kind === "validator" || run?.kind === "user-testing-validator") && milestone.id === run.itemId && milestone.status === "running") milestone.status = "pending";
+		if (run?.kind === "validator" && milestone.id === run.itemId && milestone.status === "running") milestone.status = "pending";
 		for (const feature of milestone.features) {
 			if (run?.kind === "worker" && feature.id === run.itemId && feature.status === "running") feature.status = "pending";
 			if (run?.kind === "validator" && feature.validationRunId === run.runId && feature.status === "running") feature.status = "pending";
-			if (run?.kind === "user-testing-validator" && feature.userTestingRunId === run.runId && feature.status === "running") {
+			if (run?.validatorMode === "user-testing" && feature.userTestingRunId === run.runId && feature.status === "running") {
 				feature.userTestingPending = true;
 				feature.userTestingRunId = undefined;
 			}
