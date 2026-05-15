@@ -3002,6 +3002,22 @@ function setMilestoneUserTestingRunId(milestone: MissionMilestone, runId: string
 	milestone.validationState = { ...milestone.validationState, userTestingRunId: runId };
 }
 
+function transitionMilestoneValidationFailureToBlocked(mission: MissionState, milestone: MissionMilestone): { failureCount: number; failureLimit: number; limitExceeded: boolean; status: string } {
+	const failureCount = incrementMilestoneValidationFailureCount(milestone);
+	const failureLimit = effectiveMilestoneValidationFailureLimit(mission, milestone);
+	const limitExceeded = failureCount >= failureLimit;
+	milestone.status = "failed";
+	mission.status = "blocked";
+	return {
+		failureCount,
+		failureLimit,
+		limitExceeded,
+		status: limitExceeded
+			? `validation failure limit exceeded (${failureCount}/${failureLimit}); orchestrator intervention required`
+			: `validation failed (${failureCount}/${failureLimit}); orchestrator intervention required`,
+	};
+}
+
 function clearResolvedFeatureBlock(mission: MissionState, featureId: string): void {
 	if (mission.latestBlock?.featureId === featureId || mission.latestBlock?.failedItemId === featureId) {
 		mission.latestBlock = undefined;
@@ -3356,11 +3372,10 @@ Do not stop after stating that you will validate. Use tools to complete the vali
 			milestone.status = isMilestoneUserTestingRequired(milestone) ? "running" : "complete";
 		}
 	} else {
+		let milestoneFailure: ReturnType<typeof transitionMilestoneValidationFailureToBlocked> | undefined;
 		if (targetFeature) transitionValidatorFailToFeaturePendingForRetry(mission, targetFeature);
-		else {
-			milestone.status = "failed";
-			mission.status = "blocked";
-		}
+		else milestoneFailure = transitionMilestoneValidationFailureToBlocked(mission, milestone);
+		if (milestoneFailure) appendEvent(dir, "milestone_validation_failed", { milestoneId: milestone.id, runId, validatorMode: "scrutiny", failureCount: milestoneFailure.failureCount, failureLimit: milestoneFailure.failureLimit, limitExceeded: milestoneFailure.limitExceeded });
 		block = {
 			kind: "validator",
 			validatorMode: "scrutiny",
@@ -3373,7 +3388,7 @@ Do not stop after stating that you will validate. Use tools to complete the vali
 			runId,
 			runDir,
 			exitCode: result.exitCode,
-			status: report?.status ?? (!report ? "missing validation report" : undefined),
+			status: milestoneFailure?.status ?? report?.status ?? (!report ? "missing validation report" : undefined),
 			artifactPaths: existingPaths([reportFile, path.join(runDir, "validation-report.md"), path.join(runDir, "transcript.jsonl"), path.join(runDir, "stderr.txt")]),
 		};
 	}
@@ -3474,9 +3489,9 @@ async function runMilestoneUserTestingValidator(ctx: ExtensionContext, mission: 
 	let block: MissionBlockSummary | undefined;
 	if (result.exitCode === 0 && report?.status === "pass") milestone.status = "complete";
 	else {
-		milestone.status = "failed";
-		mission.status = "blocked";
-		block = { kind: "validator", validatorMode: "user-testing", missionId: mission.id, missionTitle: mission.title, milestoneId: milestone.id, milestoneTitle: milestone.title, runId, runDir, exitCode: result.exitCode, status: report?.status ?? "missing user-testing report", artifactPaths: existingPaths([reportFile, path.join(runDir, "user-testing-report.md"), path.join(runDir, "transcript.jsonl"), path.join(runDir, "stderr.txt")]) };
+		const milestoneFailure = transitionMilestoneValidationFailureToBlocked(mission, milestone);
+		appendEvent(dir, "milestone_validation_failed", { milestoneId: milestone.id, runId, validatorMode: "user-testing", failureCount: milestoneFailure.failureCount, failureLimit: milestoneFailure.failureLimit, limitExceeded: milestoneFailure.limitExceeded });
+		block = { kind: "validator", validatorMode: "user-testing", missionId: mission.id, missionTitle: mission.title, milestoneId: milestone.id, milestoneTitle: milestone.title, runId, runDir, exitCode: result.exitCode, status: milestoneFailure.status, artifactPaths: existingPaths([reportFile, path.join(runDir, "user-testing-report.md"), path.join(runDir, "transcript.jsonl"), path.join(runDir, "stderr.txt")]) };
 	}
 	if (block) persistMissionBlock(dir, mission, block, classifyValidatorBlock(result, report));
 	const validatorTranscriptSession = parseTranscriptSessionIdentity(path.join(runDir, "transcript.jsonl"));
