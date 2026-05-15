@@ -2,7 +2,7 @@
 
 This roadmap describes how `pi-missions` should evolve from the current early extension into a production-ready, Factory Missions-aligned pi extension.
 
-`pi-missions` is inspired by Factory Missions for Droid: a planning-heavy, long-running orchestration system where a user approves scope, monitors execution in Mission Control, and intervenes as a project manager while workers and validators make progress through git-backed handoffs.
+`pi-missions` is inspired by the product target Factory Missions for Droid: a planning-heavy, long-running orchestration system where a user approves scope, monitors execution in Mission Control, and intervenes as a project manager while workers and validators make progress through git-backed handoffs.
 
 ## Headline roadmap
 
@@ -183,10 +183,9 @@ Important observations from dogfooding:
    - Preserve a path to future headless/cloud mission execution.
 
 10. **Deterministic runner, orchestrator repairs**
-
-- Workers and validators produce artifacts; they do not choose mission state transitions.
-- On milestone validation failure, the runner hands control to the main-chat orchestrator.
-- The orchestrator may revise metadata, add/adjust repair work, or resume after explicit intent.
+   - Workers and validators produce artifacts; they do not choose mission state transitions.
+   - On milestone validation failure, the runner hands control to the main-chat orchestrator.
+   - The orchestrator may revise metadata, add/adjust repair work, or resume after explicit intent.
 
 ## Phase 0: stabilize the foundation
 
