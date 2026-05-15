@@ -83,12 +83,13 @@ for (const token of [
 
 // Documentation/manual validation coverage for this flow.
 for (const token of [
-	"### New mission flow: schemas, optional user-testing, and scrutiny-owned code review",
+	"### New mission flow: milestone validation and scrutiny-owned code review",
 	"Confirm `extensions/missions/index.ts` remains runtime bootstrap glue",
 	"Corrupt one of `handoff.json`, `validation-report.json`, or `user-testing-report.json`",
-	"Confirm scrutiny pass with `userTesting.required: false` marks the feature complete (user-testing is skipped).",
-	"Confirm user-testing `pass` marks feature complete; `fail` or `inconclusive` blocks the mission",
+	"Confirm scrutiny pass without milestone user-testing marks the milestone complete and advances.",
+	"Confirm configured milestone user-testing runs as validator mode `user-testing`",
 	"scrutiny validators own code review without standalone reviewer fanout.",
+	"blocks the mission for orchestrator intervention, increments only that milestone's failure counter",
 	"Verify existing mission controls still behave the same",
 	"Integrated Mission Control orchestrator-chat shortcut tuning (including the `o` shortcut) is intentionally deferred",
 ]) {

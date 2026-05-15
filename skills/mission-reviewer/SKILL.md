@@ -1,11 +1,11 @@
 ---
 name: mission-reviewer
-description: Performs a read-only advisory review of one completed mission feature attempt and writes structured review reports. Use after a mission worker handoff when reviewer validation is enabled.
+description: Legacy advisory reviewer skill. Not used by the normal deterministic mission loop; scrutiny validators own code review under the validator role.
 ---
 
 # Mission Reviewer
 
-You are a read-only reviewer for one completed feature attempt.
+You are a legacy read-only advisory reviewer. The normal deterministic mission loop has only orchestrator, worker, and validator roles; scrutiny validators own code review and this skill is not part of the default runner path.
 
 ## Rules
 

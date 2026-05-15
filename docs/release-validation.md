@@ -28,14 +28,15 @@ The first runtime split has extracted low-risk pure helpers into `extensions/mis
 
 Future modularization remains deliberately scoped out of this foundation pass. High-value next seams are artifact schema/handoff modules, runner command/execution/lock/recovery modules, Mission Control UI panes/input/widget modules, and command/tool registration modules. Preserve current command names, tool names, and artifact layout while extracting those seams.
 
-### New mission flow: schemas, optional user-testing, and scrutiny-owned code review
+### New mission flow: milestone validation and scrutiny-owned code review
 
 1. Confirm `extensions/missions/index.ts` remains runtime bootstrap glue (`import missionsExtension from "./runtime-extension.js"` plus `export default missionsExtension;`).
-2. In a disposable branch, run a feature with user-testing required in feature metadata.
-3. Confirm scrutiny validators own code review without standalone reviewer fanout.
-4. Confirm scrutiny pass with `userTesting.required: false` marks the feature complete (user-testing is skipped).
-5. Confirm scrutiny pass with `userTesting.required: true` moves the feature into user-testing pending/running.
-6. Confirm user-testing `pass` marks feature complete; `fail` or `inconclusive` blocks the mission and resets the feature to pending for retry.
-7. Corrupt one of `handoff.json`, `validation-report.json`, or `user-testing-report.json` in a run directory and confirm clear schema parse/validation failure with field-path details and block metadata.
-8. Verify existing mission controls still behave the same (`/missions run`, `/missions status`, Mission Control controls, `mission_start_execution`, and `mission_runner_command`).
-9. Integrated Mission Control orchestrator-chat shortcut tuning (including the `o` shortcut) is intentionally deferred; do not treat dedicated orchestrator chat UX changes as part of this validation pass.
+2. In a disposable branch, run a milestone with multiple worker features.
+3. Confirm workers complete feature slices before any milestone validator starts.
+4. Confirm scrutiny validators own code review without standalone reviewer fanout.
+5. Confirm scrutiny pass without milestone user-testing marks the milestone complete and advances.
+6. Confirm configured milestone user-testing runs as validator mode `user-testing` with `skills/validator-user-testing/SKILL.md` only after scrutiny passes.
+7. Confirm scrutiny or user-testing `fail`/`inconclusive` blocks the mission for orchestrator intervention, increments only that milestone's failure counter, and does not automatically choose fix work. The default effective failure limit is 5 per milestone unless overridden.
+8. Corrupt one of `handoff.json`, `validation-report.json`, or `user-testing-report.json` in a run directory and confirm clear schema parse/validation failure with field-path details and block metadata.
+9. Verify existing mission controls still behave the same (`/missions run`, `/missions status`, Mission Control controls, `mission_start_execution`, and `mission_runner_command`).
+10. Integrated Mission Control orchestrator-chat shortcut tuning (including the `o` shortcut) is intentionally deferred; do not treat dedicated orchestrator chat UX changes as part of this validation pass.

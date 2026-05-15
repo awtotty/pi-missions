@@ -8,7 +8,7 @@ Mission Control is the read-only observability overlay for pi-missions. Open it 
 
 Without an id, Mission Control shows a global multi-mission overview across the mission store, including missions from different repositories and worktrees. With an id, it opens directly to that mission's detail view.
 
-Mission management remains in main chat and deterministic tools for now. Start, resume, pause, cancel, clear, recovery, and plan changes should be requested with `/missions ...`, `mission_start_execution`, `mission_runner_command`, or natural-language main-chat intervention.
+Mission management remains in main chat and deterministic tools for now. Start, resume, pause, cancel, clear, recovery, and plan changes should be requested with `/missions ...`, `mission_start_execution`, `mission_runner_command`, or natural-language main-chat intervention. Workers complete feature slices; scrutiny and optional user-testing validators run at milestone boundaries under the validator role. A milestone validation failure blocks and hands recovery to the orchestrator instead of automatically choosing fix work.
 
 ## Overview sections
 
@@ -34,7 +34,7 @@ Detail view repeats the same mission summary at the top, then shows the most rel
 
 - active transcript and stderr tails for running missions;
 - current block or failed-run artifacts for blocked/failed missions;
-- latest validation or completion handoff for completed missions;
+- latest milestone validation or completion handoff for completed missions;
 - objective or next-step context for planned and paused missions.
 
 The output pane is bounded and scrollable so large transcripts do not take over the terminal.

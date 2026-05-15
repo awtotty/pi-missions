@@ -2,7 +2,7 @@
 
 **pi-missions 0.1.0** is an unofficial [pi](https://pi.dev) port inspired by [Factory Missions for Droid](https://factory.ai/news/missions).
 
-It adds long-running, sequential mission orchestration to pi: plan in chat, persist a reviewable milestone-based mission plan, execute milestone features one at a time in fresh child contexts, validate progress, and monitor progress in Mission Control.
+It adds long-running, sequential mission orchestration to pi: plan in chat, persist a reviewable milestone-based mission plan, execute milestone features one at a time in fresh child contexts, run validation at milestone boundaries, and monitor progress in Mission Control.
 
 > Early release: APIs, artifacts, commands, and behavior may change without notice before a stable release.
 
@@ -13,8 +13,8 @@ It adds long-running, sequential mission orchestration to pi: plan in chat, pers
 - Milestone-canonical planning where runtime feature state lives under `milestones[].features`.
 - Sequential worker execution, one milestone feature at a time.
 - Required worker handoffs and git commits.
-- Scrutiny validation against a pre-written validation contract.
-- Optional user-testing validator and read-only reviewer fanout.
+- Milestone-boundary scrutiny validation against a pre-written validation contract.
+- Optional milestone-boundary user-testing validation using a distinct validator skill.
 - Interactive Mission Control dashboard via `/mission-control`.
 - Compact mission status/footer indicator.
 - Per-role model defaults for orchestrator, worker, and validator.
@@ -63,7 +63,14 @@ After local edits, use `/reload` inside pi.
 3. Save the plan with the mission tools when ready.
 4. Start execution with `/missions run` or `mission_start_execution` after explicit confirmation.
 5. Use `/mission-control` or `/missions status` to monitor progress.
-6. If a mission blocks, recover in the main chat; completed work and artifacts are preserved.
+6. If milestone validation fails, the runner blocks and hands control to the main-chat orchestrator; completed work and artifacts are preserved while the orchestrator decides whether to revise the plan and resume.
+
+
+## Execution model
+
+The normal runner loop has three roles: orchestrator, worker, and validator. Workers implement individual features and produce commits plus handoff artifacts. After all runnable features in a milestone are complete or skipped, the runner starts milestone-boundary validators: scrutiny first via `skills/validator-scrutiny/SKILL.md`, then optional user-testing via `skills/validator-user-testing/SKILL.md` when the milestone requests it. There is no standalone reviewer role in the deterministic execution loop; scrutiny validators own adversarial code review.
+
+Child agents produce artifacts, but the runner/orchestrator own mission metadata transitions. A milestone validation failure persists the report, increments that milestone's independent failure counter, blocks the mission, and hands recovery to the main-chat orchestrator instead of automatically choosing fix work. The default effective validation failure limit is 5 per milestone unless mission/milestone metadata overrides it.
 
 ## Mission Control
 
@@ -71,7 +78,7 @@ After local edits, use `/reload` inside pi.
 
 The overview uses stable sections in this order: **Blocked / Failed**, **Running**, **Paused**, **Planned**, and **Completed**. Each mission card shows the title/status, mission id plus repository/worktree label, current task, completed/total progress bar, and update time when available.
 
-Detail view repeats the same mission summary at the top, then shows the most relevant read-only output below it: active transcript/stderr tails for running missions, current block artifacts for blocked/failed missions, latest validation or completion handoff for completed missions, and objective/next-step context for planned or paused missions.
+Detail view repeats the same mission summary at the top, then shows the most relevant read-only output below it: active transcript/stderr tails for running missions, current block artifacts for blocked/failed missions, latest milestone validation or completion handoff for completed missions, and objective/next-step context for planned or paused missions.
 
 Useful keys:
 
@@ -104,14 +111,12 @@ Mission data is stored globally so target repositories do not need `.gitignore` 
     worker/SKILL.md
     validator-scrutiny/SKILL.md
     validator-user-testing/SKILL.md
-    reviewer/SKILL.md
   runs/<run-id>/
     transcript.jsonl
     stderr.txt
     handoff.json / handoff.md
     validation-report.json / validation-report.md
     user-testing-report.json / user-testing-report.md
-    review-report.json / review-report.md
 ```
 
 ## Development checks
@@ -132,6 +137,6 @@ The package manifest loads the built extension entrypoint (`dist/missions/index.
 
 ## Design notes
 
-pi-missions keeps the deterministic layer thin: state files, child process execution, git guardrails, command routing, validation gates, and UI. Planning, decomposition, worker behavior, and validator behavior live primarily in prompts and skills so the system can improve as models improve.
+pi-missions keeps the deterministic layer thin: state files, child process execution, git guardrails, command routing, milestone validation gates, and UI. Planning, decomposition, worker behavior, and validator behavior live primarily in prompts and skills so the system can improve as models improve.
 
 This package is not affiliated with Factory. For the original Factory announcement, see [Factory Missions for Droid](https://factory.ai/news/missions).

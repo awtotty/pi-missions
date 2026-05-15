@@ -1999,15 +1999,16 @@ function missionControlPlaneLines(mission: MissionState): string[] {
 		return `Runner lock: ${lockState} · ${owner} · heartbeat ${heartbeat}`;
 	})();
 	const currentFeatureId = mission.currentFeatureId;
+	const currentMilestoneId = mission.currentMilestoneId;
 	const registry = readChildSessionRegistry(mission.cwd, mission.id);
 	const workerAttempts = currentFeatureId ? registry.records.filter((record) => record.role === "worker" && record.featureId === currentFeatureId).length : 0;
-	const validatorAttempts = currentFeatureId ? registry.records.filter((record) => record.role === "validator" && record.featureId === currentFeatureId).length : 0;
-	const userTestingAttempts = currentFeatureId ? registry.records.filter((record) => record.role === "validator" && record.validatorMode === "user-testing" && record.featureId === currentFeatureId).length : 0;
+	const scrutinyAttempts = currentMilestoneId ? registry.records.filter((record) => record.role === "validator" && record.validatorMode !== "user-testing" && record.milestoneId === currentMilestoneId).length : 0;
+	const userTestingAttempts = currentMilestoneId ? registry.records.filter((record) => record.role === "validator" && record.validatorMode === "user-testing" && record.milestoneId === currentMilestoneId).length : 0;
 	return [
 		lockLine,
-		`Current feature attempt: ${currentFeatureId ? `${currentFeatureId} #${Math.max(1, workerAttempts)}` : "none"}`,
-		`Current validation attempt: ${currentFeatureId ? `${currentFeatureId} #${Math.max(0, validatorAttempts)}` : "none"}`,
-		`Current user-testing attempt: ${currentFeatureId ? `${currentFeatureId} #${Math.max(0, userTestingAttempts)}` : "none"}`,
+		`Current feature worker attempt: ${currentFeatureId ? `${currentFeatureId} #${Math.max(1, workerAttempts)}` : "none"}`,
+		`Current milestone scrutiny attempt: ${currentMilestoneId ? `${currentMilestoneId} #${Math.max(0, scrutinyAttempts)}` : "none"}`,
+		`Current milestone user-testing attempt: ${currentMilestoneId ? `${currentMilestoneId} #${Math.max(0, userTestingAttempts)}` : "none"}`,
 		`Official orchestrator session: ${orchestrator?.sessionPath ? orchestrator.sessionPath : "not recorded"}`,
 		"Controls route via deterministic runner command API (p/s/x).",
 	];
