@@ -23,6 +23,8 @@ Legend: `[done]` completed · `[partial]` partly implemented, needs hardening ·
 - `[todo]` Restart verification and stale status cleanup
 - `[todo]` Planning readiness checklist and run estimates
 - `[todo]` Repair provenance for validation-generated follow-up work
+- `[todo]` User config for role models and validation failure caps
+- `[todo]` Mission token/cost tracking and budget limits
 - `[todo]` Configuration inheritance and mission preflight diagnostics
 - `[todo]` CI and formal release process
 - `[todo]` Headless / remote mission execution
@@ -530,11 +532,28 @@ Acceptance criteria:
 - Do not reintroduce a standalone reviewer role into the mission run loop.
 - Parallel fanout is documented as read-only/safe-by-default.
 
-## Phase 4: configuration inheritance and skills
+## Phase 4: configuration inheritance, user settings, and skills
 
-Goal: make child agents inherit the user's pi/project environment predictably and make skills a visible planning artifact.
+Goal: make child agents inherit the user's pi/project environment predictably, make user-configured mission settings work consistently, and make skills a visible planning artifact.
 
-### 4.1 Document and verify inheritance
+### 4.1 User configuration for models and validation caps
+
+Required behavior:
+
+- Users can configure default models per mission role: orchestrator, worker, and validator.
+- Mission-specific model settings override global defaults predictably.
+- Users can configure the default per-milestone validation failure cap.
+- Mission- or milestone-specific validation failure caps override the global default predictably.
+- Mission status and Mission Control expose the effective role models and validation cap when useful for debugging.
+
+Acceptance criteria:
+
+- Settings persist across sessions and pi restarts.
+- Worker and validator child launches use the effective configured model for their role.
+- The milestone validation failure cap defaults to 5 but can be overridden by user or mission config.
+- Invalid model/config values produce actionable warnings rather than silent fallback.
+
+### 4.2 Document and verify inheritance
 
 Factory Missions inherit MCP integrations, custom skills, hooks, custom droids, and project instructions. `pi-missions` needs an explicit pi equivalent.
 
@@ -544,7 +563,7 @@ Acceptance criteria:
 - Add a mission preflight diagnostic showing relevant inherited configuration.
 - Missing or risky configuration appears as a planning warning.
 
-### 4.2 Skill planning and lifecycle
+### 4.3 Skill planning and lifecycle
 
 Acceptance criteria:
 
@@ -552,6 +571,25 @@ Acceptance criteria:
 - Mission-specific skills are visible in Mission Control.
 - The orchestrator can propose durable project skills when useful.
 - Validators check whether workers followed required skills.
+
+## Phase 4.5: mission budgets and cost tracking
+
+Goal: make long-running missions observable and governable by token usage, cost, and budget constraints.
+
+Required behavior:
+
+- Track token usage and estimated cost per child run, milestone, and mission when provider metadata is available.
+- Store budget configuration in mission/user settings.
+- Support mission-level budget limits for maximum tokens, maximum estimated cost, and optionally maximum run count or duration.
+- Surface actual vs budgeted usage in mission status and Mission Control.
+- Block or pause missions with an explicit budget-exceeded reason when configured limits are reached.
+
+Acceptance criteria:
+
+- Mission artifacts record per-run usage/cost metadata without requiring UI state.
+- Mission summaries show cumulative usage and remaining budget where available.
+- Budget enforcement is deterministic and independent of Mission Control.
+- Missing provider cost metadata degrades gracefully with token-only accounting or an explicit “cost unavailable” state.
 
 ## Phase 5: production release hardening
 
@@ -692,10 +730,12 @@ Recommended implementation order:
 2. Make main-chat mission intervention the first-class orchestrator-chat experience, with recovery artifacts summarized automatically.
 3. Continue modularizing runtime areas needed for runner/Mission Control: state transitions, locks, status formatting, activity view models, and UI panes.
 4. Add planning readiness checklist and run estimates.
-5. Add explicit repair provenance for orchestrator-generated fix work from validation findings.
-6. Document configuration inheritance, recovery, and lifecycle states.
-7. Prepare npm package and CI release process.
-8. Much later: add headless/remote mission execution with export/import, non-interactive run, JSON status/watch, and telemetry.
+5. Add user settings for role models and per-milestone validation failure caps.
+6. Add mission token/cost tracking and budget limits.
+7. Add explicit repair provenance for orchestrator-generated fix work from validation findings.
+8. Document configuration inheritance, recovery, and lifecycle states.
+9. Prepare npm package and CI release process.
+10. Much later: add headless/remote mission execution with export/import, non-interactive run, JSON status/watch, and telemetry.
 
 ## Definition of production ready
 
