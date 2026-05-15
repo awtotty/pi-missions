@@ -3907,6 +3907,13 @@ async function runMission(args: string, ctx: ExtensionContext, pi: ExtensionAPI,
 	}
 }
 
+export const __testing = {
+	normalizeMissionShape,
+	missionForPersistence,
+	saveMission,
+	loadMission,
+};
+
 export default function missionsExtension(pi: ExtensionAPI): void {
 	let orchestratorState: MissionOrchestratorSessionState | undefined;
 	let activePlanningId: string | undefined;

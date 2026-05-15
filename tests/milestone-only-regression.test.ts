@@ -2,7 +2,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
-import { readJson, writeJson } from "../extensions/missions/runtime-core.js";
+import { __testing as runtimeTesting } from "../extensions/missions/runtime-extension.js";
+import { ensureDir, readJson, writeJson } from "../extensions/missions/runtime-core.js";
 
 const runtimeSource = fs.readFileSync(path.join(process.cwd(), "extensions/missions/runtime-extension.ts"), "utf8");
 
@@ -68,6 +69,66 @@ describe("milestone-only mission runtime regressions", () => {
 		expect(nextFeature).toContain("for (const feature of missionFeatureList(mission))");
 		expect(nextFeature).toContain("const milestone = milestoneForFeature(mission, feature.id);");
 		expect(nextFeature).not.toContain("mission.features");
+	});
+
+	it("saves transition metadata from milestone features and drops stale duplicate top-level features", () => {
+		const originalHome = process.env.PI_MISSIONS_HOME;
+		const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-missions-stale-top-level-"));
+		process.env.PI_MISSIONS_HOME = tempHome;
+		try {
+			const cwd = path.join(tempHome, "repo");
+			const missionDir = path.join(tempHome, "mission-stale-duplicate");
+			ensureDir(missionDir);
+			const mission = {
+				schemaVersion: 1 as const,
+				id: "mission-stale-duplicate",
+				title: "Stale duplicate regression",
+				status: "running" as const,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				updatedAt: "2026-01-01T00:00:00.000Z",
+				cwd,
+				models: { orchestrator: "default", worker: "default", validator: "default" },
+				currentMilestoneId: "M1",
+				currentFeatureId: "F1",
+				features: [{ id: "F1", title: "Feature", description: "stale copy", dependencies: [], status: "running" as const, runId: "stale-worker-run" }],
+				milestones: [{
+					id: "M1",
+					title: "Milestone",
+					objective: "Validate persistence after retry/validation transitions",
+					validation: "Save after transition metadata is recorded",
+					status: "running" as const,
+					features: [{
+						id: "F1",
+						title: "Feature",
+						description: "canonical milestone copy",
+						dependencies: [],
+						status: "complete" as const,
+						runId: "canonical-worker-run",
+						validationRunId: "validator-run-1",
+						commit: "abc1234",
+					}],
+				}],
+			};
+
+			runtimeTesting.saveMission(cwd, mission);
+
+			const saved = readJson<typeof mission>(path.join(missionDir, "mission.json"));
+			expect(saved.features).toBeUndefined();
+			expect(saved.milestones[0].status).toBe("complete");
+			expect(saved.milestones[0].features[0]).toMatchObject({
+				id: "F1",
+				status: "complete",
+				runId: "canonical-worker-run",
+				validationRunId: "validator-run-1",
+				commit: "abc1234",
+			});
+			const loaded = runtimeTesting.loadMission(cwd, "mission-stale-duplicate");
+			expect(loaded.features).toBeUndefined();
+			expect(loaded.milestones?.[0]?.features[0]?.validationRunId).toBe("validator-run-1");
+		} finally {
+			if (originalHome === undefined) delete process.env.PI_MISSIONS_HOME;
+			else process.env.PI_MISSIONS_HOME = originalHome;
+		}
 	});
 
 	it("validation, retry, and persistence paths cannot reintroduce duplicate feature state", () => {
