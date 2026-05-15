@@ -5,6 +5,11 @@ function assert(condition, message) { if (!condition) fail(message); }
 
 const runtime = fs.readFileSync(new URL("../extensions/missions/runtime-extension.ts", import.meta.url), "utf8");
 const runtimeTypes = fs.readFileSync(new URL("../extensions/missions/runtime-types.ts", import.meta.url), "utf8");
+const readme = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
+const missionControlDocs = fs.readFileSync(new URL("../docs/mission-control.md", import.meta.url), "utf8");
+const releaseValidationDocs = fs.readFileSync(new URL("../docs/release-validation.md", import.meta.url), "utf8");
+const roadmapDocs = fs.readFileSync(new URL("../docs/roadmap.md", import.meta.url), "utf8");
+const orchestratorSkill = fs.readFileSync(new URL("../skills/mission-orchestrator/SKILL.md", import.meta.url), "utf8");
 
 function sliceBetween(startToken, endToken, label = startToken) {
 	const start = runtime.indexOf(startToken);
@@ -29,6 +34,10 @@ function assertOrdered(source, tokens, label) {
 		assert(next > cursor, `${label} missing ordered token after ${cursor}: ${token}`);
 		cursor = next;
 	}
+}
+
+function assertIncludesAll(source, tokens, label) {
+	for (const token of tokens) assert(source.includes(token), `${label} missing: ${token}`);
 }
 
 const runner = sliceBetween("class MissionExecutionRunner", "async function runMission", "MissionExecutionRunner");
@@ -133,5 +142,44 @@ for (const forbidden of [
 	"cancel-current",
 	"mission_write_plan",
 ]) assert(!missionControlDispatch.includes(forbidden), `Mission Control input dispatch must not expose mutation/control path: ${forbidden}`);
+
+// Docs and skills must teach the same authority model as the runtime prompt.
+assertIncludesAll(readme, [
+	"current/main chat session",
+	"dedicated runtime orchestrator session",
+	"runs only for that event",
+	"mission metadata/control state through mission tools/APIs",
+	"must not edit repository implementation code by default",
+	"human command/override channel",
+], "README runtime recovery docs");
+assertIncludesAll(missionControlDocs, [
+	"read-only observability",
+	"Opening or refreshing Mission Control does not trigger recovery",
+	"mutate mission metadata/control state",
+	"event-driven and turn-based",
+	"Main chat remains the human command/override channel",
+], "Mission Control runtime recovery docs");
+assertIncludesAll(releaseValidationDocs, [
+	"Runtime orchestrator recovery loop",
+	"Planning still happens in the current/main chat session",
+	"runtime orchestrator is event-driven and turn-based",
+	"mutate mission metadata/control state through mission tools/APIs",
+	"forbidding repository implementation edits by default",
+	"Mission Control remains read-only observability",
+], "release validation runtime recovery docs");
+assertIncludesAll(roadmapDocs, [
+	"[done]` Dedicated mission orchestrator recovery loop",
+	"Planning happens in the current/main user session before execution starts",
+	"It may mutate mission metadata and control state through mission tools/APIs",
+	"Main chat is the human planning, command, question, and override channel",
+], "roadmap runtime recovery docs");
+assertIncludesAll(orchestratorSkill, [
+	"current/main-session collaboration",
+	"event-driven turns in the mission's dedicated runtime orchestrator session",
+	"may mutate mission metadata/control state through mission tools/APIs",
+	"must not edit repository implementation code by default",
+	"Main/current chat remains the human command, question, and override channel",
+	"Mission Control is read-only observability",
+], "mission orchestrator skill runtime recovery guidance");
 
 console.log("Runtime orchestrator recovery loop validation passed.");

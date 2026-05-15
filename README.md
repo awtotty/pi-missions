@@ -15,6 +15,7 @@ It adds long-running, sequential mission orchestration to pi: plan in chat, pers
 - Required worker handoffs and git commits.
 - Milestone-boundary scrutiny validation against a pre-written validation contract.
 - Optional milestone-boundary user-testing validation using a distinct validator skill.
+- Event-driven runtime orchestrator recovery for validation failures and recoverable blocks.
 - Interactive Mission Control dashboard via `/mission-control`.
 - Compact mission status/footer indicator.
 - Per-role model defaults for orchestrator, worker, and validator.
@@ -59,18 +60,18 @@ After local edits, use `/reload` inside pi.
 ## Typical flow
 
 1. Run `/missions <goal>`.
-2. Refine scope, assumptions, milestones, nested features, and validation contract in chat.
+2. In the current/main chat session, refine scope, assumptions, milestones, nested features, and validation contract.
 3. Save the plan with the mission tools when ready.
 4. Start execution with `/missions run` or `mission_start_execution` after explicit confirmation.
 5. Use `/mission-control` or `/missions status` to monitor progress.
-6. If milestone validation fails, the runner blocks and hands control to the mission's dedicated orchestrator session; completed work and artifacts are preserved while the orchestrator decides whether to revise the plan and resume. Main chat remains the human command/override channel.
+6. If milestone validation fails or another recoverable block occurs, the runner writes block metadata plus a recovery packet, then triggers the mission's dedicated runtime orchestrator session. The runtime orchestrator runs only for that event, may repair mission metadata/control state through mission tools/APIs, and must not edit repository implementation code by default. Main chat remains the human command/override channel.
 
 
 ## Execution model
 
 The normal runner loop has three roles: orchestrator, worker, and validator. Workers implement individual features and produce commits plus handoff artifacts. After all runnable features in a milestone are complete or skipped, the runner starts milestone-boundary validators: scrutiny first via `skills/validator-scrutiny/SKILL.md`, then optional user-testing via `skills/validator-user-testing/SKILL.md` when the milestone requests it. There is no standalone reviewer role in the deterministic execution loop; scrutiny validators own adversarial code review.
 
-Child agents produce artifacts, but the runner/orchestrator own mission metadata transitions. A milestone validation failure persists the report, increments that milestone's independent failure counter, blocks the mission, and hands recovery to the mission's dedicated orchestrator session instead of automatically choosing fix work. The default effective validation failure limit is 5 per milestone unless mission/milestone metadata overrides it.
+Child agents produce artifacts, but the deterministic runner owns sequencing, locks, artifact expectations, and invariant enforcement. On validation failure, worker block, no-runnable-work, retry-limit exceeded, or ambiguous/stale state, the runner stops after the blocking unit finishes, persists block/recovery artifacts, and dispatches an event to the dedicated runtime orchestrator session when session controls are available. The runtime orchestrator may mutate mission metadata/control state through mission tools/APIs to resume, ask the user, leave blocked, retry/repair state, or rerun validation when safe; it must not directly edit repository implementation code by default. Main chat receives visibility/fallback context and remains the human command/override channel. The default effective validation failure limit is 5 per milestone unless mission/milestone metadata overrides it.
 
 ## Mission Control
 
@@ -92,7 +93,7 @@ r                   Refresh artifacts and re-render
 g / G               Jump to top / bottom of detail output
 ```
 
-Mission Control v1 is intentionally read-only. Start, resume, pause, cancel, clear, recovery, and plan changes remain in main chat and deterministic tools such as `/missions ...`, `mission_start_execution`, and `mission_runner_command`. See [`docs/mission-control.md`](docs/mission-control.md) for the full multi-mission Mission Control guide.
+Mission Control v1 is intentionally read-only. It observes running, blocked, and recovery state but does not trigger runtime orchestrator turns or expose mutation controls. Start, resume, pause, cancel, clear, recovery, and plan changes remain in main chat, the dedicated runtime orchestrator session, and deterministic tools such as `/missions ...`, `mission_start_execution`, and `mission_runner_command`. See [`docs/mission-control.md`](docs/mission-control.md) for the full multi-mission Mission Control guide.
 
 ## Artifact layout
 
@@ -135,7 +136,7 @@ npm run build           # Emit the publishable extension to dist/
 npm run check           # Full local gate: typecheck, tests, validation, build
 ```
 
-Run focused validation scripts while iterating on a specific area, then run `npm run check` before handing work off or cutting a package. `npm run validate:mission-control-readonly` is the Mission Control read-only regression harness for multi-mission sections, overview/detail navigation, output rendering, docs, and absence of overlay mutation controls.
+Run focused validation scripts while iterating on a specific area, then run `npm run check` before handing work off or cutting a package. `npm run validate:runtime-recovery-loop` verifies runtime recovery routing, prompt guardrails, fallback semantics, and docs/skill wording. `npm run validate:mission-control-readonly` is the Mission Control read-only regression harness for multi-mission sections, overview/detail navigation, output rendering, docs, and absence of overlay mutation controls.
 
 The package manifest loads the built extension entrypoint (`dist/missions/index.js`) for publication. Local source edits should still preserve the public commands, tools, milestone-canonical mission artifact layout, and Mission Control interaction model documented above.
 

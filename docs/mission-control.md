@@ -8,7 +8,7 @@ Mission Control is the read-only observability overlay for pi-missions. Open it 
 
 Without an id, Mission Control shows a global multi-mission overview across the mission store, including missions from different repositories and worktrees. With an id, it opens directly to that mission's detail view.
 
-Mission Control is read-only observability. Start, resume, pause, cancel, clear, recovery, and plan changes route through `/missions ...`, `mission_start_execution`, `mission_runner_command`, the dedicated mission orchestrator session, or main chat human override. Workers complete feature slices; scrutiny and optional user-testing validators run at milestone boundaries under the validator role. A milestone validation failure blocks and hands recovery to the mission's dedicated orchestrator session instead of automatically choosing fix work.
+Mission Control is read-only observability. Start, resume, pause, cancel, clear, recovery, and plan changes route through `/missions ...`, `mission_start_execution`, `mission_runner_command`, the dedicated runtime orchestrator session, or main chat human override. Workers complete feature slices; scrutiny and optional user-testing validators run at milestone boundaries under the validator role. A milestone validation failure or other recoverable block writes recovery artifacts and dispatches an event to the mission's dedicated runtime orchestrator session instead of automatically choosing fix work.
 
 ## Overview sections
 
@@ -39,6 +39,12 @@ Detail view repeats the same mission summary at the top, then shows the most rel
 
 The output pane is bounded and scrollable so large transcripts do not take over the terminal.
 
+## Recovery visibility
+
+Mission Control can show current block artifacts, failed run output, and recovery packet paths, but it is not the recovery executor. Opening or refreshing Mission Control does not trigger recovery, mutate mission metadata/control state, resume a runner, or ask a worker to make code changes.
+
+The runtime orchestrator is event-driven and turn-based. The deterministic runner triggers it after recoverable blocks, and that dedicated session may use mission tools/APIs to repair mission metadata/control state. Main chat remains the human command/override channel when the user needs to redirect, answer a question, or override the runtime recovery path.
+
 ## Keys
 
 ```text
@@ -51,4 +57,4 @@ r                   Refresh artifacts and re-render
 g / G               Jump to top / bottom of detail output
 ```
 
-Mission Control is intentionally read-only. It does not expose start, resume, pause, cancel, clear, or plan-edit controls in the overlay.
+Mission Control is intentionally read-only. It does not expose start, resume, pause, cancel, clear, recovery, or plan-edit controls in the overlay.

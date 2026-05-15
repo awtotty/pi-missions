@@ -15,7 +15,7 @@ Legend: `[done]` completed · `[partial]` partly implemented, needs hardening ·
 - `[done]` Milestone-canonical mission schema
 - `[done]` Milestone-level deterministic run loop
 - `[done]` Three-role model: orchestrator, worker, validator
-- `[next]` Dedicated mission orchestrator recovery loop
+- `[done]` Dedicated mission orchestrator recovery loop
 - `[next]` Runtime modularization: runner, state transitions, status, and UI panes
 - `[next]` Release-readiness docs pass
 - `[next]` npm pack and public release
@@ -36,7 +36,7 @@ Legend: `[done]` completed · `[partial]` partly implemented, needs hardening ·
 
 Goal: get `pi-missions` to a publicly useful npm release today. The remaining release-critical sequence is:
 
-1. Build the event-driven runtime orchestrator recovery loop.
+1. Harden and dogfood the completed event-driven runtime orchestrator recovery loop.
 2. Modularize the runtime enough for a maintainable release, prioritizing runner/state/status/UI seams over perfect architecture.
 3. Do a release-readiness docs pass.
 4. Run package validation and publish to npm.
@@ -103,6 +103,7 @@ The extension already has a strong foundation:
 - Runner lock/ownership artifacts and recovery-oriented state.
 - Per-role model defaults.
 - Typecheck and custom validation scripts.
+- Event-driven runtime orchestrator recovery that routes recoverable blocks to a dedicated session while main chat remains the human command/override channel.
 
 The main gaps are not conceptual. They are about Factory alignment, robustness, product polish, and release engineering.
 
@@ -773,7 +774,7 @@ Acceptance criteria:
 
 Recommended implementation order:
 
-1. Build the event-driven runtime orchestrator recovery loop for validation failures and recoverable blocks.
+1. Harden the event-driven runtime orchestrator recovery loop for validation failures and recoverable blocks.
 2. Continue modularizing runtime areas needed for release: runner/state transitions, locks, status formatting, activity view models, and UI panes.
 3. Do a release-readiness docs pass covering quickstart, lifecycle, recovery, Mission Control, configuration, and release validation.
 4. Run package validation, `npm pack` smoke testing, and publish to npm.

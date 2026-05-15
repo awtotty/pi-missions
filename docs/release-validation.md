@@ -28,6 +28,23 @@ The first runtime split has extracted low-risk pure helpers into `extensions/mis
 
 Future modularization remains deliberately scoped out of this foundation pass. High-value next seams are artifact schema/handoff modules, runner command/execution/lock/recovery modules, Mission Control UI panes/input/widget modules, and command/tool registration modules. Preserve current command names, tool names, and artifact layout while extracting those seams.
 
+## Runtime orchestrator recovery loop
+
+Run the deterministic harness when changing runner recovery, session routing, recovery prompts, Mission Control recovery visibility, or orchestrator skills:
+
+```bash
+npm run validate:runtime-recovery-loop
+```
+
+Release validation should confirm:
+
+1. Planning still happens in the current/main chat session before `/missions run` or `mission_start_execution` starts workers.
+2. Validation failure, worker block, no-runnable-work, retry-limit exceeded, and ambiguous/stale state recovery routes to the mission's dedicated runtime orchestrator session when session controls are available.
+3. The runtime orchestrator is event-driven and turn-based: it runs only after a runner event or explicit user redirect, never as an always-on background worker while normal workers/validators run.
+4. Recovery packets and prompts allow the runtime orchestrator to mutate mission metadata/control state through mission tools/APIs, while forbidding repository implementation edits by default.
+5. Main chat remains the human command/override channel and receives only display/fallback recovery context when dedicated session dispatch is unavailable.
+6. Mission Control remains read-only observability: it may display block/recovery artifacts, but opening or refreshing it must not start, resume, pause, cancel, clear, edit plans, trigger recovery, or mutate mission state.
+
 ### New mission flow: milestone validation and scrutiny-owned code review
 
 1. Confirm `extensions/missions/index.ts` remains runtime bootstrap glue (`import missionsExtension from "./runtime-extension.js"` plus `export default missionsExtension;`).
@@ -36,7 +53,7 @@ Future modularization remains deliberately scoped out of this foundation pass. H
 4. Confirm scrutiny validators own code review without standalone reviewer fanout.
 5. Confirm scrutiny pass without milestone user-testing marks the milestone complete and advances.
 6. Confirm configured milestone user-testing runs as validator mode `user-testing` with `skills/validator-user-testing/SKILL.md` only after scrutiny passes.
-7. Confirm scrutiny or user-testing `fail`/`inconclusive` blocks the mission for orchestrator intervention, increments only that milestone's failure counter, and does not automatically choose fix work. The default effective failure limit is 5 per milestone unless overridden.
+7. Confirm scrutiny or user-testing `fail`/`inconclusive` blocks the mission for dedicated runtime orchestrator intervention, increments only that milestone's failure counter, and does not automatically choose fix work. The default effective failure limit is 5 per milestone unless overridden.
 8. Corrupt one of `handoff.json`, `validation-report.json`, or `user-testing-report.json` in a run directory and confirm clear schema parse/validation failure with field-path details and block metadata.
-9. Verify existing mission controls still behave the same (`/missions run`, `/missions status`, Mission Control controls, `mission_start_execution`, and `mission_runner_command`).
+9. Verify existing mission controls still behave the same (`/missions run`, `/missions status`, Mission Control read-only views, `mission_start_execution`, and `mission_runner_command`).
 10. Integrated Mission Control orchestrator-chat shortcut tuning (including the `o` shortcut) is intentionally deferred; do not treat dedicated orchestrator chat UX changes as part of this validation pass.

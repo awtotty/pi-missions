@@ -89,7 +89,7 @@ for (const token of [
 	"Confirm scrutiny pass without milestone user-testing marks the milestone complete and advances.",
 	"Confirm configured milestone user-testing runs as validator mode `user-testing`",
 	"scrutiny validators own code review without standalone reviewer fanout.",
-	"blocks the mission for orchestrator intervention, increments only that milestone's failure counter",
+	"blocks the mission for dedicated runtime orchestrator intervention, increments only that milestone's failure counter",
 	"Verify existing mission controls still behave the same",
 	"Integrated Mission Control orchestrator-chat shortcut tuning (including the `o` shortcut) is intentionally deferred",
 ]) {
