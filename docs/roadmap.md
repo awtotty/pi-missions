@@ -32,7 +32,7 @@ The extension already has a strong foundation:
 - Persisted artifacts under `~/.pi/missions/<mission-id>/`.
 - Sequential feature execution through fresh child sessions.
 - Required worker handoffs and git commits.
-- Scrutiny validation and optional user-testing/reviewer flows.
+- Scrutiny validation and optional user-testing flows.
 - Mission Control panes for milestones/features, details, activity, and child output.
 - Start/resume/pause/cancel control routing.
 - Runner lock/ownership artifacts and recovery-oriented state.
@@ -42,6 +42,53 @@ The extension already has a strong foundation:
 The main gaps are not conceptual. They are about Factory alignment, robustness, product polish, and release engineering.
 
 ## Completed roadmap work
+
+### Milestone-level deterministic run loop completed: `mission-milestone-level-deterministic-run-loop`
+
+Completed commits:
+
+- `1838b5a` — F1 update milestone validation schema.
+- `48a8dd0` / `d6d9b03` / `b3105e6` — F2 remove reviewer execution path and record scrutiny validator mode.
+- `e62b18d` — F3 refactor runner to milestone validation.
+- `bb4ac3c` — F4 block milestone validation failures.
+- `0688b53` / `115bf1d` — F5 add milestone run-loop regression coverage.
+- `73f13a0` / `6723b6c` — F6 update milestone validation docs and operator guidance.
+
+Completed outcomes:
+
+- Normal execution is centered on three roles: orchestrator, worker, validator.
+- Scrutiny and user-testing are validator modes using distinct mission-specific skills.
+- Standalone reviewer execution has been removed from the normal run loop.
+- The runner validates at milestone boundaries rather than per-feature by default.
+- Milestone validation failures block/handoff to the orchestrator instead of auto-selecting repair work.
+- Per-milestone validation failure counters and the default limit of 5 are implemented and covered by regression tests.
+
+### Mission Control read-only rework completed: `mission-mission-control-readonly-rework`
+
+Completed outcomes:
+
+- Mission Control is now a read-only observability surface rather than a management/control plane.
+- Main chat is the orchestrator/intervention channel for pause, resume, recovery, and plan revisions.
+- Mission Control supports a multi-mission overview with sections for blocked/failed, running, paused, planned, and completed missions.
+- Shared view-model logic keeps status output and Mission Control closer together.
+- Compact footer mission status was improved and noisy child-run footer output was removed; a full pi restart may be required after build for runtime extension changes to take effect.
+
+### Milestone-canonical schema cutover completed: `mission-milestone-only-schema-cutover`
+
+Completed commits:
+
+- `60dffaa` — F1 enforce milestone-only mission persistence.
+- `c2b3438` — F2 read runtime state from milestones.
+- `104603f` — F3 document milestone-only mission schema.
+- `22a7177` — F4 add behavioral milestone-only persistence regression.
+
+Completed outcomes:
+
+- New mission state persists features only under `mission.milestones[].features`.
+- `plan/features.json` remains a derived review/compatibility artifact, not runtime state.
+- Runner/status/Mission Control assumptions now derive feature state from milestones.
+- Regression coverage includes a behavioral stale top-level `features` persistence scenario.
+- Dogfooding exposed a stale runner-state class where completed/validated work could still block as `no_runnable_pending_work`; this informs the next run-loop reliability mission.
 
 ### Foundation mission completed: `mission-roadmap-p0-foundation`
 
@@ -83,6 +130,7 @@ Important observations from dogfooding:
 3. **Milestones are validation cadence**
    - Features are units of implementation.
    - Milestones are checkpoints where accumulated work is validated and stabilized.
+   - Scrutiny and user-testing validators should run at milestone boundaries by default, not as per-feature gates.
 
 4. **Sequential writes, parallel reads**
    - Preserve sequential write execution for correctness.
@@ -92,8 +140,9 @@ Important observations from dogfooding:
    - Every run should leave inspectable artifacts.
    - Recovery should be possible after crashes, context resets, or blocked child sessions.
 
-6. **Mission Control is a project-manager cockpit**
-   - It should not only display state; it should help the user redirect the orchestrator and recover the mission.
+6. **Mission Control is read-only observability**
+   - Mission Control should answer what is running, complete, blocked, or next.
+   - Natural-language intervention and control belong in main chat with the orchestrator.
 
 7. **Thin deterministic layer, strong invariants**
    - Keep decomposition and judgment in skills/models.
@@ -108,6 +157,11 @@ Important observations from dogfooding:
    - Mission execution, status, and recovery must remain independent of interactive UI.
    - Mission Control and chat are clients of runner state, not owners of it.
    - Preserve a path to future headless/cloud mission execution.
+
+10. **Deterministic runner, orchestrator repairs**
+   - Workers and validators produce artifacts; they do not choose mission state transitions.
+   - On milestone validation failure, the runner hands control to the main-chat orchestrator.
+   - The orchestrator may revise metadata, add/adjust repair work, or resume after explicit intent.
 
 ## Phase 0: stabilize the foundation
 
@@ -203,22 +257,24 @@ Goal: make missions behave like Factory-style milestone-driven orchestration rat
 
 ### 1.1 Make milestones first-class
 
-Factory Missions use milestones to define validation frequency. `pi-missions` should do the same.
+Factory Missions use milestones to define validation frequency. `pi-missions` should do the same. The milestone-canonical persistence cutover is complete; the next step is the execution loop.
 
 Required behavior:
 
 - Mission plans must include milestones for non-trivial work.
-- Features belong to milestones.
+- Features belong to milestones and are persisted only under `milestones[].features`.
 - Mission Control displays milestones as primary groups with nested features.
 - Milestone status is derived from feature and validation state.
-- Milestone validation runs after the milestone's features complete.
-- A failed milestone validation blocks or generates repair work before the next milestone begins.
+- Workers run feature implementation slices within the current milestone.
+- Scrutiny validation runs after the milestone's worker features complete.
+- Optional user-testing validation runs as a second validator mode at the milestone boundary.
+- A failed milestone validation hands control to the orchestrator before the next milestone begins.
 
 Acceptance criteria:
 
 - A mission can run multiple features in a milestone, then run milestone validation over accumulated work.
-- The extension can explain why a milestone is pending, running, blocked, or complete.
-- Feature-level validation remains available where useful, but milestone validation is the main cadence.
+- The extension can explain why a milestone is pending, running, blocked, validating, or complete.
+- Per-feature validation is no longer the default cadence; milestone validation is the main cadence.
 
 ### 1.2 Add planning readiness checks
 
@@ -257,22 +313,27 @@ Acceptance criteria:
 - Mission Control displays actual vs estimated runs.
 - Blocked/replanned missions update the estimate when follow-up work is added.
 
-### 1.4 Implement explicit repair-loop semantics
+### 1.4 Implement deterministic validation-failure handoff
 
-Validation failures should produce structured recovery options, not only a generic blocked state.
+Validation failures should produce structured orchestrator intervention, not an automatic model-driven retry loop.
 
 Required behavior:
 
 - Validator defects are stored with severity, evidence, affected feature/milestone, and suggested fix.
-- The orchestrator can convert defects into follow-up features.
+- Milestone validation failure increments a per-milestone counter.
+- The default effective validation failure limit is 5 per milestone; counters are independent across milestones.
+- Failed validation below the limit blocks/hands off to the main-chat orchestrator for repair planning.
+- The runner does not automatically reset features, generate fix work, or choose repair scope.
+- The orchestrator can convert defects into follow-up features, adjust existing feature metadata, classify validator defects, ask the user, or resume.
 - Follow-up features retain provenance back to the validation run.
-- Mission Control shows repair work as generated from validation.
+- Mission Control shows validation failure history and repair provenance as observability, not control.
 
 Acceptance criteria:
 
-- A failed validation can result in a generated fix feature without losing prior artifact history.
+- A failed validation can result in orchestrator-generated repair work without losing prior artifact history.
 - The mission can resume after repair planning without treating the whole mission as failed.
 - Reports distinguish original scope from validation-generated follow-up work.
+- The fifth failed validation attempt for one milestone with the default limit blocks with an explicit limit-exceeded reason.
 
 ## Phase 2: rework Mission Control and status UX
 
@@ -367,32 +428,58 @@ Acceptance criteria:
 
 ## Phase 2.5: migrate mission state to milestone-canonical schema
 
+Status: completed by `mission-milestone-only-schema-cutover`.
+
 Goal: remove duplicate feature state and make milestone grouping the single source of truth for execution, validation, status, recovery, and UI.
 
 Dogfooding exposed a serious defect: milestone feature state and top-level feature state can drift. This caused false `no_runnable_pending_work` blocks after successful validation retries. Since Factory-style validation cadence is milestone-based, `mission.milestones[].features` is canonical and top-level `mission.features` must not be persisted for new milestone missions.
 
-Required behavior:
+Completed behavior:
 
 - New mission plans persist features only inside `milestones[].features`.
-- Feature-only legacy missions load by wrapping top-level `features` into a synthetic milestone.
-- Hybrid legacy missions load by merging useful top-level metadata into milestone features once, then saving milestone-canonical state.
-- Runner, validators, recovery, status, Mission Control, and tools read feature state from milestones only.
+- Runner, validators, recovery, status, Mission Control, and tools read feature state from milestones.
 - `plan/features.json` may remain as a derived compatibility artifact, but it is not mission runtime state.
 - Skills and docs instruct orchestrators to emit milestone-canonical mission state and never top-level `features` for new plans.
+- Behavioral regression coverage proves stale top-level `features` data is stripped on persistence while milestone metadata is preserved.
 
-Acceptance criteria:
+Remaining follow-up:
 
-- No saved milestone mission contains top-level `features` as mutable runtime state.
-- Retry/validation completion cannot update one feature copy while the runner gates on another.
-- Existing feature-only and hybrid mission artifacts remain loadable through migration.
-- Tests cover feature-only, hybrid, and milestone-canonical mission loading/saving.
-- Status and Mission Control still show feature progress after migration.
+- The active-development codebase does not need complex legacy migration, but future public releases should decide whether to preserve or intentionally reject old feature-only artifacts.
+- The next run-loop mission should eliminate stale `running`/`no_runnable_pending_work` false blocks by aligning validation and recovery around milestone-level gates.
 
 ## Phase 3: strengthen validation and user testing
 
 Goal: make validation feel like a real QA/review layer, not just another model response.
 
-### 3.1 Milestone validation reports
+### 3.1 Milestone-level deterministic run loop
+
+Status: completed by `mission-milestone-level-deterministic-run-loop`.
+
+Required behavior:
+
+- Normal execution has only three roles: orchestrator, worker, validator.
+- Scrutiny validation and user-testing validation are validator modes, each using a distinct skill file:
+  - `skills/validator-scrutiny/SKILL.md`
+  - `skills/validator-user-testing/SKILL.md`
+- Remove the standalone reviewer run-loop path.
+- Run workers for the current milestone's feature slices before milestone validators run.
+- Run scrutiny validation at milestone boundary by default.
+- Run user-testing validation at milestone boundary when configured.
+- On validation failure, persist the report, increment that milestone's failure counter, block/handoff to the orchestrator, and stop.
+- Do not auto-reset features or auto-select fix work on validator failure.
+- Enforce a per-milestone validation failure limit, default 5.
+
+Acceptance criteria:
+
+- A milestone with multiple features produces worker runs before a single milestone scrutiny validation run.
+- Optional user-testing uses the user-testing validator skill under the same validator role.
+- Validation failures 1 through 4 with default limit hand control to the orchestrator.
+- Validation failure 5 for the same milestone blocks with an explicit limit-exceeded reason.
+- Failure counters are independent per milestone.
+- Passing validation marks the milestone complete and advances execution.
+- `npm run check` passes.
+
+### 3.2 Milestone validation reports
 
 Acceptance criteria:
 
@@ -400,7 +487,7 @@ Acceptance criteria:
 - Reports evaluate accumulated milestone work, integration risks, regressions, and validation-contract assertions.
 - Reports can recommend accept, repair, replan, or ask-user.
 
-### 3.2 User-testing artifacts
+### 3.3 User-testing artifacts
 
 Factory emphasizes application navigation and human-like QA. `pi-missions` should support that where pi tooling allows it.
 
@@ -410,12 +497,13 @@ Acceptance criteria:
 - User-testing reports store commands, screenshots/log paths where available, observed behavior, and reproduction steps.
 - Mission Control displays user-testing status and artifacts separately from scrutiny validation.
 
-### 3.3 Read-only parallel review/research
+### 3.4 Read-only parallel research
 
 Acceptance criteria:
 
-- Support safe parallel reviewer/research agents that do not mutate the repository.
-- Scrutiny validator can incorporate reviewer findings as advisory evidence.
+- Support safe parallel research agents that do not mutate the repository.
+- Scrutiny validators may incorporate external/read-only research as evidence when explicitly provided by the orchestrator.
+- Do not reintroduce a standalone reviewer role into the mission run loop.
 - Parallel fanout is documented as read-only/safe-by-default.
 
 ## Phase 4: configuration inheritance and skills
@@ -576,17 +664,14 @@ Acceptance criteria:
 
 Recommended implementation order:
 
-1. Finish the read-only multi-mission Mission Control rework.
-2. Complete the milestone-canonical schema cutover and keep docs/skills aligned so duplicate top-level feature runtime state does not return.
-3. Make main-chat mission intervention the first-class orchestrator-chat experience.
-4. Clean up stale block/recovery display and blocked-state guidance everywhere, including footer/status UI.
-5. Continue modularizing runtime areas needed for Mission Control: UI panes, input handling, status formatting, and run/activity view models.
-6. Make milestone validation the primary execution cadence.
-7. Add planning readiness checklist and run estimates.
-8. Add explicit repair features generated from validation findings.
-9. Document configuration inheritance, recovery, and lifecycle states.
-10. Prepare npm package and CI release process.
-11. Much later: add headless/remote mission execution with export/import, non-interactive run, JSON status/watch, and telemetry.
+1. Verify the restarted extension no longer shows child-run footer noise and that Mission Control/status agree after blocked/recovered/completed states.
+2. Make main-chat mission intervention the first-class orchestrator-chat experience, with recovery artifacts summarized automatically.
+3. Continue modularizing runtime areas needed for runner/Mission Control: state transitions, locks, status formatting, activity view models, and UI panes.
+4. Add planning readiness checklist and run estimates.
+5. Add explicit repair provenance for orchestrator-generated fix work from validation findings.
+6. Document configuration inheritance, recovery, and lifecycle states.
+7. Prepare npm package and CI release process.
+8. Much later: add headless/remote mission execution with export/import, non-interactive run, JSON status/watch, and telemetry.
 
 ## Definition of production ready
 
