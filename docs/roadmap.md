@@ -4,6 +4,24 @@ This roadmap describes how `pi-missions` should evolve from the current early ex
 
 `pi-missions` is inspired by the product target Factory Missions for Droid: a planning-heavy, long-running orchestration system where a user approves scope, monitors execution in Mission Control, and intervenes as a project manager while workers and validators make progress through git-backed handoffs.
 
+## Headline roadmap
+
+- ✅ Build/test/check foundation
+- ✅ Read-only multi-mission Mission Control
+- ✅ Compact mission footer/status cleanup
+- ✅ Milestone-canonical mission schema
+- ✅ Milestone-level deterministic run loop
+- ⚪ Restart verification and stale status cleanup
+- ⚪ Main-chat orchestrator intervention UX
+- ⚪ Runtime modularization: runner, state transitions, status, and UI panes
+- ⚪ Planning readiness checklist and run estimates
+- ⚪ Repair provenance for validation-generated follow-up work
+- ⚪ Configuration inheritance and mission preflight diagnostics
+- ⚪ Production packaging, CI, and release process
+- ⚪ Mission lifecycle, recovery, and troubleshooting docs
+- ⚪ Headless / remote mission execution
+- ⚪ Portable mission export/import and telemetry
+
 ## North star
 
 A user should be able to run:
