@@ -3916,6 +3916,12 @@ export const __testing = {
 	effectiveMilestoneValidationFailureLimit,
 	milestoneValidationFailureCount,
 	incrementMilestoneValidationFailureCount,
+	currentRunnableMilestone,
+	findNextFeatureInMilestone,
+	milestoneAwaitingScrutinyValidation,
+	milestoneAwaitingUserTestingValidation,
+	transitionMilestoneValidationFailureToBlocked,
+	transitionMissionToComplete,
 	saveMission,
 	loadMission,
 };

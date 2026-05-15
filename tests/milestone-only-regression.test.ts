@@ -171,7 +171,65 @@ describe("milestone-only mission runtime regressions", () => {
 		expect(contexts).toContain('validatorMode: "user-testing"');
 	});
 
-	it("tracks milestone validation failure counts with default and override limits", () => {
+	it("runs milestone workers before boundary validators and advances after passing validation", () => {
+		const mission = {
+			schemaVersion: 1 as const,
+			id: "mission-run-loop-order",
+			title: "Run loop order",
+			status: "running" as const,
+			createdAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-01T00:00:00.000Z",
+			cwd: "/repo",
+			models: { orchestrator: "default", worker: "default", validator: "default" },
+			currentMilestoneId: "M1",
+			milestones: [{
+				id: "M1",
+				title: "Milestone",
+				status: "running" as const,
+				features: [
+					{ id: "F1", title: "First", description: "Do first", dependencies: [], status: "complete" as const },
+					{ id: "F2", title: "Second", description: "Do second", dependencies: ["F1"], status: "pending" as const },
+				],
+			}],
+		};
+
+		const milestone = runtimeTesting.currentRunnableMilestone(mission)!;
+		expect(runtimeTesting.findNextFeatureInMilestone(mission, milestone)?.id).toBe("F2");
+		expect(runtimeTesting.milestoneAwaitingScrutinyValidation(milestone)).toBe(false);
+
+		milestone.features[1].status = "complete";
+		expect(runtimeTesting.findNextFeatureInMilestone(mission, milestone)).toBeUndefined();
+		expect(runtimeTesting.milestoneAwaitingScrutinyValidation(milestone)).toBe(true);
+
+		milestone.validationState = { runId: "validator-M1" };
+		milestone.validationRunId = "validator-M1";
+		expect(runtimeTesting.milestoneAwaitingScrutinyValidation(milestone)).toBe(false);
+		runtimeTesting.transitionMissionToComplete(mission);
+		expect(mission.status).toBe("complete");
+		expect(milestone.status).toBe("complete");
+	});
+
+	it("uses distinct milestone user-testing validator mode when configured", () => {
+		const milestone = {
+			id: "M1",
+			title: "Milestone",
+			status: "running" as const,
+			validationRunId: "scrutiny-M1",
+			validationState: { runId: "scrutiny-M1", userTesting: { required: true, instructions: "exercise the integrated milestone" } },
+			features: [{ id: "F1", title: "Feature", description: "Done", dependencies: [], status: "complete" as const }],
+		};
+
+		expect(runtimeTesting.milestoneAwaitingUserTestingValidation(milestone)).toBe(true);
+		milestone.validationState.userTestingRunId = "user-testing-M1";
+		expect(runtimeTesting.milestoneAwaitingUserTestingValidation(milestone)).toBe(false);
+
+		const runMilestoneUserTestingValidator = functionBody("runMilestoneUserTestingValidator");
+		expect(runMilestoneUserTestingValidator).toContain('setActiveRunOwnership(mission, { kind: "validator", validatorMode: "user-testing", itemId: milestone.id');
+		expect(runMilestoneUserTestingValidator).toContain('systemPromptFiles: [BASE_SKILLS.validator, path.join(dir, "skills/validator-user-testing/SKILL.md")]');
+		expect(runMilestoneUserTestingValidator).toContain("Execute user-testing validation for this completed milestone");
+	});
+
+	it("blocks validation failures for orchestrator intervention and enforces per-milestone limits independently", () => {
 		const mission = {
 			schemaVersion: 1 as const,
 			id: "mission-validation-limits",
@@ -192,7 +250,23 @@ describe("milestone-only mission runtime regressions", () => {
 		expect(runtimeTesting.effectiveMilestoneValidationFailureLimit(mission, mission.milestones[0])).toBe(4);
 		expect(runtimeTesting.effectiveMilestoneValidationFailureLimit(mission, mission.milestones[1])).toBe(2);
 		expect(runtimeTesting.milestoneValidationFailureCount(mission.milestones[0])).toBe(1);
-		expect(runtimeTesting.incrementMilestoneValidationFailureCount(mission.milestones[0])).toBe(2);
+		const firstFailure = runtimeTesting.transitionMilestoneValidationFailureToBlocked(mission, mission.milestones[0]);
+		expect(firstFailure).toMatchObject({ failureCount: 2, failureLimit: 4, limitExceeded: false });
+		expect(firstFailure.status).toContain("orchestrator intervention required");
+		expect(firstFailure.status).not.toContain("limit exceeded");
+		expect(mission.status).toBe("blocked");
+		expect(mission.milestones[0].status).toBe("failed");
 		expect(mission.milestones[1].validationState?.failureCount).toBeUndefined();
+
+		mission.status = "running";
+		mission.milestones[1].status = "running";
+		const belowLimit = runtimeTesting.transitionMilestoneValidationFailureToBlocked(mission, mission.milestones[1]);
+		expect(belowLimit).toMatchObject({ failureCount: 1, failureLimit: 2, limitExceeded: false });
+		expect(mission.milestones[0].validationState?.failureCount).toBe(2);
+		mission.status = "running";
+		mission.milestones[1].status = "running";
+		const limitExceeded = runtimeTesting.transitionMilestoneValidationFailureToBlocked(mission, mission.milestones[1]);
+		expect(limitExceeded).toMatchObject({ failureCount: 2, failureLimit: 2, limitExceeded: true });
+		expect(limitExceeded.status).toContain("validation failure limit exceeded");
 	});
 });
