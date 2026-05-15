@@ -730,7 +730,7 @@ function runningMissionOrchestratorContext(cwd: string, mission: MissionState): 
 		"- Coordinate, diagnose, redirect, pause/resume, and revise this mission.",
 		"- Do not implement repository code directly unless the user explicitly asks for manual repair outside mission execution.",
 		"- Use mission status/artifacts first when discussing active execution.",
-		"- Prefer feature-level recovery: failed validation keeps the same feature incomplete for another attempt unless user requests new scope.",
+		"- Prefer milestone-level recovery: failed milestone validation remains blocked for orchestrator diagnosis, plan/feature revision, and explicit resume rather than automatic retry or feature reset.",
 		"",
 		"Initial mission status:",
 		summarizeMission(mission),
@@ -2063,7 +2063,7 @@ function missionDetailsLines(selection: MissionControlSelection, run?: MissionRu
 		if (selection.feature.runId) lines.push(`Run: ${selection.feature.runId}`);
 		if (selection.feature.validationRunId) lines.push(`Validation run: ${selection.feature.validationRunId}`);
 		if (selection.feature.userTestingRunId) lines.push(`User-testing run: ${selection.feature.userTestingRunId}`);
-		lines.push(`User testing required: ${isFeatureUserTestingRequired(selection.feature) ? "yes" : "no"}`);
+		lines.push(`Legacy feature user-testing flag: ${isFeatureUserTestingRequired(selection.feature) ? "yes" : "no"} (normal mission validation runs at milestone boundaries)`);
 		if (selection.feature.commit) lines.push(`Commit: ${selection.feature.commit}`);
 		lines.push(`Description: ${selection.feature.description}`);
 	}
@@ -3328,7 +3328,7 @@ async function runValidator(ctx: ExtensionContext, mission: MissionState, milest
 	const featureReviewContext = targetFeature
 		? [`Feature attempt available for validation:`, `- ${targetFeature.id} - ${targetFeature.title}`, `  status: ${targetFeature.status}`, `  commit: ${targetFeature.commit ?? "not recorded"}`, `  worker run: ${targetFeature.runId ?? "not recorded"}`, `  run directory: ${targetFeature.runId ? path.join(dir, "runs", targetFeature.runId) : "not recorded"}`].join("\n")
 		: completedFeatureReviewContext(dir, milestone);
-	const prompt = `Use the mission-validator skill and the mission-specific scrutiny validator skill if present. Validate this ${targetFeature ? "feature implementation attempt" : "completed milestone"} adversarially.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\n${targetFeature ? `Feature: ${targetFeature.id} - ${targetFeature.title}\n\nFeature description:\n${targetFeature.description}\n` : ""}\n${featureReviewContext}\n\nPerform a per-feature adversarial code review for each completed feature listed above, using the recorded commits and handoff paths where available. Inspect relevant diffs/handoffs, assess whether tests and procedure were adequate, and report code-review defects or procedure findings. Also check the feature against the validation contract and mission plan. Run appropriate checks. Write validation-report.json and validation-report.md in the run directory.
+	const prompt = `Use the mission-validator skill and the mission-specific scrutiny validator skill if present. Perform milestone-boundary scrutiny validation for this completed milestone.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\n${targetFeature ? `Current feature context (not the validation target): ${targetFeature.id} - ${targetFeature.title}\n\nFeature description:\n${targetFeature.description}\n` : ""}\n${featureReviewContext}\n\nPerform a per-feature adversarial code review for each completed feature listed above, using the recorded commits and handoff paths where available. Inspect relevant diffs/handoffs, assess whether tests and procedure were adequate, and report code-review defects or procedure findings. Also check the completed milestone against the validation contract and mission plan. Run appropriate checks. Write validation-report.json and validation-report.md in the run directory.
 
 Do not stop after stating that you will validate. Use tools to complete the validation before any final response. Your final response is allowed only after validation-report.json and validation-report.md exist.`;
 	const result = await runPiChild({
@@ -3532,7 +3532,7 @@ async function runUserTestingValidator(ctx: ExtensionContext, mission: MissionSt
 	updateWidget(ctx, mission);
 	appendEvent(dir, "user_testing_started", { milestoneId: milestone.id, featureId: feature.id, runId, ownership, childSession: validatorSessionRecord });
 	const instructions = featureUserTestingInstructions(feature);
-	const prompt = `Use the mission-validator skill and the mission-specific user-testing validator skill if present. Execute user-testing validation for exactly one feature implementation attempt.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\nFeature: ${feature.id} - ${feature.title}\n\nFeature description:\n${feature.description}\n\nRequired behavior:\n- Keep testing approach generic across CLI, TUI, API, web, docs/config, and other project types.\n- Do not assume browser-only workflows.\n- Use feature-specific instructions when provided.\n${instructions ? `\nFeature-specific user-testing instructions:\n${instructions}\n` : ""}\nWrite user-testing-report.json and user-testing-report.md in the run directory.\n\nDo not stop after stating that you will validate. Use tools to complete the validation before any final response. Your final response is allowed only after user-testing-report.json and user-testing-report.md exist.`;
+	const prompt = `Use the mission-validator skill and the mission-specific user-testing validator skill if present. Execute legacy feature-scoped user-testing validation for this compatibility path. Normal mission execution validates user testing at the milestone boundary.\n\nMission directory: ${dir}\nRun directory: ${runDir}\nTarget repository cwd: ${mission.cwd}\nMilestone: ${milestone.id} - ${milestone.title}\nFeature context: ${feature.id} - ${feature.title}\n\nFeature description:\n${feature.description}\n\nRequired behavior:\n- Keep testing approach generic across CLI, TUI, API, web, docs/config, and other project types.\n- Do not assume browser-only workflows.\n- Use feature-specific instructions when provided.\n${instructions ? `\nFeature-specific user-testing instructions:\n${instructions}\n` : ""}\nWrite user-testing-report.json and user-testing-report.md in the run directory.\n\nDo not stop after stating that you will validate. Use tools to complete the validation before any final response. Your final response is allowed only after user-testing-report.json and user-testing-report.md exist.`;
 	const result = await runPiChild({
 		cwd: mission.cwd,
 		model: resolveRoleModel(mission.cwd, mission, "validator"),
