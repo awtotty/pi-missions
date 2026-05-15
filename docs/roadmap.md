@@ -38,11 +38,10 @@ Legend: `[done]` completed · `[partial]` partly implemented, needs hardening ·
 
 Goal: get `pi-missions` to a publicly useful npm release today. The remaining release-critical sequence is:
 
-1. Modularize the runtime enough for a maintainable release, prioritizing runner/state/status/UI seams over perfect architecture.
-2. Do a release-readiness docs pass.
-3. Run package validation and publish to npm.
+1. Finish release validation with `npm run check` after the runtime modularization pass.
+2. Do final package smoke testing and publish to npm.
 
-The event-driven runtime orchestrator recovery loop has been implemented, dogfooded, and hardened with explicit `mission-orchestrator` skill injection for recovery sessions. Initial mission planning has been split into the dedicated `mission-plan` skill.
+The event-driven runtime orchestrator recovery loop has been implemented, dogfooded, and hardened with explicit `mission-orchestrator` skill injection for recovery sessions. Initial mission planning has been split into the dedicated `mission-plan` skill. The release-critical modularization pass has extracted runner lock management, runtime recovery dispatch, status formatting, and Mission Control UI glue into focused modules while preserving existing public commands, tool names, and artifact paths.
 
 Everything after that is polish, hardening, or advanced capability.
 
@@ -242,7 +241,9 @@ Goal: make the existing extension safer to modify and easier to release without 
 
 ### 0.1 Modularize the runtime
 
-`extensions/missions/runtime-extension.ts` is currently too large. Split it into focused modules. The first foundation pass has established the seam by extracting low-risk pure helpers for paths, settings, JSON IO, and event logs into `extensions/missions/core/`; future work should continue with artifacts, runner, UI, tools, and commands without changing public command/tool names or the mission artifact layout.
+Status: release-critical pass complete. `extensions/missions/runtime-extension.ts` remains the compatibility entrypoint and command/tool registration coordinator, but the highest-risk runtime seams now live in focused modules: core helpers and view models under `extensions/missions/core/`, runner lock helpers in `extensions/missions/runner/locks.ts`, recovery packet/orchestrator dispatch helpers in `extensions/missions/runner/recovery.ts`, status text formatting in `extensions/missions/status/formatting.ts`, and Mission Control rendering/input glue in `extensions/missions/ui/mission-control.ts`.
+
+Post-release cleanup should continue shrinking `runtime-extension.ts` by extracting artifact schema/handoff helpers, runner command/execution state transitions, and command/tool registration modules without changing public command/tool names or the mission artifact layout.
 
 Suggested structure:
 
@@ -280,7 +281,7 @@ extensions/missions/
 
 Acceptance criteria:
 
-- No single runtime module should remain responsible for UI, runner, artifact parsing, command registration, and state recovery at once.
+- No single runtime module should remain responsible for UI, runner, artifact parsing, command registration, and state recovery at once. Release note: the compatibility entrypoint still coordinates several of these responsibilities, but lock/recovery/status/UI implementation details have been separated enough for the initial public release.
 - Existing commands/tools continue to work.
 - Current validation scripts still pass.
 

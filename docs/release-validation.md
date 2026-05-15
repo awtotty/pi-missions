@@ -19,14 +19,15 @@ Publication loads the built extension entrypoint declared in `package.json` (`di
 
 ## Current modularization seam
 
-The first runtime split has extracted low-risk pure helpers into `extensions/missions/core/`:
+The release-critical runtime split now has focused modules around the highest-risk runtime responsibilities while preserving public commands, tool names, and mission artifact paths:
 
-- `paths.ts` for mission root/id/path helpers.
-- `settings.ts` for role model defaults and settings parsing.
-- `json.ts` for JSON file IO helpers.
-- `events.ts` for event-log append/tail helpers.
+- `extensions/missions/core/` contains shared pure/runtime-adjacent helpers such as mission paths, JSON IO, settings, event logs, session records, and the Mission Control view model.
+- `extensions/missions/runner/locks.ts` owns runner lock paths, stale-lock detection, acquisition, heartbeat updates, and release helpers.
+- `extensions/missions/runner/recovery.ts` owns recovery packet writing, runtime orchestrator recovery prompt construction, block formatting, hidden `mission-orchestrator` skill injection, and recovery dispatch helpers.
+- `extensions/missions/status/formatting.ts` owns `/missions status` and `mission_status` text formatting helpers.
+- `extensions/missions/ui/mission-control.ts` owns Mission Control rendering/input glue and read-only overview/detail behavior.
 
-Future modularization remains deliberately scoped out of this foundation pass. High-value next seams are artifact schema/handoff modules, runner command/execution/lock/recovery modules, Mission Control UI panes/input/widget modules, and command/tool registration modules. Preserve current command names, tool names, and artifact layout while extracting those seams.
+`extensions/missions/runtime-extension.ts` remains the compatibility entrypoint and command/tool registration coordinator for this release. Post-release cleanup should continue extracting artifact schema/handoff helpers, runner command/execution state transitions, and command/tool registration seams from that file without changing public command names, tool names, or the mission artifact layout.
 
 ## Runtime orchestrator recovery loop
 
