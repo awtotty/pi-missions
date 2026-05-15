@@ -25,33 +25,42 @@ pi-missions intentionally favors sequential writes, inspectable artifacts, and r
 From npm, once published:
 
 ```bash
-pi install pi-missions
+pi install npm:@awtotty/pi-missions
 ```
-
-For local development:
-
-```bash
-pi install -l /workspace/pi-missions
-# or one-off:
-pi -e /workspace/pi-missions
-```
-
-After local edits, run `npm run build` and restart pi. `/reload` may not fully refresh extension runtime code.
 
 ## Quick start
 
+Start a mission planning conversation:
+
 ```text
-/missions build a settings UI for project X
+/missions
 ```
 
-Typical flow:
+Then chat normally in the current/main chat session:
 
-1. Plan in the current/main chat session: goal, assumptions, non-goals, milestones, features, and validation contract.
-2. Review the saved plan.
-3. Start execution with `/missions run` or `mission_start_execution` after explicit confirmation.
-4. Monitor with `/missions status` or `/mission-control`.
-5. If a worker or validator blocks, the runner writes recovery artifacts and triggers the mission's runtime orchestrator session.
-6. Intervene from main chat only when product decisions, credentials, tradeoffs, or explicit overrides are needed.
+```text
+I want to add a settings UI for project X.
+Split it into safe milestones.
+Make validation strict around persistence and keyboard navigation.
+Save the plan.
+Start it.
+```
+
+Execution starts only after explicit confirmation. During execution, keep using main chat as the human command, question, and override channel:
+
+```text
+Status update.
+Pause after current.
+Why is it blocked?
+Turn that validator finding into repair work.
+Resume when safe.
+```
+
+Mission Control is optional read-only monitoring:
+
+```text
+/mission-control
+```
 
 ## Commands
 
