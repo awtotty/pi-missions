@@ -510,18 +510,53 @@ function missionMilestones(mission: MissionState): MissionMilestone[] {
 	return [];
 }
 
+function mergeMissionFeatureState(primary: MissionFeature, secondary: MissionFeature): MissionFeature {
+	const statusRank: Record<ItemStatus, number> = { pending: 0, failed: 1, running: 2, skipped: 3, complete: 4 };
+	const status = statusRank[secondary.status] > statusRank[primary.status] ? secondary.status : primary.status;
+	return {
+		...primary,
+		...secondary,
+		status,
+		runId: secondary.runId ?? primary.runId,
+		validationRunId: secondary.validationRunId ?? primary.validationRunId,
+		userTestingRunId: secondary.userTestingRunId ?? primary.userTestingRunId,
+		reviewerRunIds: secondary.reviewerRunIds ?? primary.reviewerRunIds,
+		commit: secondary.commit ?? primary.commit,
+		userTestingPending: secondary.userTestingPending ?? primary.userTestingPending,
+		reviewerPending: secondary.reviewerPending ?? primary.reviewerPending,
+	};
+}
+
+function syncMissionFeatureCopies(mission: MissionState): MissionState {
+	if (!Array.isArray(mission.milestones) || mission.milestones.length === 0) return mission;
+	const mergedById = new Map<string, MissionFeature>();
+	for (const feature of mission.features ?? []) mergedById.set(feature.id, feature);
+	for (const milestone of mission.milestones) {
+		for (const feature of milestone.features) {
+			const existing = mergedById.get(feature.id);
+			mergedById.set(feature.id, existing ? mergeMissionFeatureState(existing, feature) : feature);
+		}
+	}
+	mission.milestones = mission.milestones.map((milestone) => {
+		const features = milestone.features.map((feature) => mergedById.get(feature.id) ?? feature);
+		const status: ItemStatus = features.every((feature) => feature.status === "complete" || feature.status === "skipped")
+			? "complete"
+			: features.some((feature) => feature.status === "running")
+				? "running"
+				: features.some((feature) => feature.status === "failed")
+					? "failed"
+					: "pending";
+		return { ...milestone, status, features };
+	});
+	mission.features = mission.milestones.flatMap((milestone) => milestone.features);
+	return mission;
+}
+
 function normalizeMissionShape(mission: MissionState): MissionState {
 	if (!Array.isArray(mission.features) && Array.isArray(mission.milestones)) {
 		mission.features = mission.milestones.flatMap((milestone) => milestone.features);
 	}
-	if (Array.isArray(mission.features) && Array.isArray(mission.milestones)) {
-		const featureById = new Map(mission.features.map((feature) => [feature.id, feature]));
-		mission.milestones = mission.milestones.map((milestone) => ({
-			...milestone,
-			features: milestone.features.map((feature) => featureById.get(feature.id) ?? feature),
-		}));
-	}
-	return mission;
+	return syncMissionFeatureCopies(mission);
 }
 
 function normalizeMissionForRuntime(cwd: string, mission: MissionState): MissionState {
@@ -534,6 +569,7 @@ function loadMission(cwd: string, id: string): MissionState {
 }
 
 function saveMission(cwd: string, mission: MissionState): void {
+	normalizeMissionShape(mission);
 	mission.updatedAt = nowIso();
 	writeJson(path.join(missionDir(cwd, mission.id), "mission.json"), mission);
 	const existingOrchestrator = readOrchestratorSessionRecord(cwd, mission.id);

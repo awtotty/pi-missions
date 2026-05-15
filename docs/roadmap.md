@@ -2,7 +2,7 @@
 
 This roadmap describes how `pi-missions` should evolve from the current early extension into a production-ready, Factory Missions-aligned pi extension.
 
-`pi-missions` is not trying to become GSD. GSD is useful as a reference for packaging, tests, and release discipline, but the product target is Factory Missions for Droid: a planning-heavy, long-running orchestration system where a user approves scope, monitors execution in Mission Control, and intervenes as a project manager while workers and validators make progress through git-backed handoffs.
+`pi-missions` is inspired by the product target Factory Missions for Droid: a planning-heavy, long-running orchestration system where a user approves scope, monitors execution in Mission Control, and intervenes as a project manager while workers and validators make progress through git-backed handoffs.
 
 ## North star
 
