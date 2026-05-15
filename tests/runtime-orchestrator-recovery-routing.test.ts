@@ -11,6 +11,23 @@ function functionBody(name: string): string {
 	return runtimeSource.slice(start, next === -1 ? undefined : next);
 }
 
+function sourceBetween(startToken: string, endToken: string): string {
+	const start = runtimeSource.indexOf(startToken);
+	expect(start).toBeGreaterThanOrEqual(0);
+	const end = runtimeSource.indexOf(endToken, start + startToken.length);
+	expect(end).toBeGreaterThan(start);
+	return runtimeSource.slice(start, end);
+}
+
+function expectOrdered(source: string, tokens: string[]): void {
+	let cursor = -1;
+	for (const token of tokens) {
+		const next = source.indexOf(token, cursor + 1);
+		expect(next, `missing ordered token after ${cursor}: ${token}`).toBeGreaterThan(cursor);
+		cursor = next;
+	}
+}
+
 describe("runtime orchestrator recovery routing", () => {
 	it("routes recoverable blocks to the dedicated runtime orchestrator session with a triggered turn when controls exist", () => {
 		const dispatch = functionBody("dispatchMissionBlockRecovery");
@@ -21,6 +38,23 @@ describe("runtime orchestrator recovery routing", () => {
 		expect(dispatch).toContain("dedicated-runtime-orchestrator-session");
 		expect(dispatch).toContain("triggerTurn: true");
 		expect(dispatch).toContain("runtime_orchestrator_recovery_dispatched");
+	});
+
+	it("reuses an existing official orchestrator session before creating a new runtime session", () => {
+		const dispatch = functionBody("dispatchMissionBlockRecovery");
+		expect(dispatch).toContain("readOrchestratorSessionRecord(mission.cwd, mission.id)");
+		expectOrdered(dispatch, [
+			"const existingSessionPath = existing?.sessionPath && fs.existsSync(existing.sessionPath) ? existing.sessionPath : undefined;",
+			"if (existingSessionPath)",
+			"await ctx.switchSession(existingSessionPath",
+			"reusedSession: true",
+			"return;",
+			"await ctx.newSession",
+			"writeOrchestratorSessionRecord(mission.cwd, mission.id",
+			"reusedSession: false",
+		]);
+		expect(dispatch).toContain("Mission runtime orchestrator:");
+		expect(dispatch).toContain("buildOrchestratorState(mission.cwd, mission");
 	});
 
 	it("keeps main chat as display-only visibility and fallback instead of default recovery execution", () => {
@@ -44,7 +78,7 @@ describe("runtime orchestrator recovery routing", () => {
 	});
 
 	it("dispatches only after blocking worker/validator units have returned and runner status is being cleared", () => {
-		const runner = runtimeSource.slice(runtimeSource.indexOf("class MissionExecutionRunner"), runtimeSource.indexOf("async function runMission"));
+		const runner = sourceBetween("class MissionExecutionRunner", "async function runMission");
 		expect(runner).toContain("const workerBlock = await runWorker");
 		expect(runner).toContain("const validatorBlock = await runValidator");
 		expect(runner).toContain("const userTestingBlock = await runMilestoneUserTestingValidator");
@@ -59,5 +93,42 @@ describe("runtime orchestrator recovery routing", () => {
 		expect(runWorker).toContain("clearActiveRunOwnership(mission);\n\tsaveMission(mission.cwd, mission);");
 		const runValidator = runtimeSource.slice(runtimeSource.indexOf("async function runValidator"), runtimeSource.indexOf("function ensureUserTestingFailureReportArtifacts"));
 		expect(runValidator).toContain("clearActiveRunOwnership(mission);\n\tsaveMission(mission.cwd, mission);");
+	});
+
+	it("routes validation failures and no-runnable-work blocks to recovery", () => {
+		const runner = sourceBetween("class MissionExecutionRunner", "async function runMission");
+		expectOrdered(runner, [
+			"const validatorBlock = await runValidator(this.ctx, mission, milestone, this.childSignal);",
+			"clearMissionRunStatus(this.ctx);",
+			"if (validatorBlock) await dispatchMissionBlockRecovery(this.ctx, this.pi, mission, validatorBlock);",
+		]);
+		expectOrdered(runner, [
+			"const pending = incompleteFeatures(mission);",
+			"transitionMissionNoRunnablePendingWorkToBlocked(mission);",
+			"const block = writeNoRunnablePendingWorkReport(runDir, mission, pending);",
+			"persistMissionBlock(this.dir, mission, block, \"no_runnable_pending_work\");",
+			"clearMissionRunStatus(this.ctx);",
+			"await dispatchMissionBlockRecovery(this.ctx, this.pi, mission, block);",
+		]);
+		expect(functionBody("classifyValidatorBlock")).toContain("return \"validator_report_failed\";");
+		expect(functionBody("writeNoRunnablePendingWorkReport")).toContain("unresolved-pending-work.json");
+	});
+
+	it("keeps Mission Control read-only without recovery mutation controls", () => {
+		const dispatch = sourceBetween("function dispatchMissionControlInput", "async function openMissionControl");
+		for (const forbidden of [
+			"executeRunnerCommand",
+			"clearCompletedMissions",
+			"mission_start_execution",
+			"mission_runner_command",
+			"sendUserMessage",
+			"ctx.ui.confirm",
+			"pause-after-current",
+			"cancel-current",
+			"mission_write_plan",
+		]) {
+			expect(dispatch).not.toContain(forbidden);
+		}
+		expect(runtimeSource).toContain("Mission Control is read-only");
 	});
 });
