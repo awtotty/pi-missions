@@ -493,8 +493,8 @@ function isFeatureOnlyMission(mission: MissionState): boolean {
 }
 
 function missionFeatureList(mission: MissionState): MissionFeature[] {
-	if (Array.isArray(mission.features)) return mission.features;
-	return Array.isArray(mission.milestones) ? mission.milestones.flatMap((milestone) => milestone.features) : [];
+	if (Array.isArray(mission.milestones) && mission.milestones.length > 0) return mission.milestones.flatMap((milestone) => milestone.features);
+	return Array.isArray(mission.features) ? mission.features : [];
 }
 
 function missionMilestones(mission: MissionState): MissionMilestone[] {
@@ -548,20 +548,24 @@ function syncMissionFeatureCopies(mission: MissionState): MissionState {
 					: "pending";
 		return { ...milestone, status, features };
 	});
-	mission.features = mission.milestones.flatMap((milestone) => milestone.features);
+	delete mission.features;
 	return mission;
 }
 
 function normalizeMissionShape(mission: MissionState): MissionState {
-	if (!Array.isArray(mission.features) && Array.isArray(mission.milestones)) {
-		mission.features = mission.milestones.flatMap((milestone) => milestone.features);
-	}
 	return syncMissionFeatureCopies(mission);
 }
 
+function missionForPersistence(mission: MissionState): MissionState {
+	const persisted = normalizeMissionShape({ ...mission, milestones: mission.milestones?.map((milestone) => ({ ...milestone, features: milestone.features.map((feature) => ({ ...feature })) })) });
+	if (Array.isArray(persisted.milestones) && persisted.milestones.length > 0) delete persisted.features;
+	return persisted;
+}
+
 function normalizeMissionForRuntime(cwd: string, mission: MissionState): MissionState {
-	if (mission.status === "planning" && hasRunnablePersistedPlan(cwd, mission)) return { ...mission, status: "planned" };
-	return mission;
+	const normalized = normalizeMissionShape(mission);
+	if (normalized.status === "planning" && hasRunnablePersistedPlan(cwd, normalized)) return { ...normalized, status: "planned" };
+	return normalized;
 }
 
 function loadMission(cwd: string, id: string): MissionState {
@@ -571,7 +575,7 @@ function loadMission(cwd: string, id: string): MissionState {
 function saveMission(cwd: string, mission: MissionState): void {
 	normalizeMissionShape(mission);
 	mission.updatedAt = nowIso();
-	writeJson(path.join(missionDir(cwd, mission.id), "mission.json"), mission);
+	writeJson(path.join(missionDir(cwd, mission.id), "mission.json"), missionForPersistence(mission));
 	const existingOrchestrator = readOrchestratorSessionRecord(cwd, mission.id);
 	if (existingOrchestrator && existingOrchestrator.active !== isActiveMissionStatus(mission.status)) {
 		writeOrchestratorSessionRecord(cwd, mission.id, {
@@ -4058,9 +4062,9 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 				const globalModels = readMissionGlobalSettings(ctx.cwd).models;
 				for (const role of MISSION_ROLES) if (mission.models[role] === "default") mission.models[role] = globalModels[role];
 			}
-			writeJson(path.join(dir, "mission.json"), mission);
+			writeJson(path.join(dir, "mission.json"), missionForPersistence(mission));
 			fs.writeFileSync(path.join(dir, "plan/objective.md"), params.objectiveMd);
-			writeJson(path.join(dir, "plan/features.json"), mission.features ?? params.featuresJson);
+			writeJson(path.join(dir, "plan/features.json"), missionFeatureList(mission).length > 0 ? missionFeatureList(mission) : params.featuresJson);
 			writeJson(path.join(dir, "plan/validation-contract.json"), params.validationContractJson);
 			fs.writeFileSync(path.join(dir, "plan/validation-contract.md"), params.validationContractMd);
 			fs.writeFileSync(path.join(dir, "skills/worker/SKILL.md"), params.workerSkillMd);
