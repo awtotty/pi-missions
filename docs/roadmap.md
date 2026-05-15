@@ -1,8 +1,8 @@
 # pi-missions roadmap
 
-This roadmap describes how `pi-missions` should evolve from the current early extension into a production-ready, Factory Missions-aligned pi extension.
+This roadmap describes how `pi-missions` should evolve from the current early extension into a production-ready pi extension for long-running, milestone-based coding missions.
 
-`pi-missions` is inspired by the product target Factory Missions for Droid: a planning-heavy, long-running orchestration system where a user approves scope, monitors execution in Mission Control, and intervenes as a project manager while workers and validators make progress through git-backed handoffs.
+`pi-missions` is inspired by public descriptions of [Factory Missions for Droid](https://factory.ai/news/missions): a planning-heavy orchestration model where a user approves scope, monitors execution, and intervenes as a project manager while workers and validators make progress through git-backed handoffs. pi-missions is independent, not affiliated with Factory, and was built without access to Factory Missions source code.
 
 ## Headline roadmap
 
@@ -18,12 +18,12 @@ Legend: `[done]` completed · `[partial]` partly implemented, needs hardening ·
 - `[done]` Dedicated mission orchestrator recovery loop
 - `[done]` Clean skill split: `mission-plan` for planning, `mission-orchestrator` for runtime recovery
 - `[done]` Runtime orchestrator skill injection for recovery sessions
-- `[next]` Runtime modularization: runner, state transitions, status, and UI panes
+- `[done]` Release-critical runtime modularization: runner locks, recovery, status, and Mission Control UI seams
 - `[next]` Release-readiness docs pass
 - `[next]` npm pack and public release
 - `[partial]` Blocked-state recovery packets and guidance
 - `[partial]` Mission lifecycle, recovery, and release-validation docs
-- `[partial]` Production packaging smoke checks
+- `[todo]` Production packaging smoke checks
 - `[todo]` Restart verification and stale status cleanup
 - `[todo]` Planning readiness checklist and run estimates
 - `[todo]` Repair provenance for validation-generated follow-up work
@@ -109,7 +109,7 @@ The extension already has a strong foundation:
 - Event-driven runtime orchestrator recovery that routes recoverable blocks to a dedicated session while main chat remains the human command/override channel.
 - Hidden `mission-orchestrator` skill injection before runtime recovery turns, matching the role-specific skill model used for workers and validators.
 
-The main gaps are not conceptual. They are about Factory alignment, robustness, product polish, and release engineering.
+The main gaps are not conceptual. They are about robustness, product polish, and release engineering.
 
 ## Completed roadmap work
 
@@ -185,11 +185,11 @@ Important observations from dogfooding:
 - Background mission execution while the main chat remains usable is a strong UX pattern and should be preserved as a core invariant.
 - Main-chat intervention works well as the practical “chat with orchestrator” experience: the user can ask for status, recovery, pause/resume, or plan changes while workers continue in the background.
 - Mission status and Mission Control can surface stale block information after recovery; stale status indicators are a high-priority quality issue.
-- Mission Control is currently too buggy and unhelpful to be the primary user cockpit. It needs a focused rework before deeper Factory-alignment features depend on it.
+- Mission Control is most useful as read-only observability. Control and intervention should remain in main chat, tools, or the runtime orchestrator session.
 
 ## Guiding principles
 
-1. **Factory alignment over workflow-DLS complexity**
+1. **Mission-first design over workflow-DLS complexity**
    - Keep the product centered on missions, milestones, workers, validators, git handoffs, and Mission Control.
    - Do not add a large workflow language unless it directly improves mission reliability.
 
@@ -325,13 +325,13 @@ Acceptance criteria:
 - `mission_write_plan` rejects structurally invalid mission plans with actionable errors.
 - Corrupted artifacts produce clear blocked-state metadata.
 
-## Phase 1: align core execution with Factory Missions
+## Phase 1: align core execution with milestone-driven missions
 
-Goal: make missions behave like Factory-style milestone-driven orchestration rather than only feature-by-feature execution.
+Goal: make missions behave like milestone-driven orchestration rather than only feature-by-feature execution.
 
 ### 1.1 Make milestones first-class
 
-Factory Missions use milestones to define validation frequency. `pi-missions` should do the same. The milestone-canonical persistence cutover is complete; the next step is the execution loop.
+Milestones define validation frequency. The milestone-canonical persistence cutover and execution loop are complete; remaining work is polish and richer planning/readiness support.
 
 Required behavior:
 
@@ -375,7 +375,7 @@ Acceptance criteria:
 
 ### 1.3 Add mission cost/duration estimates
 
-Use Factory's planning heuristic as a baseline:
+Use a simple planning heuristic as a baseline:
 
 ```text
 total runs ≈ #features + 2 * #milestones
@@ -383,7 +383,7 @@ total runs ≈ #features + 2 * #milestones
 
 Acceptance criteria:
 
-- Mission summaries show estimated worker, validator, reviewer, and user-testing runs.
+- Mission summaries show estimated worker, scrutiny-validator, and user-testing-validator runs.
 - Mission Control displays actual vs estimated runs.
 - Blocked/replanned missions update the estimate when follow-up work is added.
 
@@ -413,7 +413,7 @@ Acceptance criteria:
 
 ## Phase 2: rework Mission Control and status UX
 
-Goal: make Mission Control and mission status reliable, useful, and aligned with the main-chat orchestration model before building more advanced Factory-style behavior on top of them.
+Goal: make Mission Control and mission status reliable, useful, and aligned with the main-chat orchestration model before building more advanced mission behavior on top of them.
 
 Dogfooding showed that the best UX is not an embedded chat inside Mission Control. Mission Control should be observability only. A dedicated mission orchestrator session should keep execution moving, while main chat remains the human command/override channel with lightweight, current mission context.
 
@@ -516,7 +516,7 @@ Status: completed by `mission-milestone-only-schema-cutover`.
 
 Goal: remove duplicate feature state and make milestone grouping the single source of truth for execution, validation, status, recovery, and UI.
 
-Dogfooding exposed a serious defect: milestone feature state and top-level feature state can drift. This caused false `no_runnable_pending_work` blocks after successful validation retries. Since Factory-style validation cadence is milestone-based, `mission.milestones[].features` is canonical and top-level `mission.features` must not be persisted for new milestone missions.
+Dogfooding exposed a serious defect: milestone feature state and top-level feature state can drift. This caused false `no_runnable_pending_work` blocks after successful validation retries. Since validation cadence is milestone-based, `mission.milestones[].features` is canonical and top-level `mission.features` must not be persisted for new milestone missions.
 
 Completed behavior:
 
@@ -573,7 +573,7 @@ Acceptance criteria:
 
 ### 3.3 User-testing artifacts
 
-Factory emphasizes application navigation and human-like QA. `pi-missions` should support that where pi tooling allows it.
+User-testing validators should support application navigation and human-like QA where pi tooling allows it.
 
 Acceptance criteria:
 
@@ -613,7 +613,7 @@ Acceptance criteria:
 
 ### 4.2 Document and verify inheritance
 
-Factory Missions inherit MCP integrations, custom skills, hooks, custom droids, and project instructions. `pi-missions` needs an explicit pi equivalent.
+Missions should inherit pi/project configuration predictably, including MCP integrations, custom skills, hooks, provider/model settings, and project instructions.
 
 Acceptance criteria:
 
@@ -714,7 +714,7 @@ Acceptance criteria:
 - Package declares compatible pi versions.
 - Changelog is maintained.
 
-## Phase 6: advanced Factory-style capabilities
+## Phase 6: advanced mission capabilities
 
 These are optional after the core product is stable.
 

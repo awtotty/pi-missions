@@ -1,7 +1,7 @@
 {
   "name": "pi-missions",
   "version": "0.1.0",
-  "description": "Unofficial pi port of Factory-style long-running mission orchestration.",
+  "description": "Early pi extension for long-running, milestone-based coding missions inspired by Factory Missions.",
   "type": "module",
   "keywords": [
     "pi-package",
