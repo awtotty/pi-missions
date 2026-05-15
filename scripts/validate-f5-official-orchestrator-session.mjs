@@ -2,8 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
-const sourceFile = path.join(repoRoot, "extensions", "missions", "runtime-extension.ts");
-const source = fs.readFileSync(sourceFile, "utf8");
+const runtimeSourceFile = path.join(repoRoot, "extensions", "missions", "runtime-extension.ts");
+const sessionRecordsSourceFile = path.join(repoRoot, "extensions", "missions", "core", "session-records.ts");
+const source = [runtimeSourceFile, sessionRecordsSourceFile].map((file) => fs.readFileSync(file, "utf8")).join("\n");
 
 const checks = [
 	{

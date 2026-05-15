@@ -56,108 +56,21 @@ import {
 	type ValidationContractAssertion,
 } from "./runtime-types.js";
 import { formatGlobalModels, normalizeRoleModels, readMissionGlobalSettings, setGlobalModel } from "./core/settings.js";
+import {
+	childSessionRecordForRun,
+	nextChildAttemptNumber,
+	orchestratorSessionRecordFile,
+	parseRunOwnershipSessionId,
+	parseTranscriptSessionIdentity,
+	readChildSessionRegistry,
+	readOrchestratorSessionRecord,
+	upsertChildSessionRecord,
+	writeOrchestratorSessionRecord,
+} from "./core/session-records.js";
 import { computeRecoveryGatePlan } from "./recovery-gate.js";
 import { loadMissionControlViewModel, type MissionControlMissionView, type MissionControlOutputView, type MissionControlSectionView, type MissionControlViewModel } from "./core/mission-control-view-model.js";
 import { artifactValidationErrorSummary, validateMissionArtifact } from "./runtime-artifact-schemas.js";
-
-function orchestratorSessionRecordFile(cwd: string, missionId: string): string {
-	return path.join(missionDir(cwd, missionId), "orchestrator-session.json");
-}
-
-function childSessionRegistryFile(cwd: string, missionId: string): string {
-	return path.join(missionDir(cwd, missionId), "child-sessions.json");
-}
-
-function readChildSessionRegistry(cwd: string, missionId: string): MissionChildSessionRegistry {
-	const file = childSessionRegistryFile(cwd, missionId);
-	if (!fs.existsSync(file)) return { schemaVersion: 1, updatedAt: nowIso(), records: [] };
-	try {
-		const parsed = readJson<MissionChildSessionRegistry>(file);
-		if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.records)) return { schemaVersion: 1, updatedAt: nowIso(), records: [] };
-		return { schemaVersion: 1, updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : nowIso(), records: parsed.records.filter((item) => item && typeof item === "object") };
-	} catch {
-		return { schemaVersion: 1, updatedAt: nowIso(), records: [] };
-	}
-}
-
-function writeChildSessionRegistry(cwd: string, missionId: string, records: MissionChildSessionRecord[]): void {
-	writeJson(childSessionRegistryFile(cwd, missionId), { schemaVersion: 1, updatedAt: nowIso(), records });
-}
-
-function parseRunOwnershipSessionId(runDir: string): string | undefined {
-	const file = path.join(runDir, "run-ownership.json");
-	if (!fs.existsSync(file)) return undefined;
-	try {
-		const ownership = readJson<{ parentSessionMarker?: unknown }>(file);
-		if (typeof ownership.parentSessionMarker === "string" && ownership.parentSessionMarker.trim()) return ownership.parentSessionMarker;
-	} catch {
-		return undefined;
-	}
-	return undefined;
-}
-
-function parseTranscriptSessionIdentity(transcriptFile: string): { sessionId?: string; sessionPath?: string } {
-	if (!fs.existsSync(transcriptFile)) return {};
-	try {
-		const content = fs.readFileSync(transcriptFile, "utf8");
-		for (const line of content.split("\n")) {
-			if (!line.trim()) continue;
-			const parsed = JSON.parse(line) as { type?: unknown; id?: unknown; sessionPath?: unknown; path?: unknown };
-			if (parsed.type !== "session") continue;
-			const sessionId = typeof parsed.id === "string" && parsed.id.trim() ? parsed.id : undefined;
-			const sessionPath = typeof parsed.sessionPath === "string" && parsed.sessionPath.trim()
-				? parsed.sessionPath
-				: (typeof parsed.path === "string" && parsed.path.trim() ? parsed.path : undefined);
-			return { sessionId, sessionPath };
-		}
-	} catch {
-		return {};
-	}
-	return {};
-}
-
-function nextChildAttemptNumber(cwd: string, missionId: string, role: "worker" | "validator", featureId: string | undefined, validatorMode?: MissionValidatorMode): number {
-	const registry = readChildSessionRegistry(cwd, missionId);
-	return registry.records.filter((record) => record.role === role && record.featureId === featureId && (!validatorMode || record.validatorMode === validatorMode)).length + 1;
-}
-
-function upsertChildSessionRecord(cwd: string, missionId: string, record: MissionChildSessionRecord): void {
-	const registry = readChildSessionRegistry(cwd, missionId);
-	const next = registry.records.filter((item) => item.runId !== record.runId);
-	next.push(record);
-	writeChildSessionRegistry(cwd, missionId, next.sort((a, b) => a.startedAt.localeCompare(b.startedAt)));
-}
-
-function childSessionRecordForRun(run: MissionRunContext): MissionChildSessionRecord | undefined {
-	const missionPath = path.dirname(path.dirname(run.runDir));
-	const file = path.join(missionPath, "child-sessions.json");
-	if (!fs.existsSync(file)) return undefined;
-	try {
-		const parsed = readJson<MissionChildSessionRegistry>(file);
-		if (!Array.isArray(parsed?.records)) return undefined;
-		return parsed.records.find((item) => item.runId === run.runId);
-	} catch {
-		return undefined;
-	}
-}
-
-function readOrchestratorSessionRecord(cwd: string, missionId: string): MissionOrchestratorSessionRecord | undefined {
-	const file = orchestratorSessionRecordFile(cwd, missionId);
-	if (!fs.existsSync(file)) return undefined;
-	try {
-		const record = readJson<MissionOrchestratorSessionRecord>(file);
-		if (record?.schemaVersion !== 1 || record.missionId !== missionId || typeof record.sessionPath !== "string" || !record.sessionPath.trim()) return undefined;
-		return record;
-	} catch {
-		return undefined;
-	}
-}
-
-function writeOrchestratorSessionRecord(cwd: string, missionId: string, value: Omit<MissionOrchestratorSessionRecord, "schemaVersion" | "missionId">): MissionOrchestratorSessionRecord {
-	const record: MissionOrchestratorSessionRecord = { schemaVersion: 1, missionId, ...value };
-	writeJson(orchestratorSessionRecordFile(cwd, missionId), record);
-	return record;
-}
+import { ACTIVE_MISSION_CHILD_ABORTERS, ACTIVE_MISSION_RUNS, activeMissionRunKey, isMissionRunActive, tryCancelCurrentChild } from "./runner/active-runs.js";
 
 function sessionIdentity(ctx: ExtensionContext): { sessionId: string; sessionPath: string } | undefined {
 	const sessionPath = ctx.sessionManager.getSessionFile() || "";
@@ -259,32 +172,11 @@ function applyPauseAfterCurrentIfRequested(ctx: ExtensionContext, missionId: str
 }
 
 const EXECUTION_STARTED_EVENT_TYPES = new Set(["mission_execution_started", "worker_started", "validator_started", "mission_block_recorded", "mission_complete"]);
-const ACTIVE_MISSION_RUNS = new Set<string>();
-const ACTIVE_MISSION_CHILD_ABORTERS = new Map<string, AbortController>();
 const RUNNER_HEARTBEAT_INTERVAL_MS = 5_000;
 const RUNNER_HEARTBEAT_TIMEOUT_MS = 20_000;
 const RUNNER_LOCK_GUARD_TIMEOUT_MS = 30_000;
 const RUNNER_LOCK_GUARD_WAIT_MS = 2_000;
 const RUNNER_LOCK_GUARD_RETRY_DELAY_MS = 50;
-
-function activeMissionRunKey(cwd: string, missionId: string): string {
-	return `${cwd}\u0000${missionId}`;
-}
-
-function isMissionRunActive(cwd: string, missionId: string): boolean {
-	return ACTIVE_MISSION_RUNS.has(activeMissionRunKey(cwd, missionId));
-}
-
-function activeMissionChildAbortController(cwd: string, missionId: string): AbortController | undefined {
-	return ACTIVE_MISSION_CHILD_ABORTERS.get(activeMissionRunKey(cwd, missionId));
-}
-
-function tryCancelCurrentChild(cwd: string, missionId: string): boolean {
-	const controller = activeMissionChildAbortController(cwd, missionId);
-	if (!controller || controller.signal.aborted) return false;
-	controller.abort();
-	return true;
-}
 
 function runnerLockFile(cwd: string, missionId: string): string {
 	return path.join(missionDir(cwd, missionId), "runner-lock.json");
