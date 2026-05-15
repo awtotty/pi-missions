@@ -14,14 +14,12 @@ import {
 	isMissionRole,
 	missionDir,
 	missionRoot,
-	normalizeRoleModels,
 	nowIso,
 	parentSessionMarker,
 	readJson,
 	writeJson,
 } from "./runtime-core.js";
 import {
-	DEFAULT_ROLE_MODELS,
 	LEGACY_ACTIVE_PLANNING_ENTRY,
 	MISSION_ROLES,
 	ORCHESTRATOR_STATE_ENTRY,
@@ -37,7 +35,6 @@ import {
 	type MissionChildSessionRegistry,
 	type MissionCommandResult,
 	type MissionFeature,
-	type MissionGlobalSettings,
 	type MissionMilestone,
 	type MissionOrchestratorSessionRecord,
 	type MissionOrchestratorSessionState,
@@ -55,6 +52,7 @@ import {
 	type Status,
 	type ValidationContractAssertion,
 } from "./runtime-types.js";
+import { formatGlobalModels, normalizeRoleModels, readMissionGlobalSettings, setGlobalModel } from "./core/settings.js";
 import { computeRecoveryGatePlan } from "./recovery-gate.js";
 import { artifactValidationErrorSummary, validateMissionArtifact } from "./runtime-artifact-schemas.js";
 
@@ -703,44 +701,10 @@ function writeClearedMissions(cwd: string, state: ClearedMissionsState): void {
 	writeJson(clearedMissionsFile(cwd), { ...state, schemaVersion: 1, updatedAt: nowIso(), clearedMissionIds: [...new Set(state.clearedMissionIds)].sort() });
 }
 
-function readMissionGlobalSettings(cwd: string): MissionGlobalSettings {
-	const file = globalSettingsFile(cwd);
-	if (!fs.existsSync(file)) return { schemaVersion: 1, updatedAt: nowIso(), models: { ...DEFAULT_ROLE_MODELS } };
-	const parsed = readJson<Partial<MissionGlobalSettings>>(file);
-	return {
-		schemaVersion: 1,
-		updatedAt: parsed.updatedAt || nowIso(),
-		models: normalizeRoleModels(parsed.models),
-	};
-}
-
-function writeMissionGlobalSettings(cwd: string, settings: MissionGlobalSettings): void {
-	writeJson(globalSettingsFile(cwd), { schemaVersion: 1, updatedAt: nowIso(), models: normalizeRoleModels(settings.models) });
-}
-
 function resolveRoleModel(cwd: string, mission: MissionState, role: MissionRole): string {
 	const missionModel = mission.models?.[role];
 	if (missionModel && missionModel !== "default") return missionModel;
 	return readMissionGlobalSettings(cwd).models[role];
-}
-
-function formatGlobalModels(cwd: string): string {
-	const settings = readMissionGlobalSettings(cwd);
-	return [
-		"Global mission role model defaults:",
-		...MISSION_ROLES.map((role) => `- ${role}: ${settings.models[role]}`),
-		`Settings file: ${globalSettingsFile(cwd)}`,
-		"",
-		"Set with: /missions models <role> <model> (or /missions models set <role> <model>)",
-		"Use 'default' to inherit pi's default model for a role.",
-	].join("\n");
-}
-
-function setGlobalModel(cwd: string, role: MissionRole, model: string): string {
-	const settings = readMissionGlobalSettings(cwd);
-	settings.models[role] = model.trim() || "default";
-	writeMissionGlobalSettings(cwd, settings);
-	return formatGlobalModels(cwd);
 }
 
 function findMissionModelReference(modelReference: string, models: Model<Api>[]): Model<Api> | undefined {
