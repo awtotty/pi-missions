@@ -1,7 +1,7 @@
 {
   "name": "pi-missions",
   "version": "0.1.0",
-  "description": "Early pi extension for long-running, milestone-based coding missions inspired by Factory Missions.",
+  "description": "Pi extension for long-running, milestone-based coding missions.",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -15,7 +15,6 @@
     "LICENSE",
     "dist/",
     "skills/",
-    "prompts/",
     "docs/"
   ],
   "peerDependencies": {
@@ -36,9 +35,6 @@
     ],
     "skills": [
       "./skills"
-    ],
-    "prompts": [
-      "./prompts"
     ]
   },
   "scripts": {
