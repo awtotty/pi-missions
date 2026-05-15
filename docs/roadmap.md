@@ -16,6 +16,8 @@ Legend: `[done]` completed · `[partial]` partly implemented, needs hardening ·
 - `[done]` Milestone-level deterministic run loop
 - `[done]` Three-role model: orchestrator, worker, validator
 - `[done]` Dedicated mission orchestrator recovery loop
+- `[done]` Clean skill split: `mission-plan` for planning, `mission-orchestrator` for runtime recovery
+- `[done]` Runtime orchestrator skill injection for recovery sessions
 - `[next]` Runtime modularization: runner, state transitions, status, and UI panes
 - `[next]` Release-readiness docs pass
 - `[next]` npm pack and public release
@@ -36,10 +38,11 @@ Legend: `[done]` completed · `[partial]` partly implemented, needs hardening ·
 
 Goal: get `pi-missions` to a publicly useful npm release today. The remaining release-critical sequence is:
 
-1. Harden and dogfood the completed event-driven runtime orchestrator recovery loop.
-2. Modularize the runtime enough for a maintainable release, prioritizing runner/state/status/UI seams over perfect architecture.
-3. Do a release-readiness docs pass.
-4. Run package validation and publish to npm.
+1. Modularize the runtime enough for a maintainable release, prioritizing runner/state/status/UI seams over perfect architecture.
+2. Do a release-readiness docs pass.
+3. Run package validation and publish to npm.
+
+The event-driven runtime orchestrator recovery loop has been implemented, dogfooded, and hardened with explicit `mission-orchestrator` skill injection for recovery sessions. Initial mission planning has been split into the dedicated `mission-plan` skill.
 
 Everything after that is polish, hardening, or advanced capability.
 
@@ -47,7 +50,7 @@ Everything after that is polish, hardening, or advanced capability.
 
 The runtime mission orchestrator is distinct from initial planning and from main chat:
 
-- Planning happens in the current/main user session before execution starts.
+- Planning happens in the current/main user session before execution starts, using the `mission-plan` skill.
 - The runtime mission orchestrator is a dedicated mission session created or assigned for execution.
 - It is event-driven and turn-based, not always-on while workers/validators run.
 - It runs only at orchestration points such as validation failure, worker block, no-runnable-work, ambiguous/stale state, retry-limit exceeded, or explicit user redirect.
@@ -105,6 +108,7 @@ The extension already has a strong foundation:
 - Per-role model defaults.
 - Typecheck and custom validation scripts.
 - Event-driven runtime orchestrator recovery that routes recoverable blocks to a dedicated session while main chat remains the human command/override channel.
+- Hidden `mission-orchestrator` skill injection before runtime recovery turns, matching the role-specific skill model used for workers and validators.
 
 The main gaps are not conceptual. They are about Factory alignment, robustness, product polish, and release engineering.
 
@@ -347,7 +351,7 @@ Acceptance criteria:
 
 ### 1.2 Add planning readiness checks
 
-Before execution, the orchestrator should present a plan that is visibly ready.
+Before execution, the `mission-plan` skill should present a plan that is visibly ready.
 
 Plan readiness checklist:
 
@@ -383,6 +387,8 @@ Acceptance criteria:
 - Blocked/replanned missions update the estimate when follow-up work is added.
 
 ### 1.4 Implement dedicated orchestrator validation-failure handoff
+
+Status: mostly complete. The milestone validation failure handoff, per-milestone counters/default limit, runtime recovery packets, dedicated runtime orchestrator routing, and explicit runtime `mission-orchestrator` skill injection are implemented. Remaining polish is repair-work provenance and richer Mission Control display of validation-generated follow-up work.
 
 Validation failures should produce structured intervention by the mission's dedicated orchestrator session, not an automatic worker/validator-driven retry loop and not mandatory manual main-chat recovery.
 
@@ -457,6 +463,8 @@ Acceptance criteria:
 - Compact/narrow layouts remain usable.
 
 ### 2.3 Event-driven runtime orchestrator recovery loop
+
+Status: complete for release. Recoverable blocks route to a dedicated runtime orchestrator session, recovery context is sent after the blocking child/unit returns, main chat remains display/fallback/human override, and the `mission-orchestrator` skill is injected as hidden context before triggering the recovery turn.
 
 Rather than making an embedded Mission Control chat the primary feature or relying on ad-hoc manual main-chat recovery, make the dedicated runtime mission orchestrator session responsible for keeping execution moving after validation failures and recoverable blocks.
 
@@ -775,15 +783,14 @@ Acceptance criteria:
 
 Recommended implementation order:
 
-1. Harden the event-driven runtime orchestrator recovery loop for validation failures and recoverable blocks.
-2. Continue modularizing runtime areas needed for release: runner/state transitions, locks, status formatting, activity view models, and UI panes.
-3. Do a release-readiness docs pass covering quickstart, lifecycle, recovery, Mission Control, configuration, and release validation.
-4. Run package validation, `npm pack` smoke testing, and publish to npm.
-5. After release, add planning readiness checklist and run estimates.
-6. After release, add user settings for role models and per-milestone validation failure caps.
-7. After release, add mission token/cost tracking and budget limits.
-8. After release, add explicit repair provenance for orchestrator-generated fix work from validation findings.
-9. Later: add headless/remote mission execution with export/import, non-interactive run, JSON status/watch, and telemetry.
+1. Continue modularizing runtime areas needed for release: runner/state transitions, locks, status formatting, activity view models, and UI panes.
+2. Do a release-readiness docs pass covering quickstart, lifecycle, planning vs runtime recovery, Mission Control, configuration, and release validation.
+3. Run package validation, `npm pack` smoke testing, and publish to npm.
+4. After release, add planning readiness checklist and run estimates.
+5. After release, add user settings for role models and per-milestone validation failure caps.
+6. After release, add mission token/cost tracking and budget limits.
+7. After release, add explicit repair provenance for orchestrator-generated fix work from validation findings.
+8. Later: add headless/remote mission execution with export/import, non-interactive run, JSON status/watch, and telemetry.
 
 ## Definition of production ready
 
@@ -793,7 +800,7 @@ Recommended implementation order:
 - It has a stable public command/tool/artifact contract.
 - It can run a multi-hour mission, recover from interruption, and leave coherent artifacts.
 - Milestone validation and repair loops work without manual artifact surgery.
-- Mission Control supports monitoring and orchestrator intervention.
+- Mission Control supports read-only monitoring while intervention happens through main chat or the runtime orchestrator session.
 - Tests cover the core state machine, runner commands, artifact schemas, and recovery behavior.
 - Documentation is sufficient for quickstart, mission management, and blocked-state recovery.
 - The extension clearly explains its safety model and trust boundaries.
