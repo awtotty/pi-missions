@@ -99,6 +99,16 @@ Important observations from dogfooding:
    - Keep decomposition and judgment in skills/models.
    - Keep state transitions, locks, schemas, artifact validation, and safety gates deterministic.
 
+8. **Milestones are the canonical feature container**
+   - Persist features only inside milestones.
+   - Do not maintain duplicate top-level feature state for milestone missions.
+   - Legacy feature-only missions should be migrated into milestone form.
+
+9. **UI is a client, not the control plane**
+   - Mission execution, status, and recovery must remain independent of interactive UI.
+   - Mission Control and chat are clients of runner state, not owners of it.
+   - Preserve a path to future headless/cloud mission execution.
+
 ## Phase 0: stabilize the foundation
 
 Goal: make the existing extension safer to modify and easier to release without changing the core user model.
@@ -355,6 +365,29 @@ Acceptance criteria:
 - Long outputs remain bounded and responsive.
 - Validator pass/fail summaries are visible without opening raw artifacts.
 
+## Phase 2.5: migrate mission state to milestone-canonical schema
+
+Goal: remove duplicate feature state and make milestone grouping the single source of truth for execution, validation, status, recovery, and UI.
+
+Dogfooding exposed a serious defect: milestone feature state and top-level feature state can drift. This caused false `no_runnable_pending_work` blocks after successful validation retries. Since Factory-style validation cadence is milestone-based, `mission.milestones[].features` should be canonical and top-level `mission.features` should no longer be persisted for milestone missions.
+
+Required behavior:
+
+- New mission plans persist features only inside `milestones[].features`.
+- Feature-only legacy missions load by wrapping top-level `features` into a synthetic milestone.
+- Hybrid legacy missions load by merging useful top-level metadata into milestone features once, then saving milestone-canonical state.
+- Runner, validators, recovery, status, Mission Control, and tools read feature state from milestones only.
+- `plan/features.json` may remain as a derived compatibility artifact, but it is not mission runtime state.
+- Skills and docs stop instructing orchestrators to emit top-level `features` for new milestone missions.
+
+Acceptance criteria:
+
+- No saved milestone mission contains top-level `features` as mutable runtime state.
+- Retry/validation completion cannot update one feature copy while the runner gates on another.
+- Existing feature-only and hybrid mission artifacts remain loadable through migration.
+- Tests cover feature-only, hybrid, and milestone-canonical mission loading/saving.
+- Status and Mission Control still show feature progress after migration.
+
 ## Phase 3: strengthen validation and user testing
 
 Goal: make validation feel like a real QA/review layer, not just another model response.
@@ -503,19 +536,57 @@ Acceptance criteria:
 - Mission Control can show duration, token/run counts where available, retries, blocks, and validation outcomes.
 - A completed mission can generate a final executive summary from artifacts.
 
+## Phase 7: headless and remote mission execution
+
+Goal: support planning a mission on one machine, moving it to another machine, running it non-interactively, and observing it programmatically.
+
+This is a later roadmap item, but current architecture should avoid blocking it. The runner must not depend on TUI overlays, interactive confirmations, or session-local UI state.
+
+Target workflows:
+
+```bash
+# local machine
+pi-missions export mission-abc > mission-abc.tar.zst
+scp mission-abc.tar.zst cloud:/tmp/
+
+# cloud machine
+pi-missions import /tmp/mission-abc.tar.zst --cwd /srv/repo
+pi-missions run mission-abc --non-interactive --yes
+pi-missions status mission-abc --json
+pi-missions watch mission-abc --jsonl
+```
+
+Required behavior:
+
+- Export/import portable mission bundles.
+- Rebind mission `cwd` on import when moving between machines.
+- Start/resume missions through an explicit non-interactive authorization path rather than interactive `ctx.ui.confirm`.
+- Provide machine-readable `list`, `status`, and `watch` outputs.
+- Emit append-only structured events suitable for external telemetry.
+- Support cloud-runner configuration for models, tools, environment, git identity, maximum runtime/cost, telemetry sinks, and safety policy.
+
+Acceptance criteria:
+
+- A mission can be planned locally, imported remotely, run headlessly, and inspected without a TUI.
+- Interactive safety gates remain intact for normal chat/TUI use; headless mode requires explicit CLI/API authorization.
+- Mission Control, main chat, CLI JSON, and telemetry exporters share derived status/view-model logic.
+- Documentation covers remote execution setup, security boundaries, and artifact retrieval.
+
 ## Immediate next milestones
 
 Recommended implementation order:
 
-1. Rework Mission Control/status around a shared, tested view model.
-2. Make main-chat mission intervention the first-class orchestrator-chat experience.
-3. Clean up stale block/recovery display and blocked-state guidance.
-4. Continue modularizing runtime areas needed for Mission Control: UI panes, input handling, status formatting, and run/activity view models.
-5. Make milestone validation the primary execution cadence.
-6. Add planning readiness checklist and run estimates.
-7. Add explicit repair features generated from validation findings.
-8. Document configuration inheritance, recovery, and lifecycle states.
-9. Prepare npm package and CI release process.
+1. Finish the read-only multi-mission Mission Control rework.
+2. Immediately migrate mission state to milestone-canonical schema and remove duplicate top-level feature runtime state.
+3. Make main-chat mission intervention the first-class orchestrator-chat experience.
+4. Clean up stale block/recovery display and blocked-state guidance everywhere, including footer/status UI.
+5. Continue modularizing runtime areas needed for Mission Control: UI panes, input handling, status formatting, and run/activity view models.
+6. Make milestone validation the primary execution cadence.
+7. Add planning readiness checklist and run estimates.
+8. Add explicit repair features generated from validation findings.
+9. Document configuration inheritance, recovery, and lifecycle states.
+10. Prepare npm package and CI release process.
+11. Much later: add headless/remote mission execution with export/import, non-interactive run, JSON status/watch, and telemetry.
 
 ## Definition of production ready
 
