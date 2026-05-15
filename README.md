@@ -66,36 +66,25 @@ After local edits, use `/reload` inside pi.
 
 ## Mission Control
 
-`/mission-control [mission-id]` opens an interactive dashboard for mission progress and controls. It keeps four stable panes (Features, Details, Activity, Child Output), selection-driven details, inspect mode for focused panes, and bounded child-output tails from `transcript.jsonl` / `stderr.txt`.
+`/mission-control [mission-id]` opens a read-only observability overlay. Without an id, it shows a global multi-mission overview across the mission store, including missions from different repositories and worktrees. With an id, it opens directly to that mission's detail view.
 
-Interaction model highlights:
+The overview uses stable sections in this order: **Blocked / Failed**, **Running**, **Paused**, **Planned**, and **Completed**. Each mission card shows the title/status, mission id plus repository/worktree label, current task, completed/total progress bar, and update time when available.
 
-- Responsive layouts: `wide` (2-column), `medium`, `narrow`, and `compact` stack modes.
-- Explicit focus model: tab/shift-tab or `1-4` pane jumps; pane-local scroll offsets are preserved.
-- Contextual footer hints: key hints adapt to focused pane and child output mode.
-- Safe start/resume from Mission Control: pressing `s` closes the overlay first, then queues `/missions run` so execution does not begin inside the custom overlay input loop.
-- Stale-state safety: compact status/footer is cleared before re-render so completed/cleared missions do not leak stale indicators.
+Detail view repeats the same mission summary at the top, then shows the most relevant read-only output below it: active transcript/stderr tails for running missions, current block artifacts for blocked/failed missions, latest validation or completion handoff for completed missions, and objective/next-step context for planned or paused missions.
 
 Useful keys:
 
 ```text
-q / esc             Close Mission Control only; execution continues
-↑ / ↓ or j / k      Move mission-tree selection
-tab / shift-tab     Cycle focused pane
-1 / 2 / 3 / 4       Jump to Features / Details / Activity / Child Output pane
-pgup / pgdn         Scroll focused pane
-ctrl-u / ctrl-d     Half-page scroll focused pane
-g / G               Jump to top / bottom of focused pane
-i or enter          Toggle inspect mode for the focused pane
-r                   Refresh artifacts
-p                   Pause after current worker/validator
-s                   Start or resume when safe
-x                   Cancel current child when supported
-c                   Clear completed missions from default visibility
+q / esc             Close Mission Control from overview; execution continues
+↑ / ↓ or j / k      Move mission selection in overview; scroll output in detail
+enter               Open the selected mission detail from overview
+b / esc             Return from detail to overview when not opened for a specific id
+r                   Refresh artifacts and re-render
 ?                   Toggle help
+g / G               Jump to top / bottom of detail output
 ```
 
-Mission Control actions route through deterministic runner commands and preserve confirmation gates for execution-starting or destructive visibility actions. Mission Control input handling intentionally avoids modal `ctx.ui.confirm` calls.
+Mission Control v1 is intentionally read-only. Start, resume, pause, cancel, clear, recovery, and plan changes remain in main chat and deterministic tools such as `/missions ...`, `mission_start_execution`, and `mission_runner_command`. See [`docs/mission-control.md`](docs/mission-control.md) for the full multi-mission Mission Control guide.
 
 ## Artifact layout
 
@@ -136,7 +125,7 @@ npm run build           # Emit the publishable extension to dist/
 npm run check           # Full local gate: typecheck, tests, validation, build
 ```
 
-Run focused validation scripts while iterating on a specific area, then run `npm run check` before handing work off or cutting a package. `npm run validate:f5-ux` is the Mission Control UX regression harness for responsive render behavior, focus traversal, footer/status hints, start safety, and stale block/status handling.
+Run focused validation scripts while iterating on a specific area, then run `npm run check` before handing work off or cutting a package. `npm run validate:mission-control-readonly` is the Mission Control read-only regression harness for multi-mission sections, overview/detail navigation, output rendering, docs, and absence of overlay mutation controls.
 
 The package manifest loads the built extension entrypoint (`dist/missions/index.js`) for publication. Local source edits should still preserve the public commands, tools, mission artifact layout, and Mission Control interaction model documented above.
 
