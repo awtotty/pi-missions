@@ -28,6 +28,13 @@ function functionBody(name: string): string {
 }
 
 describe("milestone-only mission runtime regressions", () => {
+	it("normalizes raw validation assertion arrays to the persisted contract shape", () => {
+		const raw = [{ id: "A-1", category: "integration", assertion: "validators can see this", verification: "inspect contract" }];
+		expect(runtimeTesting.normalizeValidationContractJson(raw)).toEqual({ assertions: raw });
+		expect(runtimeTesting.normalizeValidationContractJson({ assertions: raw })).toEqual({ assertions: raw });
+		expect(runtimeTesting.normalizeValidationContractJson({ notAssertions: raw })).toEqual({ assertions: [] });
+	});
+
 	it("persists milestone mission state without top-level features", () => {
 		const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-missions-milestone-only-"));
 		const file = path.join(tempRoot, "mission.json");

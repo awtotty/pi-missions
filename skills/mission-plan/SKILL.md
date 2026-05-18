@@ -103,15 +103,19 @@ When a milestone needs explicit user testing, include optional metadata in the m
 
 Write hundreds of assertions for large projects; for small prototypes, write enough to be meaningful. Assertions must be implementation-independent.
 
-Each assertion:
+`validationContractJson` must be an object with an `assertions` array (the mission tool also normalizes a raw array defensively, but planners should use the object shape):
 
 ```json
 {
-  "id": "AUTH-042",
-  "category": "security",
-  "severity": "critical",
-  "assertion": "A revoked refresh token cannot be exchanged for a new access token.",
-  "verification": "Create user session, revoke refresh token, attempt refresh endpoint, expect 401 and audit log entry."
+  "assertions": [
+    {
+      "id": "AUTH-042",
+      "category": "security",
+      "severity": "critical",
+      "assertion": "A revoked refresh token cannot be exchanged for a new access token.",
+      "verification": "Create user session, revoke refresh token, attempt refresh endpoint, expect 401 and audit log entry."
+    }
+  ]
 }
 ```
 

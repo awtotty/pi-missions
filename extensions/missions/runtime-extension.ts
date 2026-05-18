@@ -1014,9 +1014,15 @@ function boundedExcerpt(text: string, maxChars = 700): string {
 	return `${normalized.slice(0, maxChars - 1).trimEnd()}…`;
 }
 
-function validationSummary(validationContractJson: unknown): string {
+function normalizeValidationContractJson(validationContractJson: unknown): { assertions: unknown[] } {
+	if (Array.isArray(validationContractJson)) return { assertions: validationContractJson };
 	const maybeAssertions = (validationContractJson as { assertions?: unknown } | undefined)?.assertions;
-	if (!Array.isArray(maybeAssertions)) return "Validation: no assertions array found.";
+	return { assertions: Array.isArray(maybeAssertions) ? maybeAssertions : [] };
+}
+
+function validationSummary(validationContractJson: unknown): string {
+	const maybeAssertions = normalizeValidationContractJson(validationContractJson).assertions;
+	if (maybeAssertions.length === 0) return "Validation: no assertions array found.";
 	const categories = new Map<string, number>();
 	for (const assertion of maybeAssertions) {
 		const category = typeof (assertion as { category?: unknown })?.category === "string" ? (assertion as { category: string }).category : "uncategorized";
@@ -1362,9 +1368,8 @@ function validationContractAssertions(mission: MissionState): ValidationContract
 	const file = path.join(missionDir(mission.cwd, mission.id), "plan", "validation-contract.json");
 	if (!fs.existsSync(file)) return [];
 	try {
-		const parsed = readJson<{ assertions?: unknown }>(file);
-		if (!Array.isArray(parsed.assertions)) return [];
-		return parsed.assertions.filter((value): value is ValidationContractAssertion => Boolean(value) && typeof value === "object");
+		const parsed = readJson<unknown>(file);
+		return normalizeValidationContractJson(parsed).assertions.filter((value): value is ValidationContractAssertion => Boolean(value) && typeof value === "object");
 	} catch {
 		return [];
 	}
@@ -3113,6 +3118,7 @@ export const __testing = {
 	findNextFeatureInMilestone,
 	milestoneAwaitingScrutinyValidation,
 	milestoneAwaitingUserTestingValidation,
+	normalizeValidationContractJson,
 	transitionMilestoneValidationFailureToBlocked,
 	transitionMissionToComplete,
 	saveMission,
@@ -3266,7 +3272,8 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 			writeJson(path.join(dir, "mission.json"), missionForPersistence(mission));
 			fs.writeFileSync(path.join(dir, "plan/objective.md"), params.objectiveMd);
 			writeJson(path.join(dir, "plan/features.json"), missionFeatureList(mission).length > 0 ? missionFeatureList(mission) : params.featuresJson);
-			writeJson(path.join(dir, "plan/validation-contract.json"), params.validationContractJson);
+			const normalizedValidationContractJson = normalizeValidationContractJson(params.validationContractJson);
+			writeJson(path.join(dir, "plan/validation-contract.json"), normalizedValidationContractJson);
 			fs.writeFileSync(path.join(dir, "plan/validation-contract.md"), params.validationContractMd);
 			fs.writeFileSync(path.join(dir, "skills/worker/SKILL.md"), params.workerSkillMd);
 			fs.writeFileSync(path.join(dir, "skills/validator-scrutiny/SKILL.md"), params.validatorScrutinySkillMd);
@@ -3280,7 +3287,7 @@ export default function missionsExtension(pi: ExtensionAPI): void {
 				activeRunningMissionId: autoResume || mission.status === "running" || mission.status === "paused" ? missionId : undefined,
 			});
 			ensureOfficialOrchestratorSessionRecord(ctx, mission);
-			let text = persistedPlanSummary(mission, dir, params.objectiveMd, params.validationContractJson, Boolean(existingMission));
+			let text = persistedPlanSummary(mission, dir, params.objectiveMd, normalizedValidationContractJson, Boolean(existingMission));
 			if (autoResume) {
 				ctx.ui.notify(`Recovery plan saved; auto-resuming mission ${missionId}.`, "info");
 				appendEvent(dir, "mission_auto_resume_after_plan_revision", { missionId });
