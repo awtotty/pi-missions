@@ -1,6 +1,6 @@
 {
   "name": "@awtotty/pi-missions",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Pi extension for long-running, milestone-based coding missions.",
   "type": "module",
   "keywords": [

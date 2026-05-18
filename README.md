@@ -1,12 +1,12 @@
 # pi-missions
 
-**pi-missions 0.1.0** is an early-development [pi](https://pi.dev) extension for long-running, milestone-based coding missions.
+**pi-missions** is a [pi](https://pi.dev) extension for long-running, milestone-based coding missions.
 
 It is inspired by [Factory Missions for Droid](https://factory.ai/news/missions): plan carefully in chat, approve execution, let scoped workers make progress through git-backed handoffs, validate at milestone boundaries, and monitor status in Mission Control.
 
 > **Independence note:** pi-missions is not affiliated with Factory and is not a copy or port of Factory Missions. It was built independently, without access to Factory Missions source code, and uses only public product concepts as inspiration.
 >
-> **v0.1.0 note:** this project is active development software. Commands, APIs, artifact schemas, and behavior may change before a stable release.
+> **Stability note:** this project is active development software. Commands, APIs, artifact schemas, and behavior may change before a stable release.
 
 ## What it does
 
