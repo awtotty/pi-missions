@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { readJson } from "./json.js";
 import { clearedMissionsFile, missionRoot } from "./paths.js";
-import type { ClearedMissionsState, MissionBlockMetadata, MissionFeature, MissionMilestone, MissionState, Status } from "../runtime-types.js";
+import type { ClearedMissionsState, ItemStatus, MissionBlockMetadata, MissionFeature, MissionMilestone, MissionState, Status } from "../runtime-types.js";
 
 export type MissionControlSectionId = "blockedFailed" | "running" | "paused" | "planned" | "completed";
 
@@ -19,6 +19,21 @@ export interface MissionControlOutputView {
 	secondary?: MissionControlOutputView[];
 }
 
+export interface MissionControlOutlineFeatureView {
+	id: string;
+	title: string;
+	status: ItemStatus;
+	current: boolean;
+}
+
+export interface MissionControlOutlineMilestoneView {
+	id: string;
+	title: string;
+	status: ItemStatus;
+	current: boolean;
+	features: MissionControlOutlineFeatureView[];
+}
+
 export interface MissionControlMissionView {
 	id: string;
 	title: string;
@@ -30,6 +45,7 @@ export interface MissionControlMissionView {
 	locationLabel: string;
 	currentTask: string;
 	progress: MissionControlProgressView;
+	outline: MissionControlOutlineMilestoneView[];
 	activeRun?: MissionState["activeRun"];
 	currentMilestoneId?: string;
 	currentFeatureId?: string;
@@ -107,6 +123,7 @@ export function createMissionControlMissionView(mission: MissionState, missionDi
 		...labels,
 		currentTask,
 		progress,
+		outline: deriveMissionOutline(mission),
 		activeRun: mission.activeRun,
 		currentMilestoneId: mission.currentMilestoneId,
 		currentFeatureId: mission.currentFeatureId,
@@ -156,7 +173,50 @@ function firstReadableArtifact(paths: string[]): string | undefined { return pat
 function firstRunArtifact(runDir: string, names: string[]): string | undefined { return names.map((name) => path.join(runDir, name)).find((item) => fs.existsSync(item)); }
 function artifactSource(file: string): MissionControlOutputView["source"] { if (file.endsWith("stderr.txt")) return "stderr"; if (file.endsWith("transcript.jsonl")) return "transcript"; if (file.endsWith("validation-report.md")) return "validation-report"; if (file.endsWith("handoff.md")) return "handoff"; return "block-artifact"; }
 function readTail(file: string, maxChars = 8000): string { try { const text = fs.readFileSync(file, "utf8"); return text.length > maxChars ? text.slice(-maxChars) : text; } catch { return ""; } }
-function readTranscriptTail(file: string): string { return readTail(file).split(/\r?\n/).filter(Boolean).slice(-40).map((line) => { try { const parsed = JSON.parse(line) as { role?: string; content?: unknown; text?: unknown }; const content = typeof parsed.content === "string" ? parsed.content : typeof parsed.text === "string" ? parsed.text : line; return parsed.role ? `${parsed.role}: ${content}` : content; } catch { return line; } }).join("\n"); }
+
+function compactTranscriptText(text: string, max = 500): string {
+	const compact = text.replace(/\s+/g, " ").trim();
+	return compact.length > max ? `${compact.slice(0, Math.max(0, max - 1))}…` : compact;
+}
+
+function transcriptContentSnippet(content: unknown): string | undefined {
+	if (typeof content === "string") return compactTranscriptText(content);
+	if (!Array.isArray(content)) return undefined;
+	const parts = content.flatMap((part): string[] => {
+		if (!part || typeof part !== "object") return [];
+		const record = part as Record<string, unknown>;
+		if (typeof record.text === "string") return [compactTranscriptText(record.text)];
+		if (typeof record.content === "string") return [compactTranscriptText(record.content)];
+		if (typeof record.name === "string") return [`tool ${record.name}`];
+		if (record.type === "tool_result" || record.type === "tool_output") return ["tool result"];
+		return [];
+	});
+	return parts.length ? parts.join(" | ") : undefined;
+}
+
+function transcriptLineSummary(line: string): string {
+	try {
+		const parsed = JSON.parse(line) as Record<string, unknown>;
+		const role = typeof parsed.role === "string" ? parsed.role : typeof parsed.type === "string" ? parsed.type : "event";
+		const direct = typeof parsed.text === "string" ? compactTranscriptText(parsed.text) : undefined;
+		const content = transcriptContentSnippet(parsed.content) ?? direct;
+		if (content) return `${role}: ${content}`;
+		if (parsed.message && typeof parsed.message === "object") {
+			const message = parsed.message as Record<string, unknown>;
+			const nestedRole = typeof message.role === "string" ? message.role : role;
+			const nestedContent = transcriptContentSnippet(message.content) ?? (typeof message.text === "string" ? compactTranscriptText(message.text) : undefined);
+			if (nestedContent) return `${nestedRole}: ${nestedContent}`;
+		}
+		return `${role}: ${compactTranscriptText(line)}`;
+	} catch {
+		return compactTranscriptText(line);
+	}
+}
+
+function readTranscriptTail(file: string): string {
+	const lines = readTail(file).split(/\r?\n/).filter(Boolean).slice(-80).map(transcriptLineSummary);
+	return [`Live transcript tail: showing ${lines.length} recent event${lines.length === 1 ? "" : "s"}`, ...lines].join("\n");
+}
 function latestValidationRunId(mission: MissionState): string | undefined { return [...(mission.milestones ?? [])].reverse().find((m) => m.validationRunId)?.validationRunId ?? [...flattenFeatures(mission)].reverse().find((f) => f.validationRunId)?.validationRunId; }
 function latestCompletedRunId(features: MissionFeature[]): string | undefined { return [...features].reverse().find((f) => f.runId)?.runId; }
 function blockFallbackText(block: MissionBlockMetadata): string { return [`${block.kind} ${block.failedItemId} failed with ${block.reasonCategory}.`, `Run: ${block.runId}`, `Exit code: ${block.exitCode}`, block.dirty ? `Dirty worktree: ${block.dirty}` : undefined].filter(Boolean).join("\n"); }
@@ -173,6 +233,21 @@ function loadClearedMissionIds(cwd: string, root: string): Set<string> {
 
 function flattenFeatures(mission: MissionState): MissionFeature[] {
 	return (mission.milestones ?? []).flatMap((milestone) => milestone.features ?? []);
+}
+
+function deriveMissionOutline(mission: MissionState): MissionControlOutlineMilestoneView[] {
+	return (mission.milestones ?? []).map((milestone) => ({
+		id: milestone.id,
+		title: milestone.title,
+		status: milestone.status,
+		current: milestone.id === mission.currentMilestoneId,
+		features: (milestone.features ?? []).map((feature) => ({
+			id: feature.id,
+			title: feature.title,
+			status: feature.status,
+			current: feature.id === mission.currentFeatureId,
+		})),
+	}));
 }
 
 function deriveCurrentTask(mission: MissionState, allFeatures: MissionFeature[]): string {

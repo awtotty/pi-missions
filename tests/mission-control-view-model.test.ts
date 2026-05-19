@@ -71,9 +71,11 @@ describe("mission control view model", () => {
 		]);
 	});
 
-	it("computes feature progress from milestone features", () => {
+	it("computes feature progress and exposes a mission outline from milestone features", () => {
 		const vm = createMissionControlViewModel([
 			mission("progress", "running", {
+				currentMilestoneId: "M1",
+				currentFeatureId: "F3",
 				milestones: [{
 					id: "M1",
 					title: "Milestone",
@@ -88,6 +90,17 @@ describe("mission control view model", () => {
 		]);
 
 		expect(vm.missions[0].progress).toEqual({ completed: 2, total: 3 });
+		expect(vm.missions[0].outline).toEqual([{
+			id: "M1",
+			title: "Milestone",
+			status: "running",
+			current: true,
+			features: [
+				{ id: "F1", title: "Done", status: "complete", current: false },
+				{ id: "F2", title: "Skipped", status: "skipped", current: false },
+				{ id: "F3", title: "Todo", status: "pending", current: true },
+			],
+		}]);
 	});
 
 	it("derives concise current task and cwd/repo/worktree labels", () => {
@@ -141,13 +154,14 @@ describe("mission control view model", () => {
 		const runDir = path.join(root, state.id, "runs", "run-active");
 		fs.mkdirSync(runDir, { recursive: true });
 		fs.writeFileSync(path.join(root, state.id, "mission.json"), JSON.stringify(state));
-		fs.writeFileSync(path.join(runDir, "transcript.jsonl"), `${JSON.stringify({ role: "assistant", content: "working on it" })}\n`);
+		fs.writeFileSync(path.join(runDir, "transcript.jsonl"), `${JSON.stringify({ role: "assistant", content: [{ type: "text", text: "working on it" }, { type: "tool_use", name: "bash" }] })}\n`);
 		fs.writeFileSync(path.join(runDir, "stderr.txt"), "warning line\n");
 
 		const vm = loadMissionControlViewModel(process.cwd(), { root });
 
 		expect(vm.missions[0].detailOutput).toMatchObject({ label: "Active worker transcript tail (run-active)", source: "transcript" });
-		expect(vm.missions[0].detailOutput.text).toContain("assistant: working on it");
+		expect(vm.missions[0].detailOutput.text).toContain("Live transcript tail: showing 1 recent event");
+		expect(vm.missions[0].detailOutput.text).toContain("assistant: working on it | tool bash");
 		expect(vm.missions[0].detailOutput.secondary?.[0]).toMatchObject({ label: "Active worker stderr tail (run-active)", source: "stderr" });
 	});
 

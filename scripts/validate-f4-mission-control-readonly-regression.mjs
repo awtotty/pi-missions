@@ -22,10 +22,10 @@ for (const section of ["Blocked / Failed", "Running", "Paused", "Planned", "Comp
 
 for (const expected of [
 	"Mission Control",
-	"Read-only overview",
-	"Read-only detail",
 	"Mission Summary",
+	"Mission Outline",
 	"missionControlMissionSummaryLines",
+	"missionControlOutlineLines",
 	"mission.detailOutput.label",
 ]) assert(runtime.includes(expected), `runtime missing read-only render marker: ${expected}`);
 

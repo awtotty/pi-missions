@@ -54,6 +54,34 @@ function panelLines(title: string, body: string[], width: number): string[] {
 	return [header, ...clippedBody.map((line) => exactClipLine(`│${exactPadLineToWidth(line, innerWidth)}│`, safeWidth)), exactClipLine(`└${"─".repeat(innerWidth)}┘`, safeWidth)];
 }
 
+function wrapLine(line: string, width: number): string[] {
+	const safeWidth = Math.max(1, width);
+	if (visibleWidth(line) <= safeWidth) return [line];
+	const words = line.split(/(\s+)/);
+	const lines: string[] = [];
+	let current = "";
+	for (const word of words) {
+		if (!word) continue;
+		const candidate = `${current}${word}`;
+		if (current && visibleWidth(candidate) > safeWidth) {
+			lines.push(current.trimEnd());
+			current = word.trimStart();
+		} else {
+			current = candidate;
+		}
+		if (visibleWidth(current) > safeWidth) {
+			lines.push(exactClipLine(current, safeWidth));
+			current = "";
+		}
+	}
+	if (current.trim()) lines.push(current.trimEnd());
+	return lines.length ? lines : [""];
+}
+
+function wrapLines(lines: string[], width: number): string[] {
+	return lines.flatMap((line) => wrapLine(line, width));
+}
+
 function scrollWindow(lines: string[], offset: number, maxBodyLines: number): { body: string[]; maxOffset: number; clampedOffset: number } {
 	const maxOffset = Math.max(0, lines.length - maxBodyLines);
 	const clampedOffset = Math.max(0, Math.min(offset, maxOffset));
@@ -80,6 +108,14 @@ function missionControlStatusIcon(status: Status): string {
 	if (status === "running") return "▶";
 	if (status === "paused") return "Ⅱ";
 	if (status === "complete") return "✓";
+	return "○";
+}
+
+function missionControlItemStatusIcon(status: string): string {
+	if (status === "failed") return "!";
+	if (status === "running") return "▶";
+	if (status === "complete") return "✓";
+	if (status === "skipped") return "-";
 	return "○";
 }
 
@@ -119,7 +155,7 @@ function moveMissionControlOverviewSelection(vm: MissionControlViewModel, select
 function missionControlOverviewLines(vm: MissionControlViewModel, view: MissionControlViewState, width: number): string[] {
 	const selected = selectedMissionView(vm, view);
 	if (selected) view.selectedMissionId = selected.id;
-	const lines: string[] = ["Mission Control", "Read-only overview", ""];
+	const lines: string[] = ["Mission Control", ""];
 	for (const section of vm.sections) {
 		const body = missionControlSectionLines(section, selected?.id, Math.max(20, width - 4));
 		lines.push(...panelLines(section.title, body.length ? body : ["No missions"], width), "");
@@ -138,22 +174,38 @@ function missionControlSectionLines(section: MissionControlSectionView, selected
 
 function missionControlDetailLines(mission: MissionControlMissionView, view: MissionControlViewState, width: number, height?: number): string[] {
 	const summary = panelLines("Mission Summary", missionControlMissionSummaryLines(mission, Math.max(20, width - 4), true), width);
-	const output = missionControlOutputLines(mission.detailOutput);
-	const reserved = summary.length + 6 + (view.showHelp ? missionControlHelpLines().length + 1 : 0);
-	const panelHeight = Math.max(5, (height ?? 30) - reserved);
+	const outline = panelLines("Mission Outline", missionControlOutlineLines(mission, Math.max(20, width - 4)), width);
+	const output = wrapLines(missionControlOutputLines(mission.detailOutput), Math.max(20, width - 4));
+	const fixedLines = 2 + summary.length + 1 + outline.length + 1 + 2 + (view.showHelp ? missionControlHelpLines().length + 1 : 0);
+	const panelHeight = Math.max(5, (height ?? 30) - fixedLines);
 	const rendered = limitedPanelLines(mission.detailOutput.label, output, width, panelHeight, view.outputScrollOffset);
 	view.outputScrollOffset = rendered.clampedOffset;
 	return [
 		"Mission Control",
-		"Read-only detail",
 		"",
 		...summary,
+		"",
+		...outline,
 		"",
 		...rendered.lines,
 		...(view.showHelp ? ["", ...missionControlHelpLines()] : []),
 		"",
 		missionControlFooter(width, view),
 	];
+}
+
+function missionControlOutlineLines(mission: MissionControlMissionView, width: number): string[] {
+	if (mission.outline.length === 0) return ["No milestones defined."];
+	return mission.outline.flatMap((milestone) => {
+		const milestoneMarker = milestone.current ? "▸" : " ";
+		const milestoneLine = clipLine(`${milestoneMarker} ${missionControlItemStatusIcon(milestone.status)} ${milestone.id}: ${milestone.title}`, width);
+		const featureLines = milestone.features.map((feature, index) => {
+			const branch = index === milestone.features.length - 1 ? "└─" : "├─";
+			const featureMarker = feature.current ? "▸" : " ";
+			return clipLine(`  ${branch} ${featureMarker} ${missionControlItemStatusIcon(feature.status)} ${feature.id}: ${feature.title}`, width);
+		});
+		return [milestoneLine, ...featureLines];
+	});
 }
 
 function missionControlOutputLines(output: MissionControlOutputView): string[] {
@@ -200,7 +252,7 @@ export function missionControlLines(cwd: string, _state: MissionOrchestratorSess
 		return fitToViewport(["Mission Control", "", `Mission not found: ${targetMissionId}`, "", "q/esc close"], safeWidth, height);
 	}
 	if (vm.missions.length === 0) {
-		return fitToViewport(["Mission Control", "Read-only overview", "", "No visible missions found.", "Start one with /missions [goal].", "", missionControlFooter(safeWidth, view)], safeWidth, height);
+		return fitToViewport(["Mission Control", "", "No visible missions found.", "Start one with /missions [goal].", "", missionControlFooter(safeWidth, view)], safeWidth, height);
 	}
 	const selected = selectedMissionView(vm, view, targetMissionId);
 	if (selected) view.selectedMissionId = selected.id;
