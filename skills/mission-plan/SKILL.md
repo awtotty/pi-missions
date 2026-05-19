@@ -38,9 +38,9 @@ When ready, persist drafts with the `mission_write_plan` tool. This writes these
 - `plan/validation-contract.md`: human-readable version of the contract.
 - `skills/worker/SKILL.md`: mission-specific worker procedure.
 - `skills/validator-scrutiny/SKILL.md`: mission-specific adversarial validator procedure.
-- `skills/validator-user-testing/SKILL.md`: mission-specific QA/user-testing validator procedure when applicable.
+- `skills/validator-user-testing/SKILL.md`: mission-specific QA/user-testing validator procedure. User-testing validation is required for every milestone by default.
 
-After the user has reviewed the visible plan draft and validation-contract summary in chat, use `mission_start_execution` when they explicitly confirm that implementation should begin. The runner executes workers feature-by-feature within the current milestone, then runs milestone-boundary scrutiny validation and optional milestone-boundary user-testing validation. Persisted plans are directly runnable, and `mission_start_execution` (or `/missions run`) is the single explicit confirmation gate before workers start.
+After the user has reviewed the visible plan draft and validation-contract summary in chat, use `mission_start_execution` when they explicitly confirm that implementation should begin. The runner executes workers feature-by-feature within the current milestone, then runs milestone-boundary scrutiny validation and milestone-boundary user-testing validation by default. Persisted plans are directly runnable, and `mission_start_execution` (or `/missions run`) is the single explicit confirmation gate before workers start.
 
 Use `mission_status` and `mission_list` for read-only mission inspection without confirmation. Use `mission_clear_completed` for clearing completed missions only after explicit user confirmation. The user should not need to manually type mission ids.
 
@@ -86,13 +86,24 @@ Use this milestone-canonical shape. Features are stored only inside milestones; 
 
 Statuses: `planned`, `running`, `paused`, `blocked`, `complete`, `failed` for missions; `pending`, `running`, `complete`, `failed`, `skipped` for milestones and features. Features become complete after worker handoff/commit acceptance by the deterministic runner; milestone acceptance happens only after required milestone validators pass.
 
-When a milestone needs explicit user testing, include optional metadata in the milestone validation state or plan metadata:
+User-testing validation is required for every milestone by default. Include optional milestone validation-state metadata when a milestone needs extra user-testing instructions or when user testing must be explicitly disabled:
 
 ```json
 {
   "userTesting": {
     "required": true,
     "instructions": "Flexible QA steps for this integrated milestone."
+  }
+}
+```
+
+To opt a milestone out, set `required` to `false` and document why in the plan:
+
+```json
+{
+  "userTesting": {
+    "required": false,
+    "instructions": "Disabled because this milestone only updates internal test fixtures."
   }
 }
 ```

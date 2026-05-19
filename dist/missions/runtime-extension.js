@@ -2123,7 +2123,7 @@ function featureUserTestingInstructions(feature) {
     return typeof instructions === "string" && instructions.trim() ? instructions.trim() : undefined;
 }
 function isMilestoneUserTestingRequired(milestone) {
-    return milestone.validationState?.userTesting?.required === true;
+    return milestone.validationState?.userTesting?.required !== false;
 }
 function milestoneUserTestingInstructions(milestone) {
     const instructions = milestone.validationState?.userTesting?.instructions;

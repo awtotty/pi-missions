@@ -100,7 +100,7 @@ The extension already has a strong foundation:
 - Persisted artifacts under `~/.pi/missions/<mission-id>/`.
 - Sequential feature execution through fresh child sessions.
 - Required worker handoffs and git commits.
-- Scrutiny validation and optional user-testing flows.
+- Scrutiny validation and default-required user-testing flows.
 - Mission Control panes for milestones/features, details, activity, and child output.
 - Start/resume/pause/cancel control routing.
 - Runner lock/ownership artifacts and recovery-oriented state.
@@ -340,7 +340,7 @@ Required behavior:
 - Milestone status is derived from feature and validation state.
 - Workers run feature implementation slices within the current milestone.
 - Scrutiny validation runs after the milestone's worker features complete.
-- Optional user-testing validation runs as a second validator mode at the milestone boundary.
+- User-testing validation runs as a second validator mode at the milestone boundary by default.
 - A failed milestone validation hands control to the mission's dedicated orchestrator session before the next milestone begins.
 
 Acceptance criteria:
@@ -547,7 +547,7 @@ Required behavior:
 - Remove the standalone reviewer run-loop path.
 - Run workers for the current milestone's feature slices before milestone validators run.
 - Run scrutiny validation at milestone boundary by default.
-- Run user-testing validation at milestone boundary when configured.
+- Run user-testing validation at milestone boundary by default, unless explicitly disabled for the milestone.
 - On validation failure, persist the report, increment that milestone's failure counter, block/handoff to the dedicated mission orchestrator session, and stop.
 - Do not auto-reset features or auto-select fix work on validator failure.
 - Enforce a per-milestone validation failure limit, default 5.
@@ -555,7 +555,7 @@ Required behavior:
 Acceptance criteria:
 
 - A milestone with multiple features produces worker runs before a single milestone scrutiny validation run.
-- Optional user-testing uses the user-testing validator skill under the same validator role.
+- User-testing uses the user-testing validator skill under the same validator role and is required by default.
 - Validation failures 1 through 4 with default limit hand control to the dedicated mission orchestrator session.
 - Validation failure 5 for the same milestone blocks with an explicit limit-exceeded reason.
 - Failure counters are independent per milestone.

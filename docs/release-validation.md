@@ -52,8 +52,8 @@ Release validation should confirm:
 2. In a disposable branch, run a milestone with multiple worker features.
 3. Confirm workers complete feature slices before any milestone validator starts.
 4. Confirm scrutiny validators own code review without standalone reviewer fanout.
-5. Confirm scrutiny pass without milestone user-testing marks the milestone complete and advances.
-6. Confirm configured milestone user-testing runs as validator mode `user-testing` with `skills/validator-user-testing/SKILL.md` only after scrutiny passes.
+5. Confirm scrutiny pass advances to milestone user-testing by default instead of completing the milestone immediately.
+6. Confirm milestone user-testing runs as validator mode `user-testing` with `skills/validator-user-testing/SKILL.md` only after scrutiny passes, and that `validationState.userTesting.required: false` explicitly opts a milestone out.
 7. Confirm scrutiny or user-testing `fail`/`inconclusive` blocks the mission for dedicated runtime orchestrator intervention, increments only that milestone's failure counter, and does not automatically choose fix work. The default effective failure limit is 5 per milestone unless overridden.
 8. Corrupt one of `handoff.json`, `validation-report.json`, or `user-testing-report.json` in a run directory and confirm clear schema parse/validation failure with field-path details and block metadata.
 9. Verify existing mission controls still behave the same (`/missions run`, `/missions status`, Mission Control read-only views, `mission_start_execution`, and `mission_runner_command`).

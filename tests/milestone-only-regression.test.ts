@@ -227,13 +227,13 @@ describe("milestone-only mission runtime regressions", () => {
 		expect(milestone.status).toBe("complete");
 	});
 
-	it("uses distinct milestone user-testing validator mode when configured", () => {
+	it("uses distinct milestone user-testing validator mode by default", () => {
 		const milestone = {
 			id: "M1",
 			title: "Milestone",
 			status: "running" as const,
 			validationRunId: "scrutiny-M1",
-			validationState: { runId: "scrutiny-M1", userTesting: { required: true, instructions: "exercise the integrated milestone" } },
+			validationState: { runId: "scrutiny-M1" },
 			features: [{ id: "F1", title: "Feature", description: "Done", dependencies: [], status: "complete" as const }],
 		};
 
@@ -245,6 +245,19 @@ describe("milestone-only mission runtime regressions", () => {
 		expect(runMilestoneUserTestingValidator).toContain('setActiveRunOwnership(mission, { kind: "validator", validatorMode: "user-testing", itemId: milestone.id');
 		expect(runMilestoneUserTestingValidator).toContain('systemPromptFiles: [BASE_SKILLS.validator, path.join(dir, "skills/validator-user-testing/SKILL.md")]');
 		expect(runMilestoneUserTestingValidator).toContain("Execute user-testing validation for this completed milestone");
+	});
+
+	it("allows milestone user-testing to be explicitly disabled", () => {
+		const milestone = {
+			id: "M1",
+			title: "Milestone",
+			status: "running" as const,
+			validationRunId: "scrutiny-M1",
+			validationState: { runId: "scrutiny-M1", userTesting: { required: false } },
+			features: [{ id: "F1", title: "Feature", description: "Done", dependencies: [], status: "complete" as const }],
+		};
+
+		expect(runtimeTesting.milestoneAwaitingUserTestingValidation(milestone)).toBe(false);
 	});
 
 	it("blocks validation failures for orchestrator intervention and enforces per-milestone limits independently", () => {

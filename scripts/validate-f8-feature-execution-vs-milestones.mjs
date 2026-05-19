@@ -79,7 +79,7 @@ if (runText.includes("runValidator(this.ctx, mission, milestone, this.childSigna
   fail("runner must not validate the same feature immediately after worker success.");
 }
 if (!runText.includes("runMilestoneUserTestingValidator(this.ctx, mission, milestone, this.childSignal)")) {
-  fail("runner must use milestone user-testing validator mode when configured.");
+  fail("runner must use milestone user-testing validator mode at the milestone boundary.");
 }
 
 console.log("F8 validation checks passed.");

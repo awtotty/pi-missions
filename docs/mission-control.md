@@ -8,7 +8,7 @@ Mission Control is the read-only observability overlay for pi-missions. Open it 
 
 Without an id, Mission Control shows a global multi-mission overview across the mission store, including missions from different repositories and worktrees. With an id, it opens directly to that mission's detail view.
 
-Mission Control is read-only observability. Start, resume, pause, cancel, clear, recovery, and plan changes route through `/missions ...`, `mission_start_execution`, `mission_runner_command`, the dedicated runtime orchestrator session, or main chat human override. Workers complete feature slices; scrutiny and optional user-testing validators run at milestone boundaries under the validator role. A milestone validation failure or other recoverable block writes recovery artifacts and dispatches an event to the mission's dedicated runtime orchestrator session instead of automatically choosing fix work.
+Mission Control is read-only observability. Start, resume, pause, cancel, clear, recovery, and plan changes route through `/missions ...`, `mission_start_execution`, `mission_runner_command`, the dedicated runtime orchestrator session, or main chat human override. Workers complete feature slices; scrutiny and user-testing validators run at milestone boundaries under the validator role, with user testing required by default unless explicitly disabled for a milestone. A milestone validation failure or other recoverable block writes recovery artifacts and dispatches an event to the mission's dedicated runtime orchestrator session instead of automatically choosing fix work.
 
 ## Overview sections
 

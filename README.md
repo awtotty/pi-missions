@@ -14,7 +14,7 @@ It is inspired by [Factory Missions for Droid](https://factory.ai/news/missions)
 - Saves milestone-canonical mission artifacts under `~/.pi/missions/<mission-id>/`.
 - Runs one worker feature at a time in fresh child contexts.
 - Requires worker handoffs and git commits.
-- Validates at milestone boundaries with scrutiny and optional user-testing validators.
+- Validates at milestone boundaries with scrutiny and user-testing validators (user testing is required by default and can be explicitly disabled per milestone).
 - Routes recoverable blocks to a dedicated runtime `mission-orchestrator` session.
 - Shows read-only mission status in `/mission-control` and the compact footer.
 

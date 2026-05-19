@@ -2188,7 +2188,7 @@ function featureUserTestingInstructions(feature: MissionFeature): string | undef
 }
 
 function isMilestoneUserTestingRequired(milestone: MissionMilestone): boolean {
-	return milestone.validationState?.userTesting?.required === true;
+	return milestone.validationState?.userTesting?.required !== false;
 }
 
 function milestoneUserTestingInstructions(milestone: MissionMilestone): string | undefined {
